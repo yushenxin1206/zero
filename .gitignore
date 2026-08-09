@@ -1,10 +1,96 @@
-# Python-generated files
+# =====================
+# Python
+# =====================
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
 build/
 dist/
 wheels/
-*.egg-info
+pip-wheel-metadata/
+*.whl
 
+# =====================
 # Virtual environments
-.venv
+# =====================
+.venv/
+venv/
+env/
+ENV/
+.conda/
+
+# =====================
+# IDE / Editor
+# =====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# =====================
+# OS
+# =====================
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+httpd.plist
+
+# =====================
+# Logs & Runtime
+# =====================
+*.log
+*.pid
+*.seed
+*.sublime-workspace
+*.sublime-project
+
+# =====================
+# Environment & Config
+# =====================
+.env
+.env.*
+!.env.example
+config.local.json
+config.local.*
+
+# =====================
+# Testing
+# =====================
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# =====================
+# Distribution
+# =====================
+.pkg-cache/
+celerybeat-schedule
+celerybeat.pid
+
+# =====================
+# Jupyter
+# =====================
+.ipynb_checkpoints
+
+# =====================
+# Type stubs
+# =====================
+*.pyi
+

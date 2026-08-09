@@ -32,6 +32,7 @@ class Defaults(Base):
     max_tokens: int = 8192
     context_window_tokens: int = 65536
     temperature: float | int = 0.1
+    max_loops: int = 50
 
 
 class Config(BaseSettings):
