@@ -6,6 +6,7 @@ All data classes use Pydantic v2 BaseModel.
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -26,14 +27,24 @@ class MessageBody(Base):
 
 
 class Message(Base):
-    id: str
-    session_id: str
+    id: str = Field(default_factory=lambda: str(uuid4()))
+    session_id: str = Field(default_factory=lambda: str(uuid4()))
     sender: str
     recipient: str
     subject: str | None = None
     body: MessageBody
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.now)
+
+
+class MessageIn(Message):
+    sender: str = "user"
+    recipient: str = "agent"
+
+
+class MessageOut(Message):
+    sender: str = "agent"
+    recipient: str = "user"
 
 
 # ---------------------------------------------------------------------------

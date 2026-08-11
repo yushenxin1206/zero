@@ -4,10 +4,12 @@
 3. Calls the agent runner
 4. Sends responses back
 """
+import json
+
 from core.context import Context
 from bus.queue import MessageBus
 from core.runner import AgentRunner
-from datacls import AgentRuntimeConfig, ProviderConfigs, LLMPayload
+from datacls import AgentRuntimeConfig, ProviderConfigs, Message, MessageBody, MessageIn, MessageOut
 
 
 class AgentLoop:
@@ -38,5 +40,13 @@ class AgentLoop:
                 provider_configs=self.provider_configs,
             )
 
-            return await runner.run()
+            result = await runner.run()
 
+            await self.msg_bus.out_queue.enqueue(
+                MessageOut(
+                    session_id=msg_in.session_id,
+                    body=MessageBody(
+                        content=json.dumps(result) if type(result) is dict else str(result),
+                    )
+                )
+            )

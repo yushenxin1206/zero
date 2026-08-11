@@ -1,8 +1,14 @@
 import asyncio
-from bus.queue import MessageBus
+from bus.queue import MessageBus, MessageOutQueue
 from config import default_config
 from core.loop import AgentLoop
-from datacls import Message, MessageBody
+from datacls import Message, MessageBody, MessageIn, MessageOut
+
+
+async def get_output(out_queue: MessageOutQueue):
+    while True:
+        msg = await out_queue.dequeue()
+        print(msg)
 
 
 async def main():
@@ -16,19 +22,19 @@ async def main():
     )
 
     await msg_bus.in_queue.enqueue(
-        Message(
-            id='1',
-            sender='1',
-            session_id='1',
-            recipient='1',
+        MessageIn(
             body=MessageBody(
                 content='Hi',
             ),
         )
     )
-    return await agent_loop.run()
+
+    await asyncio.gather(
+        agent_loop.run(),
+        get_output(msg_bus.out_queue),
+    )
 
 
 if __name__ == "__main__":
-    print(asyncio.run(main()))
+    asyncio.run(main())
 

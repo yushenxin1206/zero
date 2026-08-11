@@ -2,36 +2,40 @@
 Message Queue Class
 """
 import asyncio
+from typing import TypeVar, Generic
 
-from datacls import Message
+from abc import ABC
+from datacls import Message, MessageIn, MessageOut
+
+T = TypeVar('T', bound=Message)
 
 
-class MessageQueue:
+class MessageQueue(ABC, Generic[T]):
+
     def __init__(self):
-        self.queue: asyncio.Queue[Message] = asyncio.Queue()
+        self.queue: asyncio.Queue[T] = asyncio.Queue()
 
-    async def enqueue(self, message):
+    async def enqueue(self, message: T):
         await self.queue.put(message)
 
-    async def dequeue(self):
+    async def dequeue(self) -> T:
         return await self.queue.get()
 
     @property
-    def size(self):
+    def size(self) -> int:
         return self.queue.qsize()
 
 
-class MessageInQueue(MessageQueue):
-    def __init__(self):
-        super().__init__()
+class MessageInQueue(MessageQueue[MessageIn]):
+    pass
 
 
-class MessageOutQueue(MessageQueue):
-    def __init__(self):
-        super().__init__()
+class MessageOutQueue(MessageQueue[MessageOut]):
+    pass
 
 
 class MessageBus:
     def __init__(self):
         self.in_queue = MessageInQueue()
         self.out_queue = MessageOutQueue()
+
