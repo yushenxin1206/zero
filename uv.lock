@@ -193,12 +193,14 @@ name = "zero"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.15.0" },
     { name = "requests", specifier = ">=2.34.2" },
 ]

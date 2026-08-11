@@ -4,21 +4,22 @@ Provider for OpenAI-style LLM
 import json
 import asyncio
 
-from providers.base import Provider, Payload
+from providers.base import Provider, LLMPayload
+from datacls import ProviderConfig
 
 
 class OpenAI(Provider):
 
     async def _stream_conn(
             self,
-            payload: Payload,
+            payload: LLMPayload,
     ):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json"
         }
 
-        payload.stream = True
+        payload.llm_config.stream = True
 
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, stream=True,
@@ -47,7 +48,7 @@ class OpenAI(Provider):
 
     async def stream_chat_with_llm(
             self,
-            payload: Payload,
+            payload: LLMPayload,
             max_retries: int = 3,
     ):
         async for text_chunk in self._stream_conn(payload):
@@ -55,7 +56,7 @@ class OpenAI(Provider):
 
     async def chat_with_llm(
             self,
-            payload: Payload,
+            payload: LLMPayload,
             max_retries: int = 3,
     ):
 
@@ -64,7 +65,7 @@ class OpenAI(Provider):
             "Content-Type": "application/json"
         }
 
-        payload.stream = False
+        payload.llm_config.stream = False
 
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, max_retries=max_retries,
@@ -73,36 +74,7 @@ class OpenAI(Provider):
 
 
 if __name__ == '__main__':
-    openai = OpenAI(
-        api_key='sk-d72f4b4051084c4bbb185b73b37051b5',
-        api_base='https://api.deepseek.com/chat/completions',
-    )
-
-    resp = asyncio.run(
-        openai.chat_with_llm(
-            payload=Payload(
-                model="deepseek-v4-flash",
-                messages=[
-                    {
-                        "content": "You are a helpful assistant",
-                        "role": "system"
-                    },
-                    {
-                        "content": "Hi",
-                        "role": "user"
-                    }
-                ],
-                extra_body={
-                    "thinking": {
-                        "type": "enabled"
-                    }
-                },
-                reasoning_effort="low"
-            )
-        )
-    )
-
-    print(resp)
+    pass
 
 
 

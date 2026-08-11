@@ -5,51 +5,19 @@ Base provider
 import requests
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from typing import Any
 
-
-@dataclass
-class Payload:
-    model: str
-    messages: list[dict[str, Any]]
-    tools: list[dict[str, Any]] | None = None
-    tool_choice: dict | str | None = None
-    response_format: dict[str, Any] | None = None
-    stop: list[str] | None = None
-    stream: bool | None = None
-    stream_options: dict[str, Any] | None = None
-    temperature: float | int = 0.1
-    max_tokens: int = 8192
-    reasoning_effort: str | None = None
-    extra_body: dict[str, Any] | None = None
-
-    @property
-    def payload_dict(self) -> dict[str, Any]:
-        return {
-            "model": self.model,
-            "messages": self.messages,
-            "tools": self.tools,
-            "tool_choice": self.tool_choice,
-            "response_format": self.response_format or {"type": "text"},
-            "stop": self.stop,
-            "stream": self.stream,
-            "stream_options": self.stream_options,
-            "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
-            "reasoning_effort": self.reasoning_effort,
-        } | (self.extra_body or {})
+from datacls import LLMPayload, ProviderConfig
 
 
 class Provider(ABC):
 
     def __init__(
             self,
-            api_base: str,
-            api_key: str,
+            provider_config: ProviderConfig,
     ):
-        self.api_base = api_base
-        self.api_key = api_key
+        self.api_base = provider_config.api_base
+        self.api_key = provider_config.api_key
 
     @staticmethod
     def _request_with_retry(
@@ -76,14 +44,14 @@ class Provider(ABC):
     @abstractmethod
     async def _stream_conn(
             self,
-            payload: Payload,
+            payload: LLMPayload,
     ):
         pass
 
     @abstractmethod
     async def stream_chat_with_llm(
             self,
-            payload: Payload,
+            payload: LLMPayload,
             max_retries: int = 3,
     ):
         pass
@@ -91,7 +59,7 @@ class Provider(ABC):
     @abstractmethod
     async def chat_with_llm(
             self,
-            payload: Payload,
+            payload: LLMPayload,
             max_retries: int = 3,
     ):
         pass

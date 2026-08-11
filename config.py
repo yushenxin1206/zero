@@ -1,10 +1,11 @@
 import json
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
+from datacls import AgentRuntimeConfig, ProviderConfigs
 from utils.file import save_or_create_file
 
 HOME = Path.home()
@@ -12,32 +13,9 @@ ZERO_ROOT = HOME / '.zero'
 CONFIG_PATH = ZERO_ROOT / 'config.json'
 
 
-class Base(BaseModel):
-    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
-
-
-class Provider(Base):
-    api_base: str = ''
-    api_key: str = ''
-
-
-class Providers(Base):
-    dashscope: Provider = Field(default_factory=Provider)
-
-
-class Defaults(Base):
-    workspace: Path = ZERO_ROOT / 'workspace'
-    provider: str = 'dashscope'
-    model: str = 'qwen3.8-max'
-    max_tokens: int = 8192
-    context_window_tokens: int = 65536
-    temperature: float | int = 0.1
-    max_loops: int = 50
-
-
 class Config(BaseSettings):
-    defaults: Defaults = Field(default_factory=Defaults)
-    providers: Providers = Field(default_factory=Providers)
+    agent_runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+    providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
 
     model_config = SettingsConfigDict(alias_generator=to_camel, populate_by_name=True)
 
@@ -59,6 +37,5 @@ def load_config():
         return Config()
 
 
-if __name__ == '__main__':
-    print(load_config())
+default_config = load_config()
 

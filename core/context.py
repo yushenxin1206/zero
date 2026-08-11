@@ -1,12 +1,18 @@
 """
 Build context for agent
 """
+from bus.queue import MessageBus
 
 
-class ContextBuilder:
+class Context:
 
-    def __init__(self):
-        pass
+    def __init__(
+            self,
+            session_id: str,
+            user_input: str
+    ):
+        self.session_id = session_id
+        self.user_input = user_input
 
     @property
     def _prompt(self) -> str:
@@ -18,6 +24,10 @@ class ContextBuilder:
                     {
                         "content": self._prompt,
                         "role": "system"
+                    },
+                    {
+                        "content": self.user_input,
+                        "role": "user"
                     }
                 ]
 

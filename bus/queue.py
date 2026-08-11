@@ -3,7 +3,7 @@ Message Queue Class
 """
 import asyncio
 
-from bus.message import Message
+from datacls import Message
 
 
 class MessageQueue:
