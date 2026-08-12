@@ -1,19 +1,18 @@
 import asyncio
-from bus.queue import MessageBus, MessageOutQueue
-from config import default_config
+from bus.queue import MessageBus
 from core.loop import AgentLoop
-from datacls import Message, MessageBody, MessageIn, MessageOut
-
-
-async def get_output(out_queue: MessageOutQueue):
-    while True:
-        msg = await out_queue.dequeue()
-        print(msg)
+from channels.feishu import FeishuChannel
+from config import default_config
 
 
 async def main():
-
     msg_bus = MessageBus()
+
+    # 飞书长连接通道（自动收消息 + 自动发回复）
+    channel = FeishuChannel(
+        config=default_config.channels.feishu,
+        msg_bus=msg_bus,
+    )
 
     agent_loop = AgentLoop(
         msg_bus=msg_bus,
@@ -21,20 +20,11 @@ async def main():
         provider_configs=default_config.providers,
     )
 
-    await msg_bus.in_queue.enqueue(
-        MessageIn(
-            body=MessageBody(
-                content='Hi',
-            ),
-        )
-    )
-
+    # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
     await asyncio.gather(
         agent_loop.run(),
-        get_output(msg_bus.out_queue),
+        channel.start(),
     )
 
-
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 

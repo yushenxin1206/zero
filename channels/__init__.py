@@ -1,0 +1,3 @@
+"""
+Channel module entry point.
+"""

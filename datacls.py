@@ -16,19 +16,42 @@ class Base(BaseModel):
     """Base model with camelCase alias generation."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
+    def get(self, name: str) -> Any:
+        """Safely retrieve a field by name with error handling."""
+        try:
+            return getattr(self, name)
+        except AttributeError as e:
+            raise AttributeError(f"'{name}' not found in {type(self).__name__}. Available: {list(self.model_fields.keys())}") from e
+
 
 # ---------------------------------------------------------------------------
 # Message models
 # ---------------------------------------------------------------------------
 
+class ToolCallFunction(Base):
+    """Function part of a tool call, aligned with OpenAI protocol."""
+    name: str
+    arguments: str  # JSON string, as returned by LLM
+
+
+class ToolCall(Base):
+    """A single tool call from LLM, aligned with OpenAI protocol."""
+    id: str
+    type: str = "function"
+    function: ToolCallFunction
+
+
 class MessageBody(Base):
-    content: str
+    content: str | None = None  # None when assistant only invokes tools
     attachments: list | None = None
+    tool_calls: list[ToolCall] | None = None  # only on assistant messages
+    tool_call_id: str | None = None  # only on tool messages, links to ToolCall.id
 
 
 class Message(Base):
     id: str = Field(default_factory=lambda: str(uuid4()))
     session_id: str = Field(default_factory=lambda: str(uuid4()))
+    channel: str = ""
     sender: str
     recipient: str
     subject: str | None = None
@@ -39,12 +62,18 @@ class Message(Base):
 
 class MessageIn(Message):
     sender: str = "user"
-    recipient: str = "agent"
+    recipient: str = "assistant"
 
 
 class MessageOut(Message):
-    sender: str = "agent"
+    sender: str = "assistant"
     recipient: str = "user"
+
+
+class MessageTool(Message):
+    """Tool execution result message, produced by agent during tool calls."""
+    sender: str = "tool"
+    recipient: str = "assistant"
 
 
 # ---------------------------------------------------------------------------
@@ -59,12 +88,6 @@ class ProviderConfig(Base):
 class ProviderConfigs(Base):
     dashscope: ProviderConfig = Field(default_factory=ProviderConfig)
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
-
-    def get(self, name: str) -> ProviderConfig:
-        try:
-            return getattr(self, name)
-        except AttributeError as e:
-            raise AttributeError(f"Provider '{name}' not found. Available: {list(self.model_fields.keys())}") from e
 
 
 class LLMConfig(Base):
@@ -92,6 +115,17 @@ class AgentRuntimeConfig(Base):
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     context_window_tokens: int = 65536
     max_iterations: int = 50
+
+
+class FeishuConfig(Base):
+    """Feishu bot configuration for WebSocket long connection."""
+    app_id: str = ''
+    app_secret: str = ''
+
+
+class ChannelConfigs(Base):
+    """Channel configurations container for extensible channel support."""
+    feishu: FeishuConfig = Field(default_factory=FeishuConfig)
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import json
 from core.context import Context
 from bus.queue import MessageBus
 from core.runner import AgentRunner
+from session.store import SessionStore
 from datacls import AgentRuntimeConfig, ProviderConfigs, Message, MessageBody, MessageIn, MessageOut
 
 
@@ -32,7 +33,8 @@ class AgentLoop:
 
         while True:
             msg_in = await self.msg_bus.in_queue.dequeue()
-            context = Context(msg_in.session_id, msg_in.body.content)
+            SessionStore.append(msg_in)
+            context = Context(msg_in.session_id, msg_in.channel)
 
             runner = AgentRunner(
                 runtime_config=self.runtime_config,
@@ -42,11 +44,20 @@ class AgentLoop:
 
             result = await runner.run()
 
-            await self.msg_bus.out_queue.enqueue(
-                MessageOut(
-                    session_id=msg_in.session_id,
-                    body=MessageBody(
-                        content=json.dumps(result) if type(result) is dict else str(result),
-                    )
-                )
+            # Extract text content from LLM response
+            if isinstance(result, dict):
+                choices = result.get("choices", [])
+                content = choices[0]["message"]["content"] if choices else json.dumps(result)
+            else:
+                content = str(result)
+
+            msg_out = MessageOut(
+                session_id=msg_in.session_id,
+                channel=msg_in.channel,
+                body=MessageBody(
+                    content=content,
+                ),
+                metadata=msg_in.metadata,
             )
+            SessionStore.append(msg_out)
+            await self.msg_bus.out_queue.enqueue(msg_out)
