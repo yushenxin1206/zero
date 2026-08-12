@@ -146,3 +146,5 @@ class Edit(Tool):
                 "error": f"Failed to edit file: {e}",
                 "file_path": os.path.abspath(file_path),
             }
+
+

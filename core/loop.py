@@ -4,13 +4,12 @@
 3. Calls the agent runner
 4. Sends responses back
 """
-import json
-
-from core.context import Context
 from bus.queue import MessageBus
+from core.context import Context
 from core.runner import AgentRunner
+from datacls import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs
 from session.store import SessionStore
-from datacls import AgentRuntimeConfig, ProviderConfigs, Message, MessageBody, MessageIn, MessageOut
+from tools.registry import ToolRegistry
 
 
 class AgentLoop:
@@ -24,32 +23,33 @@ class AgentLoop:
             msg_bus: MessageBus,
             runtime_config: AgentRuntimeConfig,
             provider_configs: ProviderConfigs,
+            tool_registry: ToolRegistry | None = None,
     ):
         self.msg_bus = msg_bus
         self.runtime_config = runtime_config
         self.provider_configs = provider_configs
+        self.tool_registry = tool_registry
 
     async def run(self):
 
         while True:
             msg_in = await self.msg_bus.in_queue.dequeue()
             SessionStore.append(msg_in)
-            context = Context(msg_in.session_id, msg_in.channel)
+            context = Context(
+                session_id=msg_in.session_id,
+                channel=msg_in.channel,
+                tool_registry=self.tool_registry,
+            )
 
             runner = AgentRunner(
                 runtime_config=self.runtime_config,
                 running_context=context,
                 provider_configs=self.provider_configs,
+                tool_registry=self.tool_registry,
             )
 
-            result = await runner.run()
-
-            # Extract text content from LLM response
-            if isinstance(result, dict):
-                choices = result.get("choices", [])
-                content = choices[0]["message"]["content"] if choices else json.dumps(result)
-            else:
-                content = str(result)
+            # runner.run() returns final assistant text after all tool calls
+            content = await runner.run()
 
             msg_out = MessageOut(
                 session_id=msg_in.session_id,

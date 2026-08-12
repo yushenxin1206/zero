@@ -4,6 +4,7 @@ Build context for agent
 from typing import Any
 
 from session.store import SessionStore
+from tools.registry import ToolRegistry
 
 
 class Context:
@@ -12,9 +13,11 @@ class Context:
             self,
             session_id: str,
             channel: str,
+            tool_registry: ToolRegistry | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
+        self.tool_registry = tool_registry
 
     @property
     def _prompt(self) -> str:
@@ -30,15 +33,24 @@ class Context:
             }
         ]
         for m in history:
-            role = "user" if m.sender == "user" else "assistant"
-            msgs.append(
-                {
+            if m.sender == "user":
+                msgs.append({"role": "user", "content": m.body.content})
+            elif m.sender == "assistant":
+                msg: dict[str, Any] = {"role": "assistant", "content": m.body.content}
+                if m.body.tool_calls:
+                    msg["tool_calls"] = [tc.model_dump() for tc in m.body.tool_calls]
+                msgs.append(msg)
+            elif m.sender == "tool":
+                msgs.append({
+                    "role": "tool",
+                    "tool_call_id": m.body.tool_call_id,
                     "content": m.body.content,
-                    "role": role,
-                }
-            )
+                })
         return msgs
 
     @property
-    def tools(self) -> list | None:
-        return None
+    def tools(self) -> list[dict[str, Any]] | None:
+        if self.tool_registry is None:
+            return None
+        schemas = self.tool_registry.schemas()
+        return schemas if schemas else None
