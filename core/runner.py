@@ -61,6 +61,15 @@ class AgentRunner:
 
             choice = resp.get("choices", [{}])[0]
             msg = choice.get("message", {})
+
+            # 调试用，打印模型原始返回
+            logger.info("[llm resp] %s", json.dumps(resp) if isinstance(resp, dict) else str(resp))
+
+            # 打印模型思考过程
+            reasoning = msg.get("reasoning_content")
+            if reasoning:
+                logger.info("[reasoning] %s", reasoning)
+
             tool_calls_raw = msg.get("tool_calls")
 
             # No tool calls: final text reply
@@ -124,6 +133,8 @@ class AgentRunner:
                     kwargs = json.loads(tc.function.arguments or "{}")
                     result = await tool.run(**kwargs)
                     content = json.dumps(result, ensure_ascii=False)
+                    if len(content) > 2000:
+                        content = content[:2000] + "...truncated"
                 except Exception as e:
                     logger.exception("Tool execution failed: %s", tc.function.name)
                     content = json.dumps({"error": str(e)}, ensure_ascii=False)

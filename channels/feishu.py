@@ -133,8 +133,6 @@ class FeishuChannel:
                 id=message_id,
                 session_id=chat_id,
                 channel="feishu",
-                sender=sender_id or "feishu",
-                recipient="agent",
                 body=MessageBody(content=text),
                 metadata={
                     "source": "feishu",

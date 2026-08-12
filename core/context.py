@@ -21,7 +21,15 @@ class Context:
 
     @property
     def _prompt(self) -> str:
-        return "You are a helpful assistant, your name is TT."
+        return (
+            "You are a helpful assistant, your name is TT.\n"
+            "\n"
+            "Guidelines for tool usage:\n"
+            "- For simple questions (e.g. greetings, identity, general knowledge), respond directly without calling any tools.\n"
+            "- Only use tools when the user explicitly requests file operations or command execution.\n"
+            "- Do not explore the environment or read files unless the task requires it.\n"
+            "- When tools are needed, use the minimum number of calls to complete the task."
+        )
 
     @property
     def messages(self) -> list[dict[str, Any]]:
