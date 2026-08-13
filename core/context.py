@@ -51,9 +51,10 @@ class Context:
 - Respect privacy and security — never expose sensitive data.
 
 {self._memory}
-用户偏好/长期记忆/回话级记忆/按日期的记忆
     
 {self._skills}    
+
+Current working directory: {}
 """
 
     @property
@@ -64,12 +65,24 @@ class Context:
 
     @property
     def _memory(self) -> str:
+        # 用户偏好/长期记忆/回话级记忆/按日期的记忆
         return f"""## Memory Guidelines
 """
 
     @property
     def _skills(self) -> str:
         return f"""## Skill Guidelines
+The following skills provide specialized instructions for specific tasks.
+Use the read tool to load a skill's file when the task matches its description.
+When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
+
+<available_skills>
+  <skill>
+    <name>{skill.name}</name>
+    <description>{skill.description}</description>
+    <location>{skill.filePath}</location>
+  </skill>
+</available_skills>
 """
 
     @property
