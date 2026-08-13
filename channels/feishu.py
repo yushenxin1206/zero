@@ -131,7 +131,6 @@ class FeishuChannel:
             )
 
             msg_in = MessageIn(
-                id=message_id,
                 session_id=SessionStore.resolve_session("feishu", chat_id),
                 channel="feishu",
                 body=MessageBody(content=text),

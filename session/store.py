@@ -146,3 +146,4 @@ class SessionStore:
                     continue
                 messages.append(Message.model_validate_json(line))
         return messages
+
