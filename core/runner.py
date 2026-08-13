@@ -85,7 +85,7 @@ class AgentRunner:
                 await self._execute_and_persist(tc)
 
         logger.warning("Agent runner exceeded max_iterations=%d", self.runtime_config.max_iterations)
-        return "抱歉，处理过程超过最大迭代次数，请稍后重试。"
+        return "Agent runner exceeded max_iterations."
 
     @staticmethod
     def _parse_tool_call(raw: dict[str, Any]) -> ToolCall:
@@ -133,8 +133,8 @@ class AgentRunner:
                     kwargs = json.loads(tc.function.arguments or "{}")
                     result = await tool.run(**kwargs)
                     content = json.dumps(result, ensure_ascii=False)
-                    if len(content) > 2000:
-                        content = content[:2000] + "...truncated"
+                    if len(content) > 10000:
+                        content = content[:10000] + "...truncated"
                 except Exception as e:
                     logger.exception("Tool execution failed: %s", tc.function.name)
                     content = json.dumps({"error": str(e)}, ensure_ascii=False)
