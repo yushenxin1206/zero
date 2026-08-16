@@ -4,10 +4,16 @@ Build context for agent
 import platform
 
 from typing import Any
+from pathlib import Path
+
+import frontmatter
 
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 from config import ZERO_ROOT
+
+
+CWD = Path(__file__).parent.parent
 
 
 class Context:
@@ -54,8 +60,9 @@ class Context:
     
 {self._skills}    
 
-Current working directory: {}
+Current working directory: {CWD}
 """
+
 
     @property
     def _runtime(self) -> str:
@@ -66,22 +73,62 @@ Current working directory: {}
     @property
     def _memory(self) -> str:
         # 用户偏好/长期记忆/回话级记忆/按日期的记忆
+        # 用户偏好 user.md
+        # 长期记忆 agent.md
+        # 会话级记忆
+        memory_path = ZERO_ROOT / 'memory.md'
+        with open(memory_path, encoding="utf-8") as f:
+            memory = f.read()
         return f"""## Memory Guidelines
+You have access to your long-term memory showed below. It is stored at {memory_path}, you can update it when necessary.
+
+<memory>
+{memory}
+</memory>
+
+Use the above memory to personalize your response. If the memory contradicts the user's current request, prioritize the current request but note the discrepancy        
 """
+
+    @staticmethod
+    def _parse_skill_meta(skill_file: Path) -> dict[str, str]:
+        """Parse YAML frontmatter of a skill.md file for name and description."""
+        try:
+            post = frontmatter.load(skill_file)
+        except (OSError, ValueError):
+            return {}
+        meta = post.metadata or {}
+        return {k: str(v) for k, v in meta.items()}
 
     @property
     def _skills(self) -> str:
+        skills_path = CWD / "skills"
+        entries: list[str] = []
+
+        if skills_path.is_dir():
+            for skill_dir in sorted(skills_path.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                skill_file = skill_dir / "skill.md"
+                if not skill_file.exists():
+                    continue
+                meta = self._parse_skill_meta(skill_file)
+                entries.append(
+                    f"  <skill>\n"
+                    f"    <name>{meta.get('name', '')}</name>\n"
+                    f"    <description>{meta.get('description', '')}</description>\n"
+                    f"    <location>{skill_file}</location>\n"
+                    f"  </skill>"
+                )
+
+        available_skills = "\n".join(entries)
+
         return f"""## Skill Guidelines
 The following skills provide specialized instructions for specific tasks.
 Use the read tool to load a skill's file when the task matches its description.
 When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.
 
 <available_skills>
-  <skill>
-    <name>{skill.name}</name>
-    <description>{skill.description}</description>
-    <location>{skill.filePath}</location>
-  </skill>
+{available_skills}
 </available_skills>
 """
 
@@ -116,3 +163,8 @@ When a skill file references a relative path, resolve it against the skill direc
             return None
         schemas = self.tool_registry.schemas()
         return schemas if schemas else None
+
+
+if __name__ == "__main__":
+    skill_file = CWD / "skills" / "web-search" / "skill.md"
+    print(Context._parse_skill_meta(skill_file))
