@@ -131,7 +131,10 @@ class AgentRunner:
             else:
                 try:
                     kwargs = json.loads(tc.function.arguments or "{}")
-                    result = await tool.run(**kwargs)
+                    result = await tool.run(
+                        context=self.context.tool_context,
+                        **kwargs,
+                    )
                     content = json.dumps(result, ensure_ascii=False)
                     if len(content) > 10000:
                         content = content[:10000] + "...truncated"

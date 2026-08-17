@@ -55,7 +55,7 @@ class Edit(Tool):
             "required": ["file_path", "old_string", "new_string"],
         }
 
-    async def run(self, **kwargs):
+    async def run(self, context=None, **kwargs):
         file_path = kwargs["file_path"]
         old_string = kwargs["old_string"]
         new_string = kwargs["new_string"]

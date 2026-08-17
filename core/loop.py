@@ -7,7 +7,7 @@
 from bus.queue import MessageBus
 from core.context import Context
 from core.runner import AgentRunner
-from datacls import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs
+from datacls import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs, ToolContext
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 
@@ -35,10 +35,29 @@ class AgentLoop:
         while True:
             msg_in = await self.msg_bus.in_queue.dequeue()
             SessionStore.append(msg_in)
+
+            # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
+            tool_context = ToolContext(
+                channel=msg_in.channel,
+                session_id=msg_in.session_id,
+                message_id=msg_in.metadata.get("message_id", ""),
+                sender_id=msg_in.metadata.get("sender_id", ""),
+                metadata=msg_in.metadata,
+            )
+
+            # 定时任务触发：只发单条指令，不带历史上下文
+            single_message = (
+                msg_in.body.content
+                if msg_in.metadata.get("source") == "scheduler"
+                else None
+            )
+
             context = Context(
                 session_id=msg_in.session_id,
                 channel=msg_in.channel,
                 tool_registry=self.tool_registry,
+                tool_context=tool_context,
+                single_message=single_message,
             )
 
             runner = AgentRunner(

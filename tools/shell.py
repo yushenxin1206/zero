@@ -48,7 +48,7 @@ class Shell(Tool):
             "required": ["command"],
         }
 
-    async def run(self, **kwargs):
+    async def run(self, context=None, **kwargs):
         command = kwargs["command"]
         working_dir = kwargs.get("working_dir")
         timeout = kwargs.get("timeout", 60)

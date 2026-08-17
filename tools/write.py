@@ -50,7 +50,7 @@ class Write(Tool):
             "required": ["file_path", "content"],
         }
 
-    async def run(self, **kwargs):
+    async def run(self, context=None, **kwargs):
         file_path = kwargs["file_path"]
         content = kwargs["content"]
         mode = kwargs.get("mode", "overwrite")

@@ -4,6 +4,8 @@ Base tool class
 from abc import ABC, abstractmethod
 from typing import Any
 
+from datacls import ToolContext
+
 
 class Tool(ABC):
     @property
@@ -36,6 +38,6 @@ class Tool(ABC):
         }
 
     @abstractmethod
-    async def run(self, **kwargs):
-        """工具实际执行逻辑"""
+    async def run(self, context: ToolContext | None = None, **kwargs):
+        """工具实际执行逻辑。context 由 runner 统一注入当前会话上下文。"""
         pass

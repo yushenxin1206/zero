@@ -51,7 +51,7 @@ class Read(Tool):
             "required": ["file_path"],
         }
 
-    async def run(self, **kwargs):
+    async def run(self, context=None, **kwargs):
         file_path = kwargs["file_path"]
         start_line = kwargs.get("start_line")
         end_line = kwargs.get("end_line")

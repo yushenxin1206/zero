@@ -8,6 +8,7 @@ from pathlib import Path
 
 import frontmatter
 
+from datacls import ToolContext
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 from config import ZERO_ROOT
@@ -23,10 +24,18 @@ class Context:
             session_id: str,
             channel: str,
             tool_registry: ToolRegistry | None = None,
+            tool_context: ToolContext | None = None,
+            single_message: str | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
         self.tool_registry = tool_registry
+        self.tool_context = tool_context or ToolContext(
+            channel=channel,
+            session_id=session_id,
+        )
+        # 定时任务触发：只保留单条指令，不带历史上下文
+        self.single_message = single_message
 
     @property
     def _prompt(self) -> str:
@@ -63,7 +72,6 @@ class Context:
 Current working directory: {CWD}
 """
 
-
     @property
     def _runtime(self) -> str:
         return f"""## Runtime
@@ -77,16 +85,22 @@ Current working directory: {CWD}
         # 长期记忆 agent.md
         # 会话级记忆
         memory_path = ZERO_ROOT / 'memory.md'
+
+        if not memory_path.exists():
+            Path.mkdir(memory_path.parent, parents=True, exist_ok=True)
+            with open(memory_path, 'w+') as f:
+                f.write("I am Zero, a professional and efficient assistant.")
+
         with open(memory_path, encoding="utf-8") as f:
             memory = f.read()
         return f"""## Memory Guidelines
-You have access to your long-term memory showed below. It is stored at {memory_path}, you can update it when necessary.
+Your long-term memory is shown below. It is stored at {memory_path}, and you can update it when necessary.
 
 <memory>
 {memory}
 </memory>
 
-Use the above memory to personalize your response. If the memory contradicts the user's current request, prioritize the current request but note the discrepancy        
+Use the above memory to personalize your response. If the memory contradicts the user's current request, prioritize the current request but note the discrepancy.
 """
 
     @staticmethod
@@ -134,6 +148,13 @@ When a skill file references a relative path, resolve it against the skill direc
 
     @property
     def messages(self) -> list[dict[str, Any]]:
+        # 定时任务触发：只发单条指令，不带历史
+        if self.single_message is not None:
+            return [
+                {"content": self._prompt, "role": "system"},
+                {"content": self.single_message, "role": "user"},
+            ]
+
         history = SessionStore.load_history(self.session_id, self.channel)
         msgs: list[dict[str, Any]] = [
             {
@@ -168,3 +189,4 @@ When a skill file references a relative path, resolve it against the skill direc
 if __name__ == "__main__":
     skill_file = CWD / "skills" / "web-search" / "skill.md"
     print(Context._parse_skill_meta(skill_file))
+
