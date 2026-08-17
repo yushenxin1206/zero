@@ -3,14 +3,14 @@ import logging
 
 from bus.queue import MessageBus
 from core.loop import AgentLoop
-from core.scheduler import Scheduler
 from channels.feishu import FeishuChannel
+from scheduler import Scheduler
 from tools.registry import ToolRegistry
 from tools.read import Read
 from tools.write import Write
 from tools.edit import Edit
 from tools.shell import Shell
-from tools.scheduler_task import CreateScheduledTask
+from tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from config import default_config
 
 
@@ -27,6 +27,7 @@ def build_tool_registry() -> ToolRegistry:
     registry.register(Edit())
     registry.register(Shell())
     registry.register(CreateScheduledTask())
+    registry.register(CancelScheduledTask())
     return registry
 
 
@@ -53,6 +54,7 @@ async def main():
         agent_loop.run(),
         channel.start(),
         scheduler.run(),
+        msg_bus.run_out_dispatcher(),
     )
 
 asyncio.run(main())

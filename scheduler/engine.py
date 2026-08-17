@@ -5,7 +5,7 @@ Runs as an asyncio background task. Polls the SchedulerStore for due tasks
 every POLL_INTERVAL_SECONDS. For each due task it enqueues a trigger message
 into the incoming bus; the AgentLoop processes it like a normal message, so
 the result is routed back to the originating session (via metadata.chat_id)
-with minimal conversation history.
+with the session's conversation history.
 
 For recurring tasks, after dispatch the next trigger_at is computed from the
 cron expression and the task stays pending.
@@ -16,8 +16,8 @@ from datetime import datetime
 
 from bus.queue import MessageBus
 from datacls import MessageBody, MessageIn, ScheduleTask
-from session.scheduler import SchedulerStore
-from utils.cron import next_run
+from scheduler.cron import next_run
+from scheduler.store import SchedulerStore
 
 logger = logging.getLogger(__name__)
 
@@ -76,4 +76,3 @@ class Scheduler:
             SchedulerStore.reschedule(task.id, trigger_at=next_trigger, last_run_at=now)
         else:
             SchedulerStore.update_status(task.id, "done", last_run_at=now)
-

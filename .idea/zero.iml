@@ -6,7 +6,7 @@
       <sourceFolder url="file://$MODULE_DIR$/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/.venv" />
     </content>
-    <orderEntry type="jdk" jdkName="D:\User\Desktop\Python\pythonProject\zero\.venv (2)" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="Python 3.14 (zero)" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
 </module>

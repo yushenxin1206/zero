@@ -23,7 +23,7 @@ from lark_oapi.api.im.v1 import (
     CreateMessageResponse,
 )
 
-from bus.queue import MessageBus
+from bus.queue import MessageBus, MessageOutQueue
 from datacls import FeishuConfig, MessageBody, MessageIn, MessageOut
 from session.store import SessionStore
 
@@ -55,6 +55,10 @@ class FeishuChannel:
     ):
         self.config = config
         self.msg_bus = msg_bus
+        # 向 bus 认领 feishu 专属出站队列，dispatcher 只会路由 channel=feishu 的消息
+        self._out_queue: MessageOutQueue | None = (
+            msg_bus.subscribe_out("feishu") if msg_bus else None
+        )
 
         # lark API client (for sending messages)
         self._lark_client: lark.Client | None = None
@@ -224,10 +228,17 @@ class FeishuChannel:
     # ------------------------------------------------------------------
 
     async def _bus_sender_loop(self) -> None:
-        """Consume MessageOut from the bus and send to Feishu."""
+        """Consume MessageOut from the feishu-only queue and send to Feishu."""
         while self._running:
             try:
-                msg_out = await self.msg_bus.out_queue.dequeue()
+                msg_out = await self._out_queue.dequeue()
+                # 防御：正常情况下 dispatcher 已按 channel 路由，不会走到这里
+                if msg_out.channel != "feishu":
+                    logger.warning(
+                        "Feishu channel got MessageOut for channel %r, ignored",
+                        msg_out.channel,
+                    )
+                    continue
                 await self.send_response(msg_out)
             except Exception:
                 logger.exception("Error sending message to Feishu")

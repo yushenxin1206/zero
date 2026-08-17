@@ -1,11 +1,10 @@
 """
-Scheduled task storage module.
+Scheduled task storage.
 
 Persists scheduled tasks as JSONL:
     ~/.zero/scheduler/tasks.jsonl
 one ScheduleTask per line, keyed by task id.
 """
-import json
 from datetime import datetime
 from pathlib import Path
 

@@ -25,7 +25,6 @@ class Context:
             channel: str,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
-            single_message: str | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
@@ -34,8 +33,6 @@ class Context:
             channel=channel,
             session_id=session_id,
         )
-        # 定时任务触发：只保留单条指令，不带历史上下文
-        self.single_message = single_message
 
     @property
     def _prompt(self) -> str:
@@ -148,13 +145,6 @@ When a skill file references a relative path, resolve it against the skill direc
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        # 定时任务触发：只发单条指令，不带历史
-        if self.single_message is not None:
-            return [
-                {"content": self._prompt, "role": "system"},
-                {"content": self.single_message, "role": "user"},
-            ]
-
         history = SessionStore.load_history(self.session_id, self.channel)
         msgs: list[dict[str, Any]] = [
             {

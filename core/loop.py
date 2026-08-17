@@ -45,19 +45,11 @@ class AgentLoop:
                 metadata=msg_in.metadata,
             )
 
-            # 定时任务触发：只发单条指令，不带历史上下文
-            single_message = (
-                msg_in.body.content
-                if msg_in.metadata.get("source") == "scheduler"
-                else None
-            )
-
             context = Context(
                 session_id=msg_in.session_id,
                 channel=msg_in.channel,
                 tool_registry=self.tool_registry,
                 tool_context=tool_context,
-                single_message=single_message,
             )
 
             runner = AgentRunner(
