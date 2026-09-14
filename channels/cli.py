@@ -225,13 +225,23 @@ class CLIChannel:
         if not history:
             self.console.print("[dim]当前会话暂无消息[/dim]")
             return
+        if sys.platform == "win32":
+            # Windows 下 console.pager() 走 pydoc tempfile_pager，用本地代码页
+            # (GBK) 写临时文件再过 more.com："›" 不在 GBK 中，会被
+            # backslashreplace 成字面量 r"\u203a"。绕过 pager 直接输出，
+            # 翻页交给终端 scrollback。
+            self._print_history_lines(history)
+            return
         with self.console.pager():
-            for m in history:
-                if m.sender == "tool":
-                    self.console.print(
-                        f"[dim]tool › {self._clip(m.body.content or '', 300)}[/dim]")
-                else:
-                    self._render_message_line(m, max_len=100000)
+            self._print_history_lines(history)
+
+    def _print_history_lines(self, history):
+        for m in history:
+            if m.sender == "tool":
+                self.console.print(
+                    f"[dim]tool › {self._clip(m.body.content or '', 300)}[/dim]")
+            else:
+                self._render_message_line(m, max_len=100000)
 
     # ------------------------------------------------------------------
     # Chat loop
