@@ -89,12 +89,16 @@ class StreamEvent(Base):
       - "tool_call": a tool call started (content = "name(args)")
       - "done":      the reply for this turn is complete (content = full text)
       - "error":     the turn failed (content = error message)
+
+    metadata 由 AgentLoop 从触发消息的 metadata 复制（含 scheduler 注入的
+    source / task_id 等），让 channel 端能识别后台 turn 的来源。
     """
     channel: str = ""
     session_id: str = ""
     turn_id: str = ""  # id of the MessageIn this event belongs to
     kind: str = "delta"
     content: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

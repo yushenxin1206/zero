@@ -79,9 +79,10 @@ async def run(cli_only: bool = False):
         {core, cli_task}, return_when=asyncio.FIRST_COMPLETED)
     for t in background:
         t.cancel()
+    task_names = {core: "agent-loop", cli_task: "cli-channel"}
     for t in done:
         if not t.cancelled() and (exc := t.exception()) is not None:
-            log.error("core task failed", exc_info=exc)
+            log.error("%s task failed", task_names.get(t, "unknown"), exc_info=exc)
 
 
 def parse_args():

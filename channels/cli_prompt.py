@@ -28,6 +28,8 @@ COMMANDS: list[tuple[str, str]] = [
     ("/new", "新建会话"),
     ("/sessions", "选择 / 切换历史会话"),
     ("/title", "设置 / 查看当前会话标题"),
+    ("/tasks", "查看定时任务（/tasks all 查看全部）"),
+    ("/bgstream", "开关定时任务结果的流式输出"),
     ("/history", "分页查看本会话全部历史"),
     ("/help", "显示可用命令"),
     ("/quit", "退出 CLI"),

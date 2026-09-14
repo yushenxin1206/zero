@@ -6,7 +6,11 @@ Features:
      session / create a new one (channel = "cli").
   2. Real-time streaming rendering of the assistant reply (Live + Markdown),
      with tool-call status indicators.
-  3. Slash commands: /new /sessions /history /help /quit
+  3. Slash commands: /new /sessions /title /tasks /bgstream /history /help /quit
+  4. Standing outbound consumers: results of background turns (scheduled
+     tasks, interrupted turns) are demultiplexed by turn_id and rendered
+     asynchronously above the input prompt — they no longer depend on the
+     user submitting a message to be seen.
 
 Input runs in a worker thread (blocking input()) while the event loop
 keeps consuming stream events, so rendering stays live.
@@ -15,6 +19,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from uuid import uuid4
 
 from rich.console import Console, Group
@@ -29,9 +34,15 @@ from rich.text import Text
 
 from bus.queue import MessageBus
 from channels.cli_prompt import COMMANDS, CommandStats, build_prompt_session
-from datacls import MessageBody, MessageIn, SessionMeta
+from datacls import MessageBody, MessageIn, MessageOut, SessionMeta, StreamEvent
+from prompt_toolkit.application import run_in_terminal
+from prompt_toolkit.formatted_text import ANSI as PtkANSI
+from prompt_toolkit.patch_stdout import patch_stdout
+from prompt_toolkit.shortcuts import print_formatted_text
 from prompt_toolkit.styles import Style
+from scheduler.store import SchedulerStore
 from session.store import SESSIONS_ROOT, SessionStore
+from utils.notify import toast
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +56,7 @@ _PROMPT_STYLE = Style.from_dict({"prompt": "bold ansicyan"})
 # alias -> canonical command (canonical names defined in cli_prompt.COMMANDS)
 _COMMAND_ALIASES = {
     "/n": "/new", "/s": "/sessions", "/h": "/history", "/t": "/title",
-    "/?": "/help", "/q": "/quit", "/exit": "/quit",
+    "/ts": "/tasks", "/?": "/help", "/q": "/quit", "/exit": "/quit",
 }
 
 
@@ -72,6 +83,32 @@ class CLIChannel:
         self._stats = CommandStats()
         self._use_ptk = sys.stdin.isatty() and sys.stdout.isatty()
         self._prompt = build_prompt_session(self._stats) if self._use_ptk else None
+
+        # ---- turn demultiplexing state (standing consumers) ----
+        # turn currently rendered by _render_turn; set before the MessageIn
+        # is enqueued so early events cannot be misrouted to the bg pipeline
+        self._active_turn_id = ""
+        # events / final MessageOut belonging to the active interactive turn
+        self._turn_events: asyncio.Queue[StreamEvent] = asyncio.Queue()
+        self._turn_out: asyncio.Queue[MessageOut] = asyncio.Queue()
+        # serializes Live rendering and async-result printing so a scheduled
+        # result never tears into an active streaming frame
+        self._render_lock = asyncio.Lock()
+        # background turns (scheduled tasks, interrupted turns) being accumulated
+        self._bg_turns: dict[str, dict] = {}
+        # turn_ids already finalized (dedup stream-done vs MessageOut, and
+        # discard late MessageOut of a normally finished interactive turn)
+        self._bg_finalized: set[str] = set()
+        # completed background results waiting to be rendered (FIFO worker)
+        self._async_results: asyncio.Queue[dict] = asyncio.Queue()
+        # results rendered since the last user input (prompt ⏰N indicator)
+        self._unread = 0
+        # /bgstream toggle: stream background turn deltas live above the prompt
+        self._bg_stream_enabled = False
+        # True while prompt_async is awaiting input (ptk app running);
+        # async prints use the ptk-native above-prompt path only then
+        self._prompt_active = False
+        self._listener_tasks: list[asyncio.Task] = []
 
     # ------------------------------------------------------------------
     # Session binding persistence
@@ -109,10 +146,10 @@ class CLIChannel:
     def _print_banner(self):
         title = SessionStore.get_title(CHANNEL, self.session_id)
         title_part = f" · [bold]{escape(title)}[/bold]" if title else ""
-        self.console.print(Panel(
+        self.console.print(self._panel(
             "[bold]zero[/bold] · cli channel\n"
             f"session [dim]{self.session_id[:8]}[/dim]{title_part} · "
-            "commands: /new /sessions /title /history /help /quit",
+            "commands: /new /sessions /title /tasks /bgstream /history /help /quit",
             border_style="cyan",
         ))
 
@@ -196,9 +233,19 @@ class CLIChannel:
     def _clip(text: str, max_len: int) -> str:
         return text if len(text) <= max_len else text[:max_len] + CLIChannel.TRUNCATED
 
+    def _panel(self, renderable, **kwargs) -> Panel:
+        """构造宽度 = 终端宽度 - 1 的 Panel。
+
+        末列留余量：一些终端的 overlay 滚动条会遮住最后一列，且部分
+        终端对 emoji 的单元格宽度计算与 rich 不一致，右边框贴边时
+        容易看起来"没有闭合"。
+        """
+        kwargs.setdefault("width", max(20, self.console.width - 1))
+        return Panel(renderable, **kwargs)
+
     def _assistant_panel(self, text: str):
         body: object = Markdown(text) if text else Text("(thinking ...)", style="dim")
-        return Panel(
+        return self._panel(
             body, title="zero",
             title_align="left", border_style="green",
         )
@@ -265,7 +312,19 @@ class CLIChannel:
 
         self._print_banner()
         self._print_recent_history()
-        await self._chat_loop()
+
+        # 常驻出站消费者：stream / out 队列各一个，外加异步结果渲染 worker。
+        # 定时任务等后台 turn 的结果不再依赖用户发消息才被看到。
+        self._listener_tasks = [
+            asyncio.create_task(self._stream_listener()),
+            asyncio.create_task(self._out_listener()),
+            asyncio.create_task(self._async_render_worker()),
+        ]
+        try:
+            await self._chat_loop()
+        finally:
+            for t in self._listener_tasks:
+                t.cancel()
 
     def _confirm_or_switch(self) -> bool:
         """After restoring a binding, let the user enter the session or re-pick."""
@@ -283,10 +342,27 @@ class CLIChannel:
         """Read one line of user input (prompt_toolkit or plain fallback).
 
         The "you ›" prompt is styled bold cyan to match the history display.
+        The patch_stdout() context manager lets async prints (scheduled-task
+        results) render above the prompt without disturbing the line being
+        typed. raw=True is required: the default raw=False routes through
+        Output.write(), which escapes ANSI sequences — rich output would
+        show up as literal "?[2m ... ?[0m" garbage. write_raw passes them
+        through to Windows10_Output, which renders VT colors natively.
+        (prompt_async itself has no patch_stdout kwarg — passing one
+        raises TypeError on prompt_toolkit 3.x.)
         """
         if self._prompt is not None:
-            return await self._prompt.prompt_async(
-                [("class:prompt", "you › ")], style=_PROMPT_STYLE)
+            # 未读指示符：上一轮输入以来到达的后台结果数
+            prompt_text = "you › " if not self._unread else f"you ⏰{self._unread} › "
+            self._prompt_active = True
+            try:
+                with patch_stdout(raw=True):
+                    return await self._prompt.prompt_async(
+                        [("class:prompt", prompt_text)],
+                        style=_PROMPT_STYLE,
+                    )
+            finally:
+                self._prompt_active = False
         # 非终端回退：输入无 prompt，提交后用 rich 打印高亮行，与历史一致
         text = await asyncio.to_thread(input, "")
         self.console.print(f"[bold cyan]you ›[/bold cyan] {text}")
@@ -302,6 +378,7 @@ class CLIChannel:
                 return
 
             text = (user_text or "").strip()
+            self._unread = 0  # 用户已回到终端，清零未读指示
             if not text:
                 continue
             if text.startswith("/"):
@@ -318,15 +395,19 @@ class CLIChannel:
                     "sender_id": self._source_id,
                 },
             )
+            # 先入激活 turn 再入队，保证 listener 不会把本轮最早的事件
+            # 误判成后台 turn
+            self._active_turn_id = msg.id
             await self.msg_bus.in_queue.enqueue(msg)
             try:
                 await self._render_turn(msg.id)
             except asyncio.CancelledError:
                 # Ctrl+C during generation: abort rendering; the agent keeps
-                # running in the background and leftover events are skipped
-                # by turn_id in future renders.
+                # running in the background and the remaining events flow
+                # into the background pipeline, so the finished reply is
+                # still rendered asynchronously when it completes.
                 self.console.print(
-                    "\n[yellow]已中断渲染，回答仍在后台生成[/yellow]")
+                    "\n[yellow]已中断渲染，回答完成后将自动显示[/yellow]")
 
     def _handle_title(self, arg: str):
         """`/title` shows the current title; `/title <text>` renames."""
@@ -343,6 +424,64 @@ class CLIChannel:
             self.console.print(f"[green]标题已更新:[/green] {escape(arg)}")
         else:
             self.console.print("[yellow]当前会话不在索引中，无法命名[/yellow]")
+
+    def _handle_tasks(self, arg: str):
+        """`/tasks` 列出当前会话的定时任务；`/tasks all` 列出 cli 渠道全部。"""
+        show_all = arg.strip().lower() == "all"
+        tasks = [t for t in SchedulerStore.load_all() if t.channel == CHANNEL]
+        if not show_all:
+            tasks = [t for t in tasks if t.session_id == self.session_id]
+        if not tasks:
+            hint = "" if show_all else "（/tasks all 查看全部）"
+            self.console.print(f"[dim]暂无定时任务{hint}[/dim]")
+            return
+
+        status_style = {
+            "pending": "yellow", "running": "green",
+            "done": "dim", "failed": "red", "cancelled": "dim",
+        }
+        table = Table(
+            title=f"定时任务（{'全部' if show_all else '当前会话'}）", expand=True)
+        table.add_column("状态", justify="center")
+        table.add_column("类型")
+        table.add_column("下次触发")
+        table.add_column("最近执行")
+        table.add_column("指令")
+        table.add_column("ID", style="dim")
+
+        def _fmt(dt) -> str:
+            return dt.strftime("%m-%d %H:%M") if dt else "-"
+
+        for t in sorted(tasks, key=lambda x: (x.trigger_at is None, x.trigger_at or x.created_at)):
+            style = status_style.get(t.status, "")
+            instruction = t.instruction.removeprefix("[Scheduled Task]")
+            table.add_row(
+                f"[{style}]{t.status}[/{style}]" if style else t.status,
+                t.schedule_type + (f" {t.cron}" if t.cron else ""),
+                _fmt(t.trigger_at),
+                _fmt(t.last_run_at),
+                escape(self._clip(instruction, 40)),
+                t.id[:8],
+            )
+        self.console.print(table)
+
+    def _handle_bgstream(self, arg: str):
+        """`/bgstream` 切换定时任务结果的流式输出；`/bgstream on|off` 显式设置。"""
+        arg = arg.strip().lower()
+        if arg == "on":
+            self._bg_stream_enabled = True
+        elif arg == "off":
+            self._bg_stream_enabled = False
+        else:
+            self._bg_stream_enabled = not self._bg_stream_enabled
+        if self._bg_stream_enabled:
+            self.console.print(
+                "[green]定时任务流式输出已开启[/green] "
+                "[dim]（任务输出将实时打印在输入行上方）[/dim]")
+        else:
+            self.console.print(
+                "[green]定时任务流式输出已关闭[/green] "
+                "[dim]（任务完成后一次性展示结果）[/dim]")
 
     def _handle_command(self, text: str) -> bool:
         """Handle a slash command. Returns False to exit the chat loop."""
@@ -365,6 +504,12 @@ class CLIChannel:
             return True
         if cmd in ("/title", "/t"):
             self._handle_title(_arg)
+            return True
+        if cmd in ("/tasks", "/ts"):
+            self._handle_tasks(_arg)
+            return True
+        if cmd == "/bgstream":
+            self._handle_bgstream(_arg)
             return True
         if cmd in ("/history", "/h"):
             self._print_full_history()
@@ -394,7 +539,8 @@ class CLIChannel:
         return body
 
     async def _render_turn(self, turn_id: str):
-        """Consume stream events for one turn and render them live."""
+        """Render one interactive turn live, consuming events that the
+        standing stream listener routed into this turn's private queue."""
         acc = ""
         status = ""
         live = Live(
@@ -403,33 +549,217 @@ class CLIChannel:
             refresh_per_second=12,
             vertical_overflow="visible",
         )
-        live.start()
         done = False
         try:
-            while not done:
-                event = await self._stream_queue.dequeue()
-                if event.turn_id != turn_id or event.session_id != self.session_id:
-                    # leftover from an interrupted turn or another session — skip
-                    continue
-                if event.kind == "delta":
-                    acc += event.content
-                elif event.kind == "tool_call":
-                    status = f"调用工具 {self._clip(event.content, 90)}"
-                elif event.kind == "error":
-                    live.stop()
-                    self.console.print(f"[red]出错:[/red] {event.content}")
-                    return
-                elif event.kind == "done":
-                    if event.content and not acc:
-                        acc = event.content
-                    done = True
-                live.update(self._frame(acc, status))
+            # 持证渲染：定时任务结果等异步输出会等本轮 Live 结束后再打印，
+            # 避免撕裂流式画面
+            async with self._render_lock:
+                live.start()
+                while not done:
+                    event = await self._turn_events.get()
+                    if event.turn_id != turn_id:
+                        # 防御：listener 已按 active turn 路由，正常不会走到
+                        continue
+                    if event.kind == "delta":
+                        acc += event.content
+                    elif event.kind == "tool_call":
+                        status = f"调用工具 {self._clip(event.content, 90)}"
+                    elif event.kind == "error":
+                        live.stop()
+                        self.console.print(f"[red]出错:[/red] {event.content}")
+                        done = True  # 视为终结，迟到的 MessageOut 不再重复渲染
+                    elif event.kind == "done":
+                        if event.content and not acc:
+                            acc = event.content
+                        done = True
+                    live.update(self._frame(acc, status))
         finally:
             live.stop()
+            # 正常终结（done/error）的 turn：迟到的 MessageOut 由后台管线丢弃；
+            # 被 Ctrl+C 中断的 turn 不标记，剩余事件流入后台管线，
+            # 完成后作为「后台回答」自动渲染
+            if done:
+                self._bg_finalized.add(turn_id)
+            if self._active_turn_id == turn_id:
+                self._active_turn_id = ""
             self.console.print()
 
         # Drain the matching final MessageOut so queues stay in sync.
         try:
-            await asyncio.wait_for(self._out_queue.dequeue(), timeout=2)
+            await asyncio.wait_for(self._turn_out.get(), timeout=2)
         except (asyncio.TimeoutError, TimeoutError):
             pass
+
+    # ------------------------------------------------------------------
+    # Standing consumers: demultiplex outbound traffic by turn_id
+    # ------------------------------------------------------------------
+
+    async def _stream_listener(self):
+        """Standing consumer of the channel's stream queue.
+
+        Events for the active interactive turn are forwarded to
+        _render_turn's private queue; everything else (scheduled tasks,
+        interrupted turns) goes to the background pipeline. Never blocks
+        on the render lock, so the active turn can never starve.
+        """
+        while True:
+            event = await self._stream_queue.dequeue()
+            if event.turn_id and event.turn_id == self._active_turn_id:
+                await self._turn_events.put(event)
+            else:
+                self._handle_bg_stream_event(event)
+
+    async def _out_listener(self):
+        """Standing consumer of the channel's MessageOut queue."""
+        while True:
+            msg = await self._out_queue.dequeue()
+            turn_id = msg.metadata.get("turn_id", "")
+            if turn_id and turn_id == self._active_turn_id:
+                await self._turn_out.put(msg)
+            else:
+                self._finalize_bg_turn(
+                    turn_id or msg.id,
+                    text=msg.body.content or "",
+                    session_id=msg.session_id,
+                    metadata=msg.metadata,
+                )
+
+    # ------------------------------------------------------------------
+    # Background pipeline: accumulate async turns, render on completion
+    # ------------------------------------------------------------------
+
+    def _handle_bg_stream_event(self, event: StreamEvent):
+        acc = self._bg_turns.setdefault(event.turn_id, {
+            "text": "",
+            "session_id": event.session_id,
+            "metadata": dict(event.metadata),
+            "buf": "",
+            "last_flush": 0.0,
+            "streamed": False,
+        })
+        if event.kind == "delta":
+            acc["text"] += event.content
+            if self._bg_stream_enabled:
+                self._bg_stream_push(acc, event.content)
+        elif event.kind == "tool_call":
+            if self._bg_stream_enabled:
+                self._bg_stream_push(acc, f"\n[调用工具 {event.content}]\n")
+        elif event.kind in ("done", "error"):
+            self._finalize_bg_turn(
+                event.turn_id,
+                text=event.content or acc["text"],
+                session_id=acc["session_id"],
+                metadata=acc["metadata"],
+                error=event.kind == "error",
+                streamed=acc["streamed"],
+            )
+
+    def _print_above_prompt(self, renderable, *, end: str = "\n"):
+        """Print a rich renderable above the active input prompt.
+
+        提示符活跃时不走 patch_stdout 代理写原始 ANSI：那条路径曾经把
+        转义序列转义成 "?[2m" 乱码（raw=False），raw 直通又绕过了 ptk
+        渲染器的属性状态管理，导致面板颜色状态不闭合（黄色"流"出边框）。
+        这里把 rich 渲染结果捕获为 ANSI 字符串，交给 ptk 自己的
+        print_formatted_text 管线重新渲染——它首尾都会显式
+        reset_attributes，保证颜色闭合；run_in_terminal 负责在提示符
+        上方输出并重绘提示符。提示符不活跃时直接打印到真实 stdout。
+        """
+        if self._use_ptk and self._prompt_active:
+            with self.console.capture() as capture:
+                self.console.print(renderable, end=end)
+            ansi = capture.get()
+            run_in_terminal(
+                lambda: print_formatted_text(PtkANSI(ansi), end=""),
+                in_executor=False,
+            )
+        else:
+            self.console.print(renderable, end=end)
+
+    def _bg_stream_push(self, acc: dict, chunk: str):
+        """Live-print background turn output above the prompt (/bgstream on).
+
+        Throttled and skipped while an interactive Live render holds the
+        render lock — the completion panel will carry the full text then.
+        """
+        if self._render_lock.locked():
+            return
+        acc["buf"] += chunk
+        now = time.monotonic()
+        if (now - acc["last_flush"] < 0.4
+                and "\n" not in acc["buf"] and len(acc["buf"]) < 200):
+            return
+        acc["last_flush"] = now
+        text, acc["buf"] = acc["buf"], ""
+        if not acc["streamed"]:
+            self._print_above_prompt("[dim]⏰ 后台任务输出：[/dim]")
+            acc["streamed"] = True
+        self._print_above_prompt(Text(text, style="dim"), end="")
+
+    def _finalize_bg_turn(self, turn_id: str, *, text: str, session_id: str,
+                          metadata: dict, error: bool = False,
+                          streamed: bool = False):
+        """Finalize a background turn exactly once (stream done and the
+        final MessageOut both arrive; whichever comes first wins)."""
+        if not turn_id:
+            return
+        if len(self._bg_finalized) > 1000:
+            self._bg_finalized.clear()
+        if turn_id in self._bg_finalized:
+            return
+        self._bg_finalized.add(turn_id)
+        self._bg_turns.pop(turn_id, None)
+        text = (text or "").strip()
+        if not text:
+            return
+        self._async_results.put_nowait({
+            "turn_id": turn_id,
+            "session_id": session_id,
+            "text": text,
+            "error": error,
+            "streamed": streamed,
+            "source": metadata.get("source", ""),
+            "task_id": metadata.get("task_id", ""),
+        })
+
+    async def _async_render_worker(self):
+        """Render completed background results one at a time, serialized
+        with interactive Live rendering via the render lock."""
+        while True:
+            rec = await self._async_results.get()
+            async with self._render_lock:
+                self._render_async_record(rec)
+            self._unread += 1
+            if rec["source"] == "scheduler":
+                toast("zero · 定时任务完成", rec["text"])
+
+    def _render_async_record(self, rec: dict):
+        subtitle_parts = []
+        title = SessionStore.get_title(CHANNEL, rec["session_id"])
+        if title:
+            subtitle_parts.append(f"会话「{escape(title)}」")
+        if rec["source"] == "scheduler" and rec["task_id"]:
+            task = SchedulerStore.get(rec["task_id"])
+            if task is not None:
+                instruction = task.instruction.removeprefix("[Scheduled Task]")
+                subtitle_parts.append(escape(self._clip(instruction, 40)))
+        subtitle = " · ".join(subtitle_parts) or None
+
+        if rec["error"]:
+            self._print_above_prompt(self._panel(
+                escape(rec["text"]), title="zero · 定时任务出错",
+                title_align="left", border_style="red", subtitle=subtitle))
+        elif rec["source"] == "scheduler":
+            if rec["streamed"]:
+                # /bgstream 模式下正文已流式输出，只补一行完成提示
+                self._print_above_prompt(
+                    f"\n[green]✅ 定时任务完成[/green]"
+                    + (f" [dim]{subtitle}[/dim]" if subtitle else ""))
+                return
+            self._print_above_prompt(self._panel(
+                Markdown(rec["text"]), title="zero · 定时任务",
+                title_align="left", border_style="yellow", subtitle=subtitle))
+        else:
+            self._print_above_prompt(self._panel(
+                Markdown(rec["text"]), title="zero · 后台回答",
+                title_align="left", border_style="blue", subtitle=subtitle))

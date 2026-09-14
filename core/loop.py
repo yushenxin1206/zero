@@ -69,6 +69,7 @@ class AgentLoop:
                 event.channel = msg_in.channel
                 event.session_id = msg_in.session_id
                 event.turn_id = msg_in.id
+                event.metadata = dict(msg_in.metadata)
                 await self.msg_bus.stream_queue.enqueue(event)
                 if event.kind == "delta":
                     reply_text += event.content
@@ -82,7 +83,9 @@ class AgentLoop:
                 body=MessageBody(
                     content=content,
                 ),
-                metadata=msg_in.metadata,
+                # turn_id 让 channel 端能把最终消息精确匹配到触发它的那一轮，
+                # 避免定时任务结果与用户回复在 FIFO 队列里错位
+                metadata={**msg_in.metadata, "turn_id": msg_in.id},
             )
             SessionStore.append(msg_out)
             await self.msg_bus.out_queue.enqueue(msg_out)
