@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+from pathlib import Path
 
 from bus.queue import MessageBus
 from core.loop import AgentLoop
@@ -106,9 +107,12 @@ def quiet_third_party_loggers():
 def main():
     args = parse_args()
 
-    # 日志统一写文件，避免打断 rich 渲染的终端界面
+    # 日志统一写文件（绝对路径，任意目录启动都不会散落 debug.log），
+    # 避免打断 rich 渲染的终端界面
+    log_dir = Path.home() / ".zero"
+    log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
-        filename="debug.log",
+        filename=str(log_dir / "debug.log"),
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
