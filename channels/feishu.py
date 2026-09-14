@@ -28,6 +28,7 @@ from datacls import FeishuConfig, MessageBody, MessageIn, MessageOut
 from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
+CHANNEL = "feishu"
 
 
 class FeishuChannel:
@@ -57,7 +58,7 @@ class FeishuChannel:
         self.msg_bus = msg_bus
         # 向 bus 认领 feishu 专属出站队列，dispatcher 只会路由 channel=feishu 的消息
         self._out_queue: MessageOutQueue | None = (
-            msg_bus.subscribe_out("feishu") if msg_bus else None
+            msg_bus.subscribe_out(CHANNEL) if msg_bus else None
         )
 
         # lark API client (for sending messages)

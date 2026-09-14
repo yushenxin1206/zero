@@ -6,9 +6,9 @@ import logging
 from typing import TypeVar, Generic
 
 from abc import ABC
-from datacls import Message, MessageIn, MessageOut
+from datacls import Base, MessageIn, MessageOut, StreamEvent
 
-T = TypeVar('T', bound=Message)
+T = TypeVar('T', bound=Base)
 
 logger = logging.getLogger(__name__)
 
@@ -37,24 +37,36 @@ class MessageOutQueue(MessageQueue[MessageOut]):
     pass
 
 
+class StreamEventQueue(MessageQueue[StreamEvent]):
+    pass
+
+
 class MessageBus:
     """Inbound bus + channel-routed outbound bus.
 
-    out_queue 是中央出站队列：由 run_out_dispatcher 按消息的 channel 字段
-    路由到各 channel 通过 subscribe_out 认领的专属队列，保证每个 channel
+    out_queue / stream_queue 是中央出站队列：由 dispatcher 按消息的 channel
+    字段路由到各 channel 通过 subscribe_* 认领的专属队列，保证每个 channel
     只消费自己的消息。
     """
 
     def __init__(self):
         self.in_queue = MessageInQueue()
         self.out_queue = MessageOutQueue()
+        self.stream_queue = StreamEventQueue()
         self._out_subscribers: dict[str, MessageOutQueue] = {}
+        self._stream_subscribers: dict[str, StreamEventQueue] = {}
 
     def subscribe_out(self, channel: str) -> MessageOutQueue:
         """登记并返回 channel 专属的出站队列（幂等）。"""
         if channel not in self._out_subscribers:
             self._out_subscribers[channel] = MessageOutQueue()
         return self._out_subscribers[channel]
+
+    def subscribe_stream(self, channel: str) -> StreamEventQueue:
+        """登记并返回 channel 专属的流式事件队列（幂等）。"""
+        if channel not in self._stream_subscribers:
+            self._stream_subscribers[channel] = StreamEventQueue()
+        return self._stream_subscribers[channel]
 
     async def run_out_dispatcher(self) -> None:
         """后台任务：把中央出站队列的消息按 channel 分发给订阅者。"""
@@ -65,4 +77,13 @@ class MessageBus:
                 logger.warning("No channel subscribed for %r, message dropped", msg.channel)
                 continue
             await subscriber.enqueue(msg)
+
+    async def run_stream_dispatcher(self) -> None:
+        """后台任务：把中央流式事件队列按 channel 分发给订阅者。"""
+        while True:
+            event = await self.stream_queue.dequeue()
+            subscriber = self._stream_subscribers.get(event.channel)
+            if subscriber is None:
+                continue
+            await subscriber.enqueue(event)
 

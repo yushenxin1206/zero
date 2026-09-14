@@ -21,7 +21,8 @@ class Base(BaseModel):
         try:
             return getattr(self, name)
         except AttributeError as e:
-            raise AttributeError(f"'{name}' not found in {type(self).__name__}. Available: {list(self.model_fields.keys())}") from e
+            raise AttributeError(
+                f"'{name}' not found in {type(self).__name__}. Available: {list(self.model_fields.keys())}") from e
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,44 @@ class MessageTool(Message):
     """Tool execution result message, produced by agent during tool calls."""
     sender: str = "tool"
     recipient: str = "assistant"
+
+
+class StreamEvent(Base):
+    """Incremental agent output event, published on the bus stream queue.
+
+    Carries the assistant's reply while it is being generated so interactive
+    channels (CLI) can render it in real time. Final assembled messages are
+    still delivered via MessageOut as usual.
+
+    kind:
+      - "delta":     a chunk of assistant text, appended to previous deltas
+      - "tool_call": a tool call started (content = "name(args)")
+      - "done":      the reply for this turn is complete (content = full text)
+      - "error":     the turn failed (content = error message)
+    """
+    channel: str = ""
+    session_id: str = ""
+    turn_id: str = ""  # id of the MessageIn this event belongs to
+    kind: str = "delta"
+    content: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Session models
+# ---------------------------------------------------------------------------
+
+class SessionMeta(Base):
+    """会话索引条目（~/.zero/sessions/{channel}/index.json 的 value）。
+
+    索引结构为 dict[source_id, SessionMeta]。旧索引缺少的字段（如 title）
+    由默认值兜底；未知字段校验时忽略，磁盘格式保持 snake_case 不变。
+    """
+    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    date: str = ""  # 创建日期 YYYY-MM-DD，用于会话目录分桶
+    last_updated_at: datetime = Field(default_factory=datetime.now)
+    title: str = ""
+    # 索引的 key，仅 list_sessions 返回时回填，不落盘
+    source_id: str = Field(default="", exclude=True)
 
 
 # ---------------------------------------------------------------------------
@@ -169,16 +208,13 @@ class ScheduleTask(Base):
     id: str = Field(default_factory=lambda: str(uuid4()))
     channel: str = ""
     session_id: str = ""  # 目标会话，结果回投到该会话
-    instruction: str = "" # 创建时固化的自包含指令
+    instruction: str = ""  # 创建时固化的自包含指令
     schedule_type: str = "once"  # once | recurring
     trigger_at: datetime | None = None  # once: 执行时刻；recurring: 下次执行时刻
-    cron: str = ""        # recurring: 5 字段 cron 表达式
+    cron: str = ""  # recurring: 5 字段 cron 表达式
     status: str = "pending"  # pending | running | done | failed | cancelled
     # 渠道专有路由字段（如飞书的 chat_id）放在 metadata
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     last_run_at: datetime | None = None
-
-
-

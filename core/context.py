@@ -177,6 +177,6 @@ When a skill file references a relative path, resolve it against the skill direc
 
 
 if __name__ == "__main__":
-    skill_file = CWD / "skills" / "web-search" / "skill.md"
-    print(Context._parse_skill_meta(skill_file))
+    _skill_file = CWD / "skills" / "web-search" / "skill.md"
+    print(Context._parse_skill_meta(_skill_file))
 

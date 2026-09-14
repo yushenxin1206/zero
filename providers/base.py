@@ -5,7 +5,7 @@ Base provider
 import requests
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, AsyncIterator
 
 from datacls import LLMPayload, ProviderConfig
 
@@ -42,18 +42,17 @@ class Provider(ABC):
         raise last_exc  # type: ignore[misc]
 
     @abstractmethod
-    async def _stream_conn(
+    def stream_chunks(
             self,
             payload: LLMPayload,
-    ):
-        pass
+    ) -> AsyncIterator[tuple[str, Any]]:
+        """Yield streamed LLM output as (kind, data) tuples.
 
-    @abstractmethod
-    async def stream_chat_with_llm(
-            self,
-            payload: LLMPayload,
-            max_retries: int = 3,
-    ):
+        kind:
+          - "content":   data = text delta (str)
+          - "reasoning": data = reasoning delta (str)
+          - "tool_calls": data = streamed tool_call fragment (dict)
+        """
         pass
 
     @abstractmethod
