@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "zero"
 version = "0.1.0"
@@ -13,3 +17,22 @@ dependencies = [
     "rich>=13.9.0",
     "prompt-toolkit>=3.0.0",
 ]
+
+# 控制台命令：pip install -e . 后生成 zero.exe，任意目录可用
+[project.scripts]
+zero = "main:main"
+
+# 扁平布局，显式声明包与顶层模块，避免 setuptools 自动发现
+# 把 tests/docs/skills 等非包目录卷进来
+[tool.setuptools]
+packages = [
+    "bus",
+    "channels",
+    "core",
+    "providers",
+    "scheduler",
+    "session",
+    "tools",
+    "utils",
+]
+py-modules = ["main", "config", "datacls"]
