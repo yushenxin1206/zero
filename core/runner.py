@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from core.context import Context
+from core.hooks import HookContext, Hooks
 from datacls import (
     AgentRuntimeConfig,
     ProviderConfigs,
@@ -37,11 +38,27 @@ class AgentRunner:
             provider_configs: ProviderConfigs,
             running_context: Context,
             tool_registry: ToolRegistry | None = None,
+            hooks: Hooks | None = None,
     ):
         self.runtime_config = runtime_config
         self.provider = OpenAI(provider_configs.get(runtime_config.provider))
         self.context = running_context
         self.tool_registry = tool_registry
+        self.hooks = hooks or Hooks()
+
+    def _hook_context(self) -> HookContext:
+        """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。
+
+        runner 不知道 MessageIn.id，turn_id 留空；渠道侧 message_id 等
+        信息可从 tool_context.metadata 获取。
+        """
+        tc = self.context.tool_context
+        return HookContext(
+            channel=self.context.channel,
+            session_id=self.context.session_id,
+            tool_context=tc,
+            metadata=tc.metadata,
+        )
 
     async def run(self) -> str:
         """
@@ -183,11 +200,22 @@ class AgentRunner:
             else:
                 try:
                     kwargs = json.loads(tc.function.arguments or "{}")
-                    result = await tool.run(
-                        context=self.context.tool_context,
-                        **kwargs,
-                    )
-                    content = json.dumps(result, ensure_ascii=False)
+                    # ④ before_tool_call：唯一调用点。否决/替换结果照常走
+                    # MessageTool 持久化，LLM 和会话历史都看得到。
+                    decision = await self.hooks.before_tool_call(
+                        tool.name, kwargs, self._hook_context())
+                    if decision is not None and not decision.proceed:
+                        content = json.dumps(
+                            {"error": decision.reason}, ensure_ascii=False)
+                    elif decision is not None and decision.result is not None:
+                        content = json.dumps(decision.result, ensure_ascii=False)
+                    else:
+                        result = await tool.run(
+                            context=self.context.tool_context,
+                            **kwargs,
+                        )
+                        content = json.dumps(result, ensure_ascii=False)
+                    # 截断是核心安全不变量，永远在 hook 之后执行
                     if len(content) > 10000:
                         content = content[:10000] + "...truncated"
                 except Exception as e:

@@ -18,9 +18,10 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
 ]
 
-# 控制台命令：pip install -e . 后生成 zero.exe，任意目录可用
+# 控制台命令：pip install -e . 后生成 zero.exe / zero-guard.exe，任意目录可用
 [project.scripts]
 zero = "main:main"
+zero-guard = "plugins.shell_guard.manage:main"
 
 # 扁平布局，显式声明包与顶层模块，避免 setuptools 自动发现
 # 把 tests/docs/skills 等非包目录卷进来
@@ -29,6 +30,8 @@ packages = [
     "bus",
     "channels",
     "core",
+    "plugins",
+    "plugins.shell_guard",
     "providers",
     "scheduler",
     "session",

@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from bus.queue import MessageBus
+from core.hooks import HookChain, Hooks
 from core.loop import AgentLoop
 from channels.cli import CLIChannel
 from channels.feishu import FeishuChannel
@@ -28,12 +29,28 @@ def build_tool_registry() -> ToolRegistry:
     return registry
 
 
+def build_hooks(msg_bus: MessageBus) -> Hooks:
+    """组合根：构建 hook 链并注册插件。无插件时是纯 no-op 链，
+    运行时行为与无 hooks 逐字节一致。"""
+    chain = HookChain()
+    try:
+        from plugins.shell_guard import install
+    except ModuleNotFoundError as e:
+        # 插件目录不存在属正常；插件自身的依赖缺失则要暴露出来
+        if e.name not in ("plugins", "plugins.shell_guard"):
+            raise
+    else:
+        install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
+    return chain
+
+
 def build_agent_loop(msg_bus: MessageBus) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         runtime_config=default_config.agent_runtime,
         provider_configs=default_config.providers,
         tool_registry=build_tool_registry(),
+        hooks=build_hooks(msg_bus),
     )
 
 

@@ -564,6 +564,10 @@ class CLIChannel:
                         acc += event.content
                     elif event.kind == "tool_call":
                         status = f"调用工具 {self._clip(event.content, 90)}"
+                    elif event.kind == "approval":
+                        # shell_guard 插件的就地审批：暂停 Live 提问，
+                        # 回答回填后恢复渲染
+                        await self._handle_approval(event, live)
                     elif event.kind == "error":
                         live.stop()
                         self.console.print(f"[red]出错:[/red] {event.content}")
@@ -589,6 +593,47 @@ class CLIChannel:
             await asyncio.wait_for(self._turn_out.get(), timeout=2)
         except (asyncio.TimeoutError, TimeoutError):
             pass
+
+    # ------------------------------------------------------------------
+    # In-place approval (shell_guard plugin)
+    # ------------------------------------------------------------------
+
+    async def _handle_approval(self, event: StreamEvent, live: Live):
+        """处理 shell_guard 的审批请求：暂停 Live，阻塞式提问，回填答案。
+
+        答案经进程内 Future 回填（plugins.shell_guard.approval.resolve），
+        插件不存在或请求格式异常时直接忽略——handler 端会超时 fail-closed。
+        """
+        try:
+            from plugins.shell_guard import approval as sg_approval
+        except ImportError:
+            return
+        try:
+            info = json.loads(event.content)
+        except json.JSONDecodeError:
+            return
+        live.stop()
+        try:
+            # input() 是阻塞调用，放工作线程，事件循环保持可用
+            answer = await asyncio.to_thread(self._ask_approval_sync, info)
+        finally:
+            live.start()
+        sg_approval.resolve(info.get("req_id", ""), answer)
+
+    def _ask_approval_sync(self, info: dict) -> str:
+        """打印审批面板并读取单键答案（y/n/a/w）。在 worker 线程中运行。"""
+        self.console.print(self._panel(
+            f"[bold]{escape(info.get('command', ''))}[/bold]\n"
+            f"[dim]{escape(info.get('reason', ''))}[/dim]",
+            title="shell 命令审批", title_align="left", border_style="yellow"))
+        self.console.print(
+            "[bold yellow]允许执行？[/bold yellow] "
+            "[dim]y=允许一次 · n=拒绝 · a=总是允许 · w=总是拒绝[/dim]")
+        while True:
+            answer = input("approval › ").strip().lower()
+            if answer in ("y", "n", "a", "w"):
+                return answer
+            self.console.print("[yellow]请输入 y / n / a / w[/yellow]")
 
     # ------------------------------------------------------------------
     # Standing consumers: demultiplex outbound traffic by turn_id

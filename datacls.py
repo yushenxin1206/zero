@@ -89,6 +89,9 @@ class StreamEvent(Base):
       - "tool_call": a tool call started (content = "name(args)")
       - "done":      the reply for this turn is complete (content = full text)
       - "error":     the turn failed (content = error message)
+      - "approval":  in-place approval request from a hook plugin
+                     (content = JSON {"req_id", "command", "reason"}),
+                     emitted by the plugin itself with routing fields stamped
 
     metadata 由 AgentLoop 从触发消息的 metadata 复制（含 scheduler 注入的
     source / task_id 等），让 channel 端能识别后台 turn 的来源。

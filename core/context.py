@@ -14,7 +14,13 @@ from tools.registry import ToolRegistry
 from config import ZERO_ROOT
 
 
-CWD = Path(__file__).parent.parent
+# 包安装目录（skills 等内置资源所在位置），与运行目录无关
+PKG_ROOT = Path(__file__).parent.parent
+
+
+def get_cwd() -> Path:
+    """实时获取 zero 命令运行时所在的目录。"""
+    return Path.cwd()
 
 
 class Context:
@@ -65,8 +71,6 @@ class Context:
 {self._memory}
     
 {self._skills}    
-
-Current working directory: {CWD}
 """
 
     @property
@@ -112,7 +116,7 @@ Use the above memory to personalize your response. If the memory contradicts the
 
     @property
     def _skills(self) -> str:
-        skills_path = CWD / "skills"
+        skills_path = PKG_ROOT / "skills"
         entries: list[str] = []
 
         if skills_path.is_dir():
@@ -177,6 +181,6 @@ When a skill file references a relative path, resolve it against the skill direc
 
 
 if __name__ == "__main__":
-    _skill_file = CWD / "skills" / "web-search" / "skill.md"
+    _skill_file = PKG_ROOT / "skills" / "web-search" / "skill.md"
     print(Context._parse_skill_meta(_skill_file))
 

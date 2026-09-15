@@ -84,6 +84,7 @@ class MessageBus:
             event = await self.stream_queue.dequeue()
             subscriber = self._stream_subscribers.get(event.channel)
             if subscriber is None:
+                logger.warning("No channel subscribed for %r, message dropped", event.channel)
                 continue
             await subscriber.enqueue(event)
 

@@ -6,6 +6,7 @@
 """
 from bus.queue import MessageBus
 from core.context import Context
+from core.hooks import Hooks
 from core.runner import AgentRunner
 from datacls import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs, ToolContext
 from session.store import SessionStore
@@ -24,11 +25,13 @@ class AgentLoop:
             runtime_config: AgentRuntimeConfig,
             provider_configs: ProviderConfigs,
             tool_registry: ToolRegistry | None = None,
+            hooks: Hooks | None = None,
     ):
         self.msg_bus = msg_bus
         self.runtime_config = runtime_config
         self.provider_configs = provider_configs
         self.tool_registry = tool_registry
+        self.hooks = hooks or Hooks()
 
     async def run(self):
 
@@ -40,12 +43,14 @@ class AgentLoop:
                 msg_in.channel, msg_in.session_id, msg_in.body.content or "")
 
             # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
+            # turn_id 同时进 metadata：hooks/插件（如 shell_guard 的审批事件
+            # 路由）据此把交互事件精确挂到触发它的那一轮
             tool_context = ToolContext(
                 channel=msg_in.channel,
                 session_id=msg_in.session_id,
                 message_id=msg_in.metadata.get("message_id", ""),
                 sender_id=msg_in.metadata.get("sender_id", ""),
-                metadata=msg_in.metadata,
+                metadata={**msg_in.metadata, "turn_id": msg_in.id},
             )
 
             context = Context(
@@ -60,6 +65,7 @@ class AgentLoop:
                 running_context=context,
                 provider_configs=self.provider_configs,
                 tool_registry=self.tool_registry,
+                hooks=self.hooks,
             )
 
             # runner.run_stream() yields incremental events while executing;
