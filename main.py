@@ -17,6 +17,8 @@ from tools.shell import Shell
 from tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from config import default_config
 
+log = logging.getLogger(__name__)
+
 
 def build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
@@ -39,6 +41,12 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
         # 插件目录不存在属正常；插件自身的依赖缺失则要暴露出来
         if e.name not in ("plugins", "plugins.shell_guard"):
             raise
+        # 目录在却导入失败 → 多半是 editable 安装过期（新增包后未重跑
+        # uv pip install -e .）。护栏静默失效很危险，必须 loudly 提醒。
+        if (Path(__file__).parent / "plugins").exists():
+            log.warning(
+                "plugins 目录存在但 %r 导入失败：shell_guard 未生效！"
+                "请重跑 uv pip install -e . 并重启", e.name)
     else:
         install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
     return chain
@@ -59,7 +67,6 @@ async def run(cli_only: bool = False):
     启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
     共享同一个 MessageBus / AgentLoop / Scheduler。
     """
-    log = logging.getLogger(__name__)
     msg_bus = MessageBus()
     agent_loop = build_agent_loop(msg_bus)
     scheduler = Scheduler(msg_bus=msg_bus)

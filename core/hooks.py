@@ -287,12 +287,16 @@ class HookChain(Hooks):
     async def before_msg_out(
             self, msg: MessageOut, ctx: HookContext,
     ) -> MessageOutDecision | None:
+        modified = False
         for fn in self._handlers["before_msg_out"]:
             d = await self._safe(fn, msg, ctx)
             if d is None:
                 continue
             if d.content is not None:
-                msg.body.content = d.content        # 就地改写，管道串联
+                msg.body.content = d.content  # 仍就地改，保证后续 handler 看到管道结果
+                modified = True
             if d.suppress:
-                return MessageOutDecision(suppress=True)  # 抑制短路
+                return MessageOutDecision(suppress=True)
+        if modified:
+            return MessageOutDecision(content=msg.body.content)
         return None

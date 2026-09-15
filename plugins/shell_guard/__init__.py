@@ -5,11 +5,11 @@ shell_guard 插件：shell 命令三态守卫（allow / deny / ask）。
 核心零策略；本插件提供全部判定、审批与规则沉淀逻辑。
 """
 from bus.queue import MessageBus
-from core.hooks import Hooks
+from core.hooks import HookChain
 from plugins.shell_guard.handler import ShellGuard
 
 
-def install(hooks: Hooks, msg_bus: MessageBus | None = None) -> ShellGuard:
+def install(hooks: HookChain, msg_bus: MessageBus | None = None) -> ShellGuard:
     """组合根入口：把 shell_guard 注册进 hook 链。
 
     msg_bus 用于 CLI 就地审批（审批请求经 stream 队列路由）；
