@@ -8,7 +8,7 @@ one ScheduleTask per line, keyed by task id.
 from datetime import datetime
 from pathlib import Path
 
-from datacls import ScheduleTask
+from scheduler.models import ScheduleTask
 
 SCHEDULER_ROOT = Path.home() / ".zero" / "scheduler"
 TASKS_FILE = SCHEDULER_ROOT / "tasks.jsonl"

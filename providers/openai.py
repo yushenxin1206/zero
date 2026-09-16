@@ -8,7 +8,7 @@ import threading
 from typing import Any, Iterator
 
 from providers.base import Provider, LLMPayload
-from datacls import ProviderConfig
+from models import ProviderConfig
 
 logger = logging.getLogger(__name__)
 

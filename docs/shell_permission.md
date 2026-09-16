@@ -80,7 +80,7 @@ install(hooks)          # 插件注册自己的 before_tool_call handler
 
 核心文件改动清单：`core/hooks.py`（重设计）、`core/runner.py`（一个调用点）、
 `core/loop.py`（一个透传参数）、`main.py`（组合根接线）。
-`bus/`、`channels/`、`tools/shell.py`、`datacls.py`、`config.py` 不动。
+`bus/`、`channels/`、`tools/shell.py`、`models.py`、`config.py` 不动。
 
 ## 5. 插件侧（与 v3 基本相同，拦截点从包装器换成 hook）
 

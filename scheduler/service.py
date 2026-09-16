@@ -8,7 +8,7 @@ CreateScheduledTask tool is a thin wrapper around this module.
 from datetime import datetime, timedelta
 from typing import Any
 
-from datacls import ScheduleTask
+from scheduler.models import ScheduleTask
 from scheduler.cron import next_run
 from scheduler.store import SchedulerStore
 

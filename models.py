@@ -1,10 +1,17 @@
 """
-Define data models in the system.
-All data classes use Pydantic v2 BaseModel.
+Cross-module contracts: message protocol, tool context, and configuration schema.
+
+All data classes use Pydantic v2 BaseModel. This module is a dependency-free
+leaf: it imports nothing from other project modules, so any module may import
+it without creating an import cycle.
+
+Module-specific models live in their own modules:
+- scheduler.models.ScheduleTask
+- session.models.SessionMeta
+- providers.base.LLMPayload
 """
 
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -90,7 +97,9 @@ class StreamEvent(Base):
       - "done":      the reply for this turn is complete (content = full text)
       - "error":     the turn failed (content = error message)
       - "approval":  in-place approval request from a hook plugin
-                     (content = JSON {"req_id", "command", "reason"}),
+                     (content = JSON {"req_id", "command", "reason",
+                     "deadline"} — deadline 为 unix 时间戳，CLI 按它做
+                     单键倒计时，到时打印超时拦截提示),
                      emitted by the plugin itself with routing fields stamped
 
     metadata 由 AgentLoop 从触发消息的 metadata 复制（含 scheduler 注入的
@@ -102,24 +111,6 @@ class StreamEvent(Base):
     kind: str = "delta"
     content: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Session models
-# ---------------------------------------------------------------------------
-
-class SessionMeta(Base):
-    """会话索引条目（~/.zero/sessions/{channel}/index.json 的 value）。
-
-    索引结构为 dict[source_id, SessionMeta]。旧索引缺少的字段（如 title）
-    由默认值兜底；未知字段校验时忽略，磁盘格式保持 snake_case 不变。
-    """
-    session_id: str = Field(default_factory=lambda: str(uuid4()))
-    date: str = ""  # 创建日期 YYYY-MM-DD，用于会话目录分桶
-    last_updated_at: datetime = Field(default_factory=datetime.now)
-    title: str = ""
-    # 索引的 key，仅 list_sessions 返回时回填，不落盘
-    source_id: str = Field(default="", exclude=True)
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +147,6 @@ class LLMConfig(Base):
 
 
 class AgentRuntimeConfig(Base):
-    workspace: Path = Path.home() / '.zero' / 'workspace'
     provider: str = ''
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     context_window_tokens: int = 65536
@@ -175,22 +165,6 @@ class ChannelConfigs(Base):
 
 
 # ---------------------------------------------------------------------------
-# LLM request model
-# ---------------------------------------------------------------------------
-
-class LLMPayload(Base):
-    messages: list[dict[str, Any]] | None = None
-    tools: list[dict[str, Any]] | None = None
-    llm_config: LLMConfig = Field(default_factory=LLMConfig)
-
-    @property
-    def payload_dict(self) -> dict[str, Any]:
-        base_data = self.model_dump(exclude={'llm_config'})
-        base_data.update(self.llm_config.config_dict or {})
-        return base_data
-
-
-# ---------------------------------------------------------------------------
 # Tool context model
 # ---------------------------------------------------------------------------
 
@@ -204,24 +178,3 @@ class ToolContext(Base):
     message_id: str = ""
     sender_id: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
-
-
-# ---------------------------------------------------------------------------
-# Scheduled task models
-# ---------------------------------------------------------------------------
-
-class ScheduleTask(Base):
-    """A persisted scheduled task to be executed by the Scheduler engine."""
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    channel: str = ""
-    session_id: str = ""  # 目标会话，结果回投到该会话
-    instruction: str = ""  # 创建时固化的自包含指令
-    schedule_type: str = "once"  # once | recurring
-    trigger_at: datetime | None = None  # once: 执行时刻；recurring: 下次执行时刻
-    cron: str = ""  # recurring: 5 字段 cron 表达式
-    status: str = "pending"  # pending | running | done | failed | cancelled
-    # 渠道专有路由字段（如飞书的 chat_id）放在 metadata
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-    last_run_at: datetime | None = None

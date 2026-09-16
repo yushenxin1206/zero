@@ -20,7 +20,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from datacls import LLMPayload, MessageIn, MessageOut, ToolCall, ToolContext
+from models import MessageIn, MessageOut, ToolCall, ToolContext
+from providers.base import LLMPayload
 
 logger = logging.getLogger(__name__)
 

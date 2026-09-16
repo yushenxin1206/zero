@@ -7,7 +7,22 @@ import requests
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator
 
-from datacls import LLMPayload, ProviderConfig
+from pydantic import Field
+
+from models import Base, LLMConfig, ProviderConfig
+
+
+class LLMPayload(Base):
+    """LLM request payload: the contract between core (builder) and providers (executor)."""
+    messages: list[dict[str, Any]] | None = None
+    tools: list[dict[str, Any]] | None = None
+    llm_config: LLMConfig = Field(default_factory=LLMConfig)
+
+    @property
+    def payload_dict(self) -> dict[str, Any]:
+        base_data = self.model_dump(exclude={'llm_config'})
+        base_data.update(self.llm_config.config_dict or {})
+        return base_data
 
 
 class Provider(ABC):

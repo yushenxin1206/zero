@@ -4,7 +4,7 @@ Base tool class
 from abc import ABC, abstractmethod
 from typing import Any
 
-from datacls import ToolContext
+from models import ToolContext
 
 
 class Tool(ABC):

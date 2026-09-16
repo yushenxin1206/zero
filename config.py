@@ -5,7 +5,7 @@ from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
-from datacls import AgentRuntimeConfig, ChannelConfigs, ProviderConfigs
+from models import AgentRuntimeConfig, ChannelConfigs, ProviderConfigs
 from utils.file import save_or_create_file
 
 HOME = Path.home()

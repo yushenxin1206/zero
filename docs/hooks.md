@@ -215,7 +215,7 @@ def build_hooks() -> Hooks:
 
 ### 4.4 不动的部分
 
-`bus/`、`channels/`、`tools/`、`datacls.py`（仅新增 import）、
+`bus/`、`channels/`、`tools/`、`models.py`（仅新增 import）、
 `config.py`、`session/` 全部不动。
 
 **明确排除**：runner 中间态的 assistant+tool_calls 持久化

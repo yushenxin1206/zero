@@ -12,10 +12,9 @@ from uuid import uuid4
 
 from core.context import Context
 from core.hooks import HookContext, Hooks
-from datacls import (
+from models import (
     AgentRuntimeConfig,
     ProviderConfigs,
-    LLMPayload,
     MessageBody,
     MessageOut,
     MessageTool,
@@ -23,6 +22,7 @@ from datacls import (
     ToolCall,
     ToolCallFunction,
 )
+from providers.base import LLMPayload
 from providers.openai import OpenAI
 from session.store import SessionStore
 from tools.registry import ToolRegistry

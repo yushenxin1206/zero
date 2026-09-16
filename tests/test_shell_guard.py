@@ -13,6 +13,7 @@ import asyncio
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from uuid import uuid4
 
@@ -31,7 +32,7 @@ from bus.queue import MessageBus
 from core.context import Context
 from core.hooks import HookChain, HookContext
 from core.runner import AgentRunner
-from datacls import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
+from models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
 from plugins.shell_guard import approval, install, manage, policy, store
 from plugins.shell_guard.handler import ShellGuard
 from session.store import SessionStore
@@ -159,7 +160,10 @@ def test_approval_flow():
         # y：放行一次，不沉淀规则
         event, d = await _ask_roundtrip("npm install", "y")
         assert event.kind == "approval" and event.turn_id == "t-1"
-        assert json.loads(event.content)["command"] == "npm install"
+        info = json.loads(event.content)
+        assert info["command"] == "npm install"
+        # deadline 是 CLI 倒计时的权威时点，由插件端统一签发
+        assert info["deadline"] > time.time()
         assert d is None
         assert store.rules() == ([], [])
 

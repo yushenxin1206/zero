@@ -15,7 +15,7 @@ Channel-level index for session lookup:
         }
     }
 
-Index entries are modeled by datacls.SessionMeta. Fields missing in older
+Index entries are modeled by session.models.SessionMeta. Fields missing in older
 index files (e.g. title) fall back to model defaults; unknown fields are
 ignored on validation. The on-disk format stays snake_case JSON.
 """
@@ -24,7 +24,8 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from datacls import Message, SessionMeta
+from models import Message
+from session.models import SessionMeta
 
 SESSIONS_ROOT = Path.home() / ".zero" / "sessions"
 

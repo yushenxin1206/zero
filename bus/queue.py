@@ -6,7 +6,7 @@ import logging
 from typing import TypeVar, Generic
 
 from abc import ABC
-from datacls import Base, MessageIn, MessageOut, StreamEvent
+from models import Base, MessageIn, MessageOut, StreamEvent
 
 T = TypeVar('T', bound=Base)
 

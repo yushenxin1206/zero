@@ -15,7 +15,8 @@ import logging
 from datetime import datetime
 
 from bus.queue import MessageBus
-from datacls import MessageBody, MessageIn, ScheduleTask
+from models import MessageBody, MessageIn
+from scheduler.models import ScheduleTask
 from scheduler.cron import next_run
 from scheduler.store import SchedulerStore
 

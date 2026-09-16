@@ -4,7 +4,7 @@ import sys
 
 from core.context import Context
 from core.runner import AgentRunner
-from datacls import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ProviderConfig, StreamEvent
+from models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ProviderConfig, StreamEvent
 
 
 class FakeProvider:
@@ -44,7 +44,7 @@ async def main():
 
     # --- bus stream dispatch ---
     from bus.queue import MessageBus
-    from datacls import MessageIn, MessageBody
+    from models import MessageIn, MessageBody
     bus = MessageBus()
     sub = bus.subscribe_stream("cli")
     dispatcher = asyncio.create_task(bus.run_stream_dispatcher())

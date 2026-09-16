@@ -8,7 +8,7 @@ from pathlib import Path
 
 import frontmatter
 
-from datacls import ToolContext
+from models import ToolContext
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 from config import ZERO_ROOT
@@ -62,6 +62,7 @@ class Context:
 - Run independent tool calls in parallel.
 - Verify results before presenting them.
 - Tool results exceeding 10000 characters are truncated.
+- Each shell call runs in a fresh subprocess: `cd` does not persist across calls. Use absolute paths, the `working_dir` parameter, or chain commands like `cd dir && cmd`.
 
 ## Boundaries
 - Never fabricate information. If you don't know, say so and offer alternatives.
@@ -77,6 +78,7 @@ class Context:
     def _runtime(self) -> str:
         return f"""## Runtime
 {platform.system()}, {platform.machine()}, {platform.python_version()}
+Working directory: {get_cwd()}
 """
 
     @property

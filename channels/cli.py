@@ -34,7 +34,8 @@ from rich.text import Text
 
 from bus.queue import MessageBus
 from channels.cli_prompt import COMMANDS, CommandStats, build_prompt_session
-from datacls import MessageBody, MessageIn, MessageOut, SessionMeta, StreamEvent
+from models import MessageBody, MessageIn, MessageOut, StreamEvent
+from session.models import SessionMeta
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import ANSI as PtkANSI
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -621,19 +622,84 @@ class CLIChannel:
         sg_approval.resolve(info.get("req_id", ""), answer)
 
     def _ask_approval_sync(self, info: dict) -> str:
-        """打印审批面板并读取单键答案（y/n/a/w）。在 worker 线程中运行。"""
+        """打印审批面板并读取单键答案（y/n/a/w）。在 worker 线程中运行。
+
+        倒计时与后端共用同一个 deadline（插件写在事件 content 里的 unix
+        时间戳），到时自动退出并打印超时拦截面板——不再无限悬挂在
+        approval › 提示符上，渲染循环也不会被 input() 卡住导致后续
+        流式输出积压。
+        """
+        command = info.get("command", "")
         self.console.print(self._panel(
-            f"[bold]{escape(info.get('command', ''))}[/bold]\n"
+            f"[bold]{escape(command)}[/bold]\n"
             f"[dim]{escape(info.get('reason', ''))}[/dim]",
             title="shell 命令审批", title_align="left", border_style="yellow"))
         self.console.print(
             "[bold yellow]允许执行？[/bold yellow] "
             "[dim]y=允许一次 · n=拒绝 · a=总是允许 · w=总是拒绝[/dim]")
+        deadline = float(info.get("deadline") or 0) or (time.time() + 180)
+        answer = self._read_key_until(deadline)
+        if answer:
+            return answer
+        self.console.print(self._panel(
+            f"[bold]{escape(command)}[/bold]\n"
+            "[dim]该命令未被执行。如需免审批放行，可预置规则："
+            "zero-guard add allow \"<pattern>\"[/dim]",
+            title="⏰ 审批超时 · 已按拒绝处理",
+            title_align="left", border_style="red"))
+        return ""
+
+    def _read_key_until(self, deadline: float) -> str:
+        """在 deadline（unix 时间戳）前读取单键答案，到时返回 ""。
+
+        在 worker 线程中运行。答案本来就是单字符，Windows 终端下用
+        msvcrt 轮询按键替代阻塞式 input()，从而可以带 deadline；
+        非 Windows / 非终端环境回退到原 input() 行为（这些环境通常
+        无人值守，后端会超时 fail-closed）。
+        """
+        if sys.platform == "win32" and self._use_ptk:
+            return self._read_key_win32(deadline)
         while True:
             answer = input("approval › ").strip().lower()
             if answer in ("y", "n", "a", "w"):
                 return answer
             self.console.print("[yellow]请输入 y / n / a / w[/yellow]")
+
+    def _read_key_win32(self, deadline: float) -> str:
+        """msvcrt 单键读取 + 同行倒计时刷新。在 worker 线程中运行。"""
+        import msvcrt
+        # 丢弃提问前用户预敲的残留按键，避免被误当作答案
+        while msvcrt.kbhit():
+            msvcrt.getwch()
+        last_shown = -1
+        while True:
+            remain = deadline - time.time()
+            if remain <= 0:
+                self._clear_countdown_line()
+                return ""
+            if msvcrt.kbhit():
+                ch = msvcrt.getwch().lower()
+                if ch in ("\x00", "\xe0"):
+                    # 功能键（方向键等）的前缀码，吞掉后续扫描码
+                    if msvcrt.kbhit():
+                        msvcrt.getwch()
+                    continue
+                if ch in "ynaw":
+                    self._clear_countdown_line()
+                    self.console.print(f"approval › [bold]{ch}[/bold]")
+                    return ch
+                # 其他按键忽略，倒计时继续
+            shown = int(remain)
+            if shown != last_shown:
+                last_shown = shown
+                sys.stdout.write(f"\rapproval › ({shown}s 后超时自动拒绝) ")
+                sys.stdout.flush()
+            time.sleep(0.1)
+
+    @staticmethod
+    def _clear_countdown_line():
+        sys.stdout.write("\r" + " " * 40 + "\r")
+        sys.stdout.flush()
 
     # ------------------------------------------------------------------
     # Standing consumers: demultiplex outbound traffic by turn_id
@@ -689,6 +755,11 @@ class CLIChannel:
         elif event.kind == "tool_call":
             if self._bg_stream_enabled:
                 self._bg_stream_push(acc, f"\n[调用工具 {event.content}]\n")
+        elif event.kind == "approval":
+            # turn 已被 Ctrl+C 移入后台：审批请求无法就地提问，后端将
+            # 超时 fail-closed。借异步结果管线（自带渲染锁串行）给用户
+            # 一条明确提示，而不是静默丢弃
+            self._notify_bg_approval(event)
         elif event.kind in ("done", "error"):
             self._finalize_bg_turn(
                 event.turn_id,
@@ -698,6 +769,27 @@ class CLIChannel:
                 error=event.kind == "error",
                 streamed=acc["streamed"],
             )
+
+    def _notify_bg_approval(self, event: StreamEvent):
+        """后台 turn 的审批请求无法就地回答，提示用户该命令将按超时拒绝。"""
+        try:
+            cmd = json.loads(event.content).get("command", "")
+        except json.JSONDecodeError:
+            cmd = ""
+        text = ("有 shell 命令需要人工审批，但当前 turn 已转入后台，无法就地"
+                "回答，将按超时自动拒绝。")
+        if cmd:
+            text += f"\n\n命令：`{cmd}`"
+        self._async_results.put_nowait({
+            "turn_id": event.turn_id,
+            "session_id": event.session_id,
+            "text": text,
+            "error": False,
+            "streamed": False,
+            "source": "",
+            "task_id": "",
+            "kind": "approval_blocked",
+        })
 
     def _print_above_prompt(self, renderable, *, end: str = "\n"):
         """Print a rich renderable above the active input prompt.
@@ -777,6 +869,8 @@ class CLIChannel:
             self._unread += 1
             if rec["source"] == "scheduler":
                 toast("zero · 定时任务完成", rec["text"])
+            elif rec.get("kind") == "approval_blocked":
+                toast("zero · 审批未受理", rec["text"])
 
     def _render_async_record(self, rec: dict):
         subtitle_parts = []
@@ -790,7 +884,11 @@ class CLIChannel:
                 subtitle_parts.append(escape(self._clip(instruction, 40)))
         subtitle = " · ".join(subtitle_parts) or None
 
-        if rec["error"]:
+        if rec.get("kind") == "approval_blocked":
+            self._print_above_prompt(self._panel(
+                Markdown(rec["text"]), title="zero · 审批未受理",
+                title_align="left", border_style="red", subtitle=subtitle))
+        elif rec["error"]:
             self._print_above_prompt(self._panel(
                 escape(rec["text"]), title="zero · 定时任务出错",
                 title_align="left", border_style="red", subtitle=subtitle))

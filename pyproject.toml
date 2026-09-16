@@ -38,4 +38,4 @@ packages = [
     "tools",
     "utils",
 ]
-py-modules = ["main", "config", "datacls"]
+py-modules = ["main", "config", "models"]

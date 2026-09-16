@@ -34,7 +34,8 @@ sched_mod.TASKS_FILE = sched_mod.SCHEDULER_ROOT / "tasks.jsonl"
 from rich.console import Console
 
 from bus.queue import MessageBus
-from datacls import MessageBody, MessageOut, ScheduleTask, StreamEvent
+from models import MessageBody, MessageOut, StreamEvent
+from scheduler.models import ScheduleTask
 from scheduler.store import SchedulerStore
 import channels.cli as cli_mod
 from channels.cli import CLIChannel, CHANNEL

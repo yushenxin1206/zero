@@ -24,7 +24,7 @@ from lark_oapi.api.im.v1 import (
 )
 
 from bus.queue import MessageBus, MessageOutQueue
-from datacls import FeishuConfig, MessageBody, MessageIn, MessageOut
+from models import FeishuConfig, MessageBody, MessageIn, MessageOut
 from session.store import SessionStore
 
 logger = logging.getLogger(__name__)
