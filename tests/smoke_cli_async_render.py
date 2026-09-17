@@ -34,7 +34,7 @@ sched_mod.TASKS_FILE = sched_mod.SCHEDULER_ROOT / "tasks.jsonl"
 from rich.console import Console
 
 from bus.queue import MessageBus
-from models import MessageBody, MessageOut, StreamEvent
+from models import MessageBody, MessageOut, Origin, StreamEvent
 from scheduler.models import ScheduleTask
 from scheduler.store import SchedulerStore
 import channels.cli as cli_mod
@@ -65,16 +65,16 @@ async def main():
             schedule_type="once",
         )
         SchedulerStore.create(task)
-        meta = {"source": "scheduler", "task_id": task.id}
+        origin = Origin(kind="scheduler", task_id=task.id)
         for kind, content in [("delta", "今日"), ("delta", "要闻"),
                               ("done", "今日要闻汇总")]:
             await bus.stream_queue.enqueue(StreamEvent(
                 channel=CHANNEL, session_id="sess-sched", turn_id="turn-sched",
-                kind=kind, content=content, metadata=meta))
+                kind=kind, content=content, origin=origin))
         await bus.out_queue.enqueue(MessageOut(
             channel=CHANNEL, session_id="sess-sched",
             body=MessageBody(content="今日要闻汇总"),
-            metadata={**meta, "turn_id": "turn-sched"}))
+            origin=origin, turn_id="turn-sched"))
         await asyncio.sleep(0.5)
         out = buf.getvalue()
         assert "今日要闻汇总" in out, out
@@ -96,7 +96,7 @@ async def main():
         await bus.out_queue.enqueue(MessageOut(
             channel=CHANNEL, session_id="sess-user",
             body=MessageBody(content="用户回复"),
-            metadata={"turn_id": "turn-user"}))
+            turn_id="turn-user"))
         await asyncio.wait_for(render, timeout=3)
         out = buf.getvalue()
         assert "用户回复" in out, out
@@ -106,7 +106,7 @@ async def main():
         await bus.out_queue.enqueue(MessageOut(
             channel=CHANNEL, session_id="sess-user",
             body=MessageBody(content="用户回复"),
-            metadata={"turn_id": "turn-user"}))
+            turn_id="turn-user"))
         await asyncio.sleep(0.3)
         assert "后台回答" not in buf.getvalue(), buf.getvalue()
         print("interactive turn ok (no bg leak, late MessageOut discarded)")

@@ -50,7 +50,8 @@ class ShellGuard:
             )
 
         # ---- ask ----
-        if ctx.metadata.get("source") == "scheduler":
+        origin = ctx.tool_context.origin if ctx.tool_context else None
+        if origin is not None and origin.kind == "scheduler":
             return ToolCallDecision(proceed=False, reason=_SCHEDULER_REASON)
         if ctx.channel != "cli" or self.msg_bus is None:
             return ToolCallDecision(proceed=False, reason=_UNATTENDED_REASON)
@@ -59,8 +60,7 @@ class ShellGuard:
             self.msg_bus,
             channel=ctx.channel,
             session_id=ctx.session_id,
-            turn_id=ctx.metadata.get("turn_id", ""),
-            metadata=ctx.metadata,
+            turn_id=ctx.turn_id,
             command=command,
             reason=verdict.reason,
         )

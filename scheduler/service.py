@@ -6,7 +6,6 @@ cron occurrence) and persists the task via SchedulerStore. The
 CreateScheduledTask tool is a thin wrapper around this module.
 """
 from datetime import datetime, timedelta
-from typing import Any
 
 from scheduler.models import ScheduleTask
 from scheduler.cron import next_run
@@ -19,7 +18,7 @@ def create_task(
     schedule_type: str,
     channel: str,
     session_id: str,
-    metadata: dict[str, Any] | None = None,
+    channel_session_id: str = "",
     trigger_in_minutes: int | None = None,
     trigger_at_iso: str | None = None,
     cron: str = "",
@@ -53,7 +52,7 @@ def create_task(
     else:
         raise ValueError(f"Unsupported schedule_type: {schedule_type!r}")
 
-    # 渠道专有路由字段（飞书的 chat_id 等）随创建时的上下文 metadata 一并保存
+    # 渠道侧会话标识随任务保存，触发时挂到 MessageIn 用于结果回投
     task = ScheduleTask(
         channel=channel,
         session_id=session_id,
@@ -62,7 +61,7 @@ def create_task(
         trigger_at=trigger_at,
         cron=cron,
         status="pending",
-        metadata=dict(metadata or {}),
+        channel_session_id=channel_session_id,
     )
     SchedulerStore.create(task)
     return task

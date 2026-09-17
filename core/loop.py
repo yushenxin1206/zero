@@ -43,14 +43,16 @@ class AgentLoop:
                 msg_in.channel, msg_in.session_id, msg_in.body.content or "")
 
             # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
-            # turn_id 同时进 metadata：hooks/插件（如 shell_guard 的审批事件
-            # 路由）据此把交互事件精确挂到触发它的那一轮
+            # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
+            # 事件路由）据此把交互事件精确挂到触发它的那一轮
             tool_context = ToolContext(
                 channel=msg_in.channel,
                 session_id=msg_in.session_id,
-                message_id=msg_in.metadata.get("message_id", ""),
-                sender_id=msg_in.metadata.get("sender_id", ""),
-                metadata={**msg_in.metadata, "turn_id": msg_in.id},
+                turn_id=msg_in.id,
+                origin=msg_in.origin,
+                channel_message_id=msg_in.channel_message_id,
+                channel_sender_id=msg_in.channel_sender_id,
+                channel_session_id=msg_in.channel_session_id,
             )
 
             context = Context(
@@ -75,7 +77,7 @@ class AgentLoop:
                 event.channel = msg_in.channel
                 event.session_id = msg_in.session_id
                 event.turn_id = msg_in.id
-                event.metadata = dict(msg_in.metadata)
+                event.origin = msg_in.origin
                 await self.msg_bus.stream_queue.enqueue(event)
                 if event.kind == "delta":
                     reply_text += event.content
@@ -89,9 +91,11 @@ class AgentLoop:
                 body=MessageBody(
                     content=content,
                 ),
+                origin=msg_in.origin,
                 # turn_id 让 channel 端能把最终消息精确匹配到触发它的那一轮，
                 # 避免定时任务结果与用户回复在 FIFO 队列里错位
-                metadata={**msg_in.metadata, "turn_id": msg_in.id},
+                turn_id=msg_in.id,
+                channel_session_id=msg_in.channel_session_id,
             )
             SessionStore.append(msg_out)
             await self.msg_bus.out_queue.enqueue(msg_out)

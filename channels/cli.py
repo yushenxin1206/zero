@@ -22,6 +22,7 @@ import sys
 import time
 from uuid import uuid4
 
+from pydantic import ValidationError
 from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
@@ -34,7 +35,8 @@ from rich.text import Text
 
 from bus.queue import MessageBus
 from channels.cli_prompt import COMMANDS, CommandStats, build_prompt_session
-from models import MessageBody, MessageIn, MessageOut, StreamEvent
+from models import (
+    ApprovalRequest, MessageBody, MessageIn, MessageOut, Origin, StreamEvent)
 from session.models import SessionMeta
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import ANSI as PtkANSI
@@ -391,10 +393,9 @@ class CLIChannel:
                 channel=CHANNEL,
                 session_id=self.session_id,
                 body=MessageBody(content=text),
-                metadata={
-                    "message_id": str(uuid4()),
-                    "sender_id": self._source_id,
-                },
+                channel_message_id=str(uuid4()),
+                channel_sender_id=self._source_id,
+                channel_session_id=self._source_id,
             )
             # 先入激活 turn 再入队，保证 listener 不会把本轮最早的事件
             # 误判成后台 turn
@@ -566,8 +567,7 @@ class CLIChannel:
                     elif event.kind == "tool_call":
                         status = f"调用工具 {self._clip(event.content, 90)}"
                     elif event.kind == "approval":
-                        # shell_guard 插件的就地审批：暂停 Live 提问，
-                        # 回答回填后恢复渲染
+                        # 通用就地审批：暂停 Live 提问，回答回填后恢复渲染
                         await self._handle_approval(event, live)
                     elif event.kind == "error":
                         live.stop()
@@ -596,60 +596,60 @@ class CLIChannel:
             pass
 
     # ------------------------------------------------------------------
-    # In-place approval (shell_guard plugin)
+    # In-place approval (generic ApprovalRequest protocol)
     # ------------------------------------------------------------------
 
     async def _handle_approval(self, event: StreamEvent, live: Live):
-        """处理 shell_guard 的审批请求：暂停 Live，阻塞式提问，回填答案。
+        """处理通用审批请求：暂停 Live，阻塞式提问，回填答案。
 
-        答案经进程内 Future 回填（plugins.shell_guard.approval.resolve），
-        插件不存在或请求格式异常时直接忽略——handler 端会超时 fail-closed。
+        只按 ApprovalRequest 协议（models.py）渲染与作答，不认识审批的
+        业务来源；答案经 bus.approvals 进程内 Future 回填。请求格式异常
+        时记录日志并忽略——发起端会超时 fail-closed。
         """
         try:
-            from plugins.shell_guard import approval as sg_approval
-        except ImportError:
-            return
-        try:
-            info = json.loads(event.content)
-        except json.JSONDecodeError:
+            req = ApprovalRequest.model_validate_json(event.content)
+        except ValidationError:
+            logger.warning("malformed approval event dropped: %r",
+                           event.content[:200])
             return
         live.stop()
         try:
             # input() 是阻塞调用，放工作线程，事件循环保持可用
-            answer = await asyncio.to_thread(self._ask_approval_sync, info)
+            answer = await asyncio.to_thread(self._ask_approval_sync, req)
         finally:
             live.start()
-        sg_approval.resolve(info.get("req_id", ""), answer)
+        if not self.msg_bus.approvals.resolve(req.req_id, answer):
+            logger.warning("approval %s resolve failed (expired?)", req.req_id)
 
-    def _ask_approval_sync(self, info: dict) -> str:
-        """打印审批面板并读取单键答案（y/n/a/w）。在 worker 线程中运行。
+    def _ask_approval_sync(self, req: ApprovalRequest) -> str:
+        """打印审批面板并读取单键答案。在 worker 线程中运行。
 
-        倒计时与后端共用同一个 deadline（插件写在事件 content 里的 unix
+        倒计时与后端共用同一个 deadline（发起方写在事件 content 里的 unix
         时间戳），到时自动退出并打印超时拦截面板——不再无限悬挂在
         approval › 提示符上，渲染循环也不会被 input() 卡住导致后续
         流式输出积压。
         """
-        command = info.get("command", "")
+        body = f"[bold]{escape(req.summary)}[/bold]"
+        if req.detail:
+            body += f"\n[dim]{escape(req.detail)}[/dim]"
         self.console.print(self._panel(
-            f"[bold]{escape(command)}[/bold]\n"
-            f"[dim]{escape(info.get('reason', ''))}[/dim]",
-            title="shell 命令审批", title_align="left", border_style="yellow"))
+            body, title=req.title, title_align="left", border_style="yellow"))
+        opts = " · ".join(f"{o.key}={o.label}" for o in req.options)
         self.console.print(
-            "[bold yellow]允许执行？[/bold yellow] "
-            "[dim]y=允许一次 · n=拒绝 · a=总是允许 · w=总是拒绝[/dim]")
-        deadline = float(info.get("deadline") or 0) or (time.time() + 180)
-        answer = self._read_key_until(deadline)
+            f"[bold yellow]允许执行？[/bold yellow] [dim]{opts}[/dim]")
+        deadline = req.deadline or (time.time() + 180)
+        keys = "".join(o.key for o in req.options)
+        answer = self._read_key_until(deadline, keys)
         if answer:
             return answer
+        hint = escape(req.timeout_hint) if req.timeout_hint else ""
         self.console.print(self._panel(
-            f"[bold]{escape(command)}[/bold]\n"
-            "[dim]该命令未被执行。如需免审批放行，可预置规则："
-            "zero-guard add allow \"<pattern>\"[/dim]",
+            f"[bold]{escape(req.summary)}[/bold]\n[dim]{hint}[/dim]",
             title="⏰ 审批超时 · 已按拒绝处理",
             title_align="left", border_style="red"))
         return ""
 
-    def _read_key_until(self, deadline: float) -> str:
+    def _read_key_until(self, deadline: float, keys: str) -> str:
         """在 deadline（unix 时间戳）前读取单键答案，到时返回 ""。
 
         在 worker 线程中运行。答案本来就是单字符，Windows 终端下用
@@ -658,14 +658,15 @@ class CLIChannel:
         无人值守，后端会超时 fail-closed）。
         """
         if sys.platform == "win32" and self._use_ptk:
-            return self._read_key_win32(deadline)
+            return self._read_key_win32(deadline, keys)
         while True:
             answer = input("approval › ").strip().lower()
-            if answer in ("y", "n", "a", "w"):
+            if answer in keys:
                 return answer
-            self.console.print("[yellow]请输入 y / n / a / w[/yellow]")
+            self.console.print(
+                f"[yellow]请输入 {' / '.join(keys)}[/yellow]")
 
-    def _read_key_win32(self, deadline: float) -> str:
+    def _read_key_win32(self, deadline: float, keys: str) -> str:
         """msvcrt 单键读取 + 同行倒计时刷新。在 worker 线程中运行。"""
         import msvcrt
         # 丢弃提问前用户预敲的残留按键，避免被误当作答案
@@ -684,7 +685,7 @@ class CLIChannel:
                     if msvcrt.kbhit():
                         msvcrt.getwch()
                     continue
-                if ch in "ynaw":
+                if ch in keys:
                     self._clear_countdown_line()
                     self.console.print(f"approval › [bold]{ch}[/bold]")
                     return ch
@@ -724,7 +725,7 @@ class CLIChannel:
         """Standing consumer of the channel's MessageOut queue."""
         while True:
             msg = await self._out_queue.dequeue()
-            turn_id = msg.metadata.get("turn_id", "")
+            turn_id = msg.turn_id
             if turn_id and turn_id == self._active_turn_id:
                 await self._turn_out.put(msg)
             else:
@@ -732,7 +733,7 @@ class CLIChannel:
                     turn_id or msg.id,
                     text=msg.body.content or "",
                     session_id=msg.session_id,
-                    metadata=msg.metadata,
+                    origin=msg.origin,
                 )
 
     # ------------------------------------------------------------------
@@ -743,7 +744,7 @@ class CLIChannel:
         acc = self._bg_turns.setdefault(event.turn_id, {
             "text": "",
             "session_id": event.session_id,
-            "metadata": dict(event.metadata),
+            "origin": event.origin,
             "buf": "",
             "last_flush": 0.0,
             "streamed": False,
@@ -765,7 +766,7 @@ class CLIChannel:
                 event.turn_id,
                 text=event.content or acc["text"],
                 session_id=acc["session_id"],
-                metadata=acc["metadata"],
+                origin=acc["origin"],
                 error=event.kind == "error",
                 streamed=acc["streamed"],
             )
@@ -834,7 +835,7 @@ class CLIChannel:
         self._print_above_prompt(Text(text, style="dim"), end="")
 
     def _finalize_bg_turn(self, turn_id: str, *, text: str, session_id: str,
-                          metadata: dict, error: bool = False,
+                          origin: Origin, error: bool = False,
                           streamed: bool = False):
         """Finalize a background turn exactly once (stream done and the
         final MessageOut both arrive; whichever comes first wins)."""
@@ -855,8 +856,8 @@ class CLIChannel:
             "text": text,
             "error": error,
             "streamed": streamed,
-            "source": metadata.get("source", ""),
-            "task_id": metadata.get("task_id", ""),
+            "source": origin.kind,
+            "task_id": origin.task_id or "",
         })
 
     async def _async_render_worker(self):

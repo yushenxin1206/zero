@@ -41,6 +41,32 @@ class StreamEventQueue(MessageQueue[StreamEvent]):
     pass
 
 
+class ApprovalBroker:
+    """进程内审批答案回填器。
+
+    审批发起方（任意插件/组件）在发出 approval 事件前 register 一个
+    Future；channel 端作答后调用 resolve 回填。channel 只面向本接口
+    编程，不认识审批的业务来源，来源方也不 import channel。
+    """
+
+    def __init__(self):
+        self._pending: dict[str, asyncio.Future] = {}
+
+    def register(self, req_id: str, fut: asyncio.Future) -> None:
+        self._pending[req_id] = fut
+
+    def resolve(self, req_id: str, answer: str) -> bool:
+        """channel 侧回填答案。返回 False 表示请求不存在或已完成。"""
+        fut = self._pending.get(req_id)
+        if fut is None or fut.done():
+            return False
+        fut.set_result(answer)
+        return True
+
+    def discard(self, req_id: str) -> None:
+        self._pending.pop(req_id, None)
+
+
 class MessageBus:
     """Inbound bus + channel-routed outbound bus.
 
@@ -53,6 +79,7 @@ class MessageBus:
         self.in_queue = MessageInQueue()
         self.out_queue = MessageOutQueue()
         self.stream_queue = StreamEventQueue()
+        self.approvals = ApprovalBroker()
         self._out_subscribers: dict[str, MessageOutQueue] = {}
         self._stream_subscribers: dict[str, StreamEventQueue] = {}
 

@@ -4,7 +4,7 @@ Scheduler engine.
 Runs as an asyncio background task. Polls the SchedulerStore for due tasks
 every POLL_INTERVAL_SECONDS. For each due task it enqueues a trigger message
 into the incoming bus; the AgentLoop processes it like a normal message, so
-the result is routed back to the originating session (via metadata.chat_id)
+the result is routed back to the originating session (via channel_session_id)
 with the session's conversation history.
 
 For recurring tasks, after dispatch the next trigger_at is computed from the
@@ -15,7 +15,7 @@ import logging
 from datetime import datetime
 
 from bus.queue import MessageBus
-from models import MessageBody, MessageIn
+from models import MessageBody, MessageIn, Origin
 from scheduler.models import ScheduleTask
 from scheduler.cron import next_run
 from scheduler.store import SchedulerStore
@@ -51,18 +51,18 @@ class Scheduler:
 
         # 标记为正在执行并投递触发消息
         SchedulerStore.update_status(task.id, "running")
-        trigger_metadata = {
-            "source": "scheduler",
-            "task_id": task.id,
-            "channel": task.channel,
-            **dict(task.metadata or {}),
-        }
         await self.msg_bus.in_queue.enqueue(
             MessageIn(
                 session_id=task.session_id,
                 channel=task.channel,
                 body=MessageBody(content=task.instruction),
-                metadata=trigger_metadata,
+                origin=Origin(kind="scheduler", task_id=task.id),
+                # 旧任务数据可能没有 channel_session_id，回落到废弃的
+                # metadata.chat_id 兼容
+                channel_session_id=(
+                    task.channel_session_id
+                    or (task.metadata or {}).get("chat_id", "")
+                ),
             )
         )
 

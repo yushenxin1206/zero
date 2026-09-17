@@ -74,7 +74,7 @@ class CreateScheduledTask(Tool):
                 schedule_type=kwargs.get("schedule_type", "once"),
                 channel=context.channel,
                 session_id=context.session_id,
-                metadata=dict(context.metadata),
+                channel_session_id=context.channel_session_id,
                 trigger_in_minutes=kwargs.get("trigger_in_minutes"),
                 trigger_at_iso=kwargs.get("trigger_at_iso"),
                 cron=kwargs.get("cron", ""),

@@ -139,14 +139,9 @@ class FeishuChannel:
                 session_id=SessionStore.resolve_session("feishu", chat_id),
                 channel="feishu",
                 body=MessageBody(content=text),
-                metadata={
-                    "source": "feishu",
-                    "event_type": "im.message.receive_v1",
-                    "message_id": message_id,
-                    "chat_id": chat_id,
-                    "msg_type": msg.message_type or "",
-                    "sender_id": sender_id,
-                },
+                channel_message_id=message_id,
+                channel_sender_id=sender_id,
+                channel_session_id=chat_id,
             )
 
             # Push to bus from WS thread → asyncio loop
@@ -259,15 +254,15 @@ class FeishuChannel:
 
         Args:
             message_out: Agent output message
-            receive_id: Target chat/user ID (falls back to metadata.chat_id)
+            receive_id: Target chat/user ID (falls back to message_out.channel_session_id)
             receive_id_type: ID type (chat_id, open_id, user_id, etc.)
 
         Returns:
             API response data
         """
-        target_id = receive_id or message_out.metadata.get("chat_id", "")
+        target_id = receive_id or message_out.channel_session_id
         if not target_id:
-            raise ValueError("No receive_id provided and no chat_id in message metadata")
+            raise ValueError("No receive_id provided and no channel_session_id on message")
 
         return await self.send_post(target_id, message_out.body.content, receive_id_type)
 

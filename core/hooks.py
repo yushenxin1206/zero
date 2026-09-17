@@ -35,10 +35,9 @@ class HookContext:
     """所有 hook 共用的运行时上下文，一次构建、逐 hook 透传。"""
     channel: str
     session_id: str
-    turn_id: str = ""                       # 触发本轮的 MessageIn.id（runner 侧可能为空）
+    turn_id: str = ""                       # 触发本轮的 MessageIn.id
     iteration: int = 0                      # 仅 iteration 级 hook 有意义
     tool_context: ToolContext | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)  # 复制自 msg_in.metadata
 
 
 # ---------------------------------------------------------------------------

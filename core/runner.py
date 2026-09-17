@@ -47,17 +47,13 @@ class AgentRunner:
         self.hooks = hooks or Hooks()
 
     def _hook_context(self) -> HookContext:
-        """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。
-
-        runner 不知道 MessageIn.id，turn_id 留空；渠道侧 message_id 等
-        信息可从 tool_context.metadata 获取。
-        """
+        """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。"""
         tc = self.context.tool_context
         return HookContext(
             channel=self.context.channel,
             session_id=self.context.session_id,
+            turn_id=tc.turn_id,
             tool_context=tc,
-            metadata=tc.metadata,
         )
 
     async def run(self) -> str:
@@ -182,7 +178,6 @@ class AgentRunner:
                 content=content,
                 tool_calls=tool_calls,
             ),
-            metadata={},
         )
         SessionStore.append(msg_out)
 
@@ -232,7 +227,6 @@ class AgentRunner:
                 content=content,
                 tool_call_id=tc.id,
             ),
-            metadata={},
         )
         SessionStore.append(tool_msg)
 

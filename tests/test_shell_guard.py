@@ -32,7 +32,9 @@ from bus.queue import MessageBus
 from core.context import Context
 from core.hooks import HookChain, HookContext
 from core.runner import AgentRunner
-from models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
+from models import (
+    AgentRuntimeConfig, ApprovalRequest, LLMConfig, Origin, ProviderConfigs,
+    ToolContext)
 from plugins.shell_guard import approval, install, manage, policy, store
 from plugins.shell_guard.handler import ShellGuard
 from session.store import SessionStore
@@ -45,9 +47,15 @@ CHANNEL = "cli"
 store.STORE_PATH = _tmp_root / "shell_guard.json"
 
 
-def fresh_ctx(channel: str = CHANNEL, metadata: dict | None = None) -> HookContext:
+def fresh_ctx(channel: str = CHANNEL, *, turn_id: str = "",
+              origin: Origin | None = None) -> HookContext:
+    session_id = str(uuid4())
+    tc = ToolContext(
+        channel=channel, session_id=session_id, turn_id=turn_id,
+        origin=origin or Origin())
     return HookContext(
-        channel=channel, session_id=str(uuid4()), metadata=metadata or {})
+        channel=channel, session_id=session_id, turn_id=turn_id,
+        tool_context=tc)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +126,7 @@ def test_handler_passthrough_and_builtin():
         assert d is not None and not d.proceed and "fail-closed" in d.reason
         # scheduler 来源即时拒绝（不进审批、不发事件）
         d = await guard("shell", {"command": "npm install"},
-                        fresh_ctx(metadata={"source": "scheduler"}))
+                        fresh_ctx(origin=Origin(kind="scheduler", task_id="t-9")))
         assert d is not None and not d.proceed and "定时任务" in d.reason
 
     asyncio.run(run())
@@ -137,7 +145,7 @@ async def _ask_roundtrip(command: str, answer: str | None):
     """
     bus = MessageBus()
     guard = ShellGuard(bus)
-    ctx = fresh_ctx(metadata={"turn_id": "t-1"})
+    ctx = fresh_ctx(turn_id="t-1")
     task = asyncio.create_task(
         guard("shell", {"command": command}, ctx))
 
@@ -150,8 +158,8 @@ async def _ask_roundtrip(command: str, answer: str | None):
             approval.TIMEOUT = 180
 
     event = await bus.stream_queue.dequeue()
-    info = json.loads(event.content)
-    assert approval.resolve(info["req_id"], answer)
+    req = ApprovalRequest.model_validate_json(event.content)
+    assert bus.approvals.resolve(req.req_id, answer)
     return event, await task
 
 
@@ -160,10 +168,11 @@ def test_approval_flow():
         # y：放行一次，不沉淀规则
         event, d = await _ask_roundtrip("npm install", "y")
         assert event.kind == "approval" and event.turn_id == "t-1"
-        info = json.loads(event.content)
-        assert info["command"] == "npm install"
+        req = ApprovalRequest.model_validate_json(event.content)
+        assert req.summary == "npm install"
+        assert [o.key for o in req.options] == ["y", "n", "a", "w"]
         # deadline 是 CLI 倒计时的权威时点，由插件端统一签发
-        assert info["deadline"] > time.time()
+        assert req.deadline > time.time()
         assert d is None
         assert store.rules() == ([], [])
 

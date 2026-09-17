@@ -21,7 +21,9 @@ class ScheduleTask(Base):
     trigger_at: datetime | None = None  # once: 执行时刻；recurring: 下次执行时刻
     cron: str = ""  # recurring: 5 字段 cron 表达式
     status: str = "pending"  # pending | running | done | failed | cancelled
-    # 渠道专有路由字段（如飞书的 chat_id）放在 metadata
+    # 渠道侧会话标识（飞书 chat_id、cli source_id），结果回投寻址用
+    channel_session_id: str = ""
+    # 已废弃：旧版本整包保存的渠道路由信息，仅为兼容历史数据保留读取
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
