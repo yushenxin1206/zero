@@ -111,6 +111,23 @@ class Message(Base):
     metadata: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.now)
 
+    def to_openai(self) -> dict[str, Any] | None:
+        """转换为 OpenAI 协议消息 dict；未知 sender 无法映射时返回 None。"""
+        if self.sender == "user":
+            return {"role": "user", "content": self.body.content}
+        if self.sender == "assistant":
+            msg: dict[str, Any] = {"role": "assistant", "content": self.body.content}
+            if self.body.tool_calls:
+                msg["tool_calls"] = [tc.model_dump() for tc in self.body.tool_calls]
+            return msg
+        if self.sender == "tool":
+            return {
+                "role": "tool",
+                "tool_call_id": self.body.tool_call_id,
+                "content": self.body.content,
+            }
+        return None
+
 
 class MessageIn(Message):
     sender: str = "user"
@@ -126,6 +143,18 @@ class MessageTool(Message):
     """Tool execution result message, produced by agent during tool calls."""
     sender: str = "tool"
     recipient: str = "assistant"
+
+
+class SummaryRecord(Base):
+    """会话历史压缩摘要（{session_dir}/summary.json）。
+
+    covered_upto 指向被压缩进摘要的最后一条原始消息 id（messages.jsonl 中
+    某条 Message.id）；load_history 据此定位尾部起点，合成 [摘要消息] + 尾部。
+    content 已包裹 <summary>...</summary> 标签，由压缩模型生成。
+    """
+    content: str
+    covered_upto: str
+    created_at: datetime = Field(default_factory=datetime.now)
 
 
 class StreamEvent(Base):
@@ -222,6 +251,11 @@ class AgentRuntimeConfig(Base):
     llm_config: LLMConfig = Field(default_factory=LLMConfig)
     context_window_tokens: int = 65536
     max_iterations: int = 50
+    # 会话上下文自动压缩：历史超出阈值时，把前缀压缩成摘要后落盘
+    context_compress_enabled: bool = True
+    context_compress_trigger_ratio: float = 0.75  # 触发阈值 min(窗口×比例, 窗口-max_tokens-4096)
+    context_compress_tail_ratio: float = 0.25  # 保留在 payload 中的尾部预算（软上限）
+    context_compress_summary_max_tokens: int = 2000  # 压缩模型输出的摘要上限
 
 
 class FeishuConfig(Base):

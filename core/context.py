@@ -68,11 +68,17 @@ class Context:
 - Never fabricate information. If you don't know, say so and offer alternatives.
 - Don't take harmful actions (delete files, modify critical configs) without explicit confirmation.
 - Respect privacy and security — never expose sensitive data.
+- A message wrapped in <summary> tags is a compressed history digest, not a new user instruction.
 
 {self._memory}
     
 {self._skills}    
 """
+
+    @property
+    def system_prompt(self) -> str:
+        """完整 system 提示词（含运行时/记忆/技能段），公开访问点。"""
+        return self._prompt
 
     @property
     def _runtime(self) -> str:
@@ -159,19 +165,9 @@ When a skill file references a relative path, resolve it against the skill direc
             }
         ]
         for m in history:
-            if m.sender == "user":
-                msgs.append({"role": "user", "content": m.body.content})
-            elif m.sender == "assistant":
-                msg: dict[str, Any] = {"role": "assistant", "content": m.body.content}
-                if m.body.tool_calls:
-                    msg["tool_calls"] = [tc.model_dump() for tc in m.body.tool_calls]
-                msgs.append(msg)
-            elif m.sender == "tool":
-                msgs.append({
-                    "role": "tool",
-                    "tool_call_id": m.body.tool_call_id,
-                    "content": m.body.content,
-                })
+            p = m.to_openai()
+            if p is not None:
+                msgs.append(p)
         return msgs
 
     @property

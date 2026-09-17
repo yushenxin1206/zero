@@ -41,6 +41,5 @@ def load_config():
 default_config = load_config()
 
 if __name__ == '__main__':
+    # save_config(load_config())
     pass
-    # save_config(Config())
-

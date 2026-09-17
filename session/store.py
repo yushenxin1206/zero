@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from models import Message
+from models import Message, MessageBody, SummaryRecord
 from session.models import SessionMeta
 
 SESSIONS_ROOT = Path.home() / ".zero" / "sessions"
@@ -87,6 +87,10 @@ class SessionStore:
     @staticmethod
     def _session_file(channel: str, session_id: str) -> Path:
         return SessionStore._session_dir(channel, session_id) / "messages.jsonl"
+
+    @staticmethod
+    def _summary_file(channel: str, session_id: str) -> Path:
+        return SessionStore._session_dir(channel, session_id) / "summary.json"
 
     # ------------------------------------------------------------------
     # Public API
@@ -239,8 +243,39 @@ class SessionStore:
                 return
 
     @staticmethod
-    def load_history(session_id: str, channel: str) -> list[Message]:
-        """Load all messages for a session in chronological order."""
+    def load_summary(channel: str, session_id: str) -> SummaryRecord | None:
+        """Load the compression summary record, or None if absent/corrupt."""
+        path = SessionStore._summary_file(channel, session_id)
+        if not path.exists():
+            return None
+        try:
+            return SummaryRecord.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def save_summary(channel: str, session_id: str, record: SummaryRecord) -> None:
+        """Atomically persist a summary record (tmp file + replace)."""
+        path = SessionStore._summary_file(channel, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(record.model_dump_json(), encoding="utf-8")
+        tmp.replace(path)
+
+    @staticmethod
+    def load_history(
+            session_id: str,
+            channel: str,
+            include_summary: bool = True,
+    ) -> list[Message]:
+        """Load all messages for a session in chronological order.
+
+        When include_summary is True and a summary record exists, the covered
+        prefix is replaced by a single synthetic summary user message
+        (metadata.kind == "summary"), keeping the tail (messages after
+        covered_upto) intact. Falls back to full history if the covered
+        message id can't be located.
+        """
         try:
             path = SessionStore._session_file(channel, session_id)
         except ValueError:
@@ -254,4 +289,20 @@ class SessionStore:
                 if not line:
                     continue
                 messages.append(Message.model_validate_json(line))
+        if not include_summary:
+            return messages
+        rec = SessionStore.load_summary(channel, session_id)
+        if rec is None:
+            return messages
+        for i, m in enumerate(messages):
+            if m.id == rec.covered_upto:
+                summary_msg = Message(
+                    session_id=session_id,
+                    channel=channel,
+                    sender="user",
+                    recipient="assistant",
+                    body=MessageBody(content=rec.content),
+                    metadata={"kind": "summary"},
+                )
+                return [summary_msg] + messages[i + 1:]
         return messages

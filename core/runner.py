@@ -10,6 +10,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from core.compactor import Compactor
 from core.context import Context
 from core.hooks import HookContext, Hooks
 from models import (
@@ -46,6 +47,7 @@ class AgentRunner:
         self.context = running_context
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
+        self.compactor = Compactor(provider=self.provider, runtime_config=self.runtime_config)
 
     def _hook_context(self) -> HookContext:
         """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。"""
@@ -97,6 +99,10 @@ class AgentRunner:
             content_parts: list[str] = []
             tool_call_acc: dict[int, dict] = {}
             usage: TokenUsage | None = None
+
+            # 每次构建 payload 之前检查是否触发上下文压缩（第 0 次迭代即
+            # turn 起点；压缩后 context.messages 自动合成 [摘要消息] + 尾部）
+            await self.compactor.maybe_compress(context=self.context)
 
             payload = LLMPayload(
                 messages=self.context.messages,
