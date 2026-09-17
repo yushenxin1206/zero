@@ -49,11 +49,38 @@ class ToolCall(Base):
     function: ToolCallFunction
 
 
+class TokenUsage(Base):
+    """单次 LLM 调用的 token 用量，字段命名对齐 OpenAI 协议。
+
+    厂商不返回 usage 时整体为 None；部分字段（如 cached_tokens）只有
+    部分厂商返回，故可空。
+    """
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+    @classmethod
+    def from_openai(cls, data: dict[str, Any]) -> "TokenUsage":
+        """Parse an OpenAI-style usage dict, flattening *_details sub-objects."""
+        prompt_details = data.get("prompt_tokens_details") or {}
+        completion_details = data.get("completion_tokens_details") or {}
+        return cls(
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            total_tokens=data.get("total_tokens", 0),
+            cached_tokens=prompt_details.get("cached_tokens"),
+            reasoning_tokens=completion_details.get("reasoning_tokens"),
+        )
+
+
 class MessageBody(Base):
     content: str | None = None  # None when assistant only invokes tools
     attachments: list | None = None
     tool_calls: list[ToolCall] | None = None  # only on assistant messages
     tool_call_id: str | None = None  # only on tool messages, links to ToolCall.id
+    token_usage: TokenUsage | None = None  # only on assistant messages; None = 厂商未上报
 
 
 class Origin(Base):

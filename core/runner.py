@@ -19,6 +19,7 @@ from models import (
     MessageOut,
     MessageTool,
     StreamEvent,
+    TokenUsage,
     ToolCall,
     ToolCallFunction,
 )
@@ -95,6 +96,7 @@ class AgentRunner:
         for _ in range(self.runtime_config.max_iterations):
             content_parts: list[str] = []
             tool_call_acc: dict[int, dict] = {}
+            usage: TokenUsage | None = None
 
             payload = LLMPayload(
                 messages=self.context.messages,
@@ -109,18 +111,27 @@ class AgentRunner:
                     logger.info("[reasoning] %s", data)
                 elif kind == "tool_calls":
                     self._accumulate_tool_call(tool_call_acc, data)
+                elif kind == "usage":
+                    usage = TokenUsage.from_openai(data)
 
             content = "".join(content_parts)
             tool_calls_raw = [tool_call_acc[i] for i in sorted(tool_call_acc)]
 
             # No tool calls: final text reply
             if not tool_calls_raw:
-                yield StreamEvent(kind="done", content=content)
+                yield StreamEvent(
+                    kind="done",
+                    content=content,
+                    metadata=(
+                        {"token_usage": usage.model_dump(by_alias=True)}
+                        if usage else {}
+                    ),
+                )
                 return
 
             # Parse tool calls and persist assistant message with tool_calls
             tool_calls = [self._parse_tool_call(tc) for tc in tool_calls_raw]
-            await self._persist_assistant_with_tools(content, tool_calls)
+            await self._persist_assistant_with_tools(content, tool_calls, usage)
 
             # Execute each tool and persist the result
             for tc in tool_calls:
@@ -169,6 +180,7 @@ class AgentRunner:
             self,
             content: str | None,
             tool_calls: list[ToolCall],
+            usage: TokenUsage | None = None,
     ) -> None:
         """Persist assistant message that triggered tool calls."""
         msg_out = MessageOut(
@@ -177,6 +189,7 @@ class AgentRunner:
             body=MessageBody(
                 content=content,
                 tool_calls=tool_calls,
+                token_usage=usage,
             ),
         )
         SessionStore.append(msg_out)

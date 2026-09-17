@@ -8,7 +8,7 @@ from bus.queue import MessageBus
 from core.context import Context
 from core.hooks import Hooks
 from core.runner import AgentRunner
-from models import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs, ToolContext
+from models import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs, TokenUsage, ToolContext
 from session.store import SessionStore
 from tools.registry import ToolRegistry
 
@@ -73,6 +73,7 @@ class AgentLoop:
             # runner.run_stream() yields incremental events while executing;
             # stamp routing fields and forward them to subscribed channels
             reply_text = ""
+            final_usage: TokenUsage | None = None
             async for event in runner.run_stream():
                 event.channel = msg_in.channel
                 event.session_id = msg_in.session_id
@@ -83,6 +84,8 @@ class AgentLoop:
                     reply_text += event.content
                 elif event.kind == "done":
                     reply_text = event.content or reply_text
+                    if u := (event.metadata or {}).get("token_usage"):
+                        final_usage = TokenUsage(**u)
             content = reply_text
 
             msg_out = MessageOut(
@@ -90,6 +93,7 @@ class AgentLoop:
                 channel=msg_in.channel,
                 body=MessageBody(
                     content=content,
+                    token_usage=final_usage,
                 ),
                 origin=msg_in.origin,
                 # turn_id 让 channel 端能把最终消息精确匹配到触发它的那一轮，

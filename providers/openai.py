@@ -23,6 +23,10 @@ class OpenAI(Provider):
         }
 
         payload.llm_config.stream = True
+        # 要求厂商在流末尾返回 usage chunk；不支持的厂商会忽略该参数
+        stream_options = dict(payload.llm_config.stream_options or {})
+        stream_options.setdefault("include_usage", True)
+        payload.llm_config.stream_options = stream_options
 
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, stream=True,
@@ -50,6 +54,9 @@ class OpenAI(Provider):
                 yield "reasoning", reasoning
             for tc in delta.get("tool_calls") or []:
                 yield "tool_calls", tc
+            # usage 出现在最后一个 chunk（choices 为空）
+            if usage := j.get("usage"):
+                yield "usage", usage
 
     async def stream_chunks(self, payload: LLMPayload):
         """Async wrapper around the blocking SSE reader.

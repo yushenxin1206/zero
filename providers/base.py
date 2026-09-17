@@ -67,6 +67,7 @@ class Provider(ABC):
           - "content":   data = text delta (str)
           - "reasoning": data = reasoning delta (str)
           - "tool_calls": data = streamed tool_call fragment (dict)
+          - "usage":     data = usage dict from the provider (final chunk)
         """
         pass
 

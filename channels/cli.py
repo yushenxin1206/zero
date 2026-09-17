@@ -545,6 +545,7 @@ class CLIChannel:
         standing stream listener routed into this turn's private queue."""
         acc = ""
         status = ""
+        usage: dict | None = None
         live = Live(
             self._frame(acc, status),
             console=self.console,
@@ -576,6 +577,8 @@ class CLIChannel:
                     elif event.kind == "done":
                         if event.content and not acc:
                             acc = event.content
+                        if u := (event.metadata or {}).get("token_usage"):
+                            usage = u
                         done = True
                     live.update(self._frame(acc, status))
         finally:
@@ -587,6 +590,12 @@ class CLIChannel:
                 self._bg_finalized.add(turn_id)
             if self._active_turn_id == turn_id:
                 self._active_turn_id = ""
+            if usage:
+                self.console.print(
+                    f"[dim]tokens: {usage.get('promptTokens', 0)} in / "
+                    f"{usage.get('completionTokens', 0)} out / "
+                    f"{usage.get('totalTokens', 0)} total[/dim]"
+                )
             self.console.print()
 
         # Drain the matching final MessageOut so queues stay in sync.
