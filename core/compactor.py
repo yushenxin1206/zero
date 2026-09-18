@@ -17,6 +17,7 @@ import math
 import re
 import unicodedata
 from pathlib import Path
+from typing import Any
 
 from core.context import Context, get_cwd
 from models import (
@@ -101,21 +102,41 @@ def find_tail_boundary(raw: list[Message], tail_budget: int) -> int:
 # 压缩提示词
 # ---------------------------------------------------------------------------
 
-COMPRESS_PROMPT = """You are compressing a conversation history into a concise summary that will be used as future context. This is an offline summarization task, not a conversation turn: never continue, reply to, or extend the conversation.
+COMPRESS_PROMPT = """Compress this conversation history into a structured summary — the ONLY context for future turns. Output the summary alone, in the conversation's primary language.
 
-If the input contains a <previous_summary> block, it is the only surviving record of earlier history that is no longer present in full. Merge its information into the new summary — never drop facts that exist only there.
+Rules:
+- A <previous_summary> block, if present, is the sole record of earlier history: merge all its facts, prune what is stale or superseded.
+- Record current state and outcomes, not step-by-step transcripts. Keep exact wording only for paths, commands, error text, and names/titles.
+- Each fact appears in exactly one section. Empty sections get "(none)"; never omit a heading.
+- If space is tight, keep errors/fixes, paths/identifiers, decisions/rationale, pending work — drop tool-call narration first.
 
-Produce a summary with these exact section headings:
-- Goal: the user's current objective(s)
-- Constraints & Preferences: hard constraints and user preferences stated so far
-- Progress: what has been Done / is In Progress / is Blocked (for content-production tasks, list the items produced with their titles/topics and status)
-- Key Decisions: important decisions made and the reasons
-- Next Steps: what remains to be done
-- Critical Context: technical facts, exact error messages, and details that must not be lost
+Follow this exact format:
 
-Condense everything in your own words — never copy long passages from the history verbatim. Record current state and outcomes rather than step-by-step operation transcripts. Each fact belongs in exactly one section; do not repeat information across sections. When merging a previous summary, prune stale or low-value details so the summary stays compact over repeated compressions. Keep it factual and information-dense; preserve exact wording only where it matters (paths, error text, commands, names/titles). Respond in the primary language of the conversation.
+## Goal
+[What the user is trying to accomplish]
 
-List the file paths read or modified in this history (absolute or relative to the working directory), one per line. If none, output (none)."""
+## Constraints & Preferences
+- [Hard constraints and stated preferences; "(none)" if none]
+
+## Progress
+### Done
+- [x] [Completed tasks/changes — for content-production tasks, include each item's title/topic]
+### In Progress
+- [ ] [Unfinished work]
+### Blocked
+- [Issues preventing progress, if any]
+
+## Key Decisions
+- **[Decision]**: [Brief rationale]
+
+## Next Steps
+1. [Ordered list of remaining work]
+
+## Critical Context
+- [Technical facts, exact error text, and details that must not be lost; "(none)" if none]
+
+## Files
+[Every file path read or modified, absolute or relative to the working directory, one per line; "(none)" if none]"""
 
 # 压缩调用 max_tokens 额外为 reasoning 思考预留的余量（思考 tokens 与
 # 正文共享同一 completion 预算，不留余量时正文会被截断成残句）
@@ -144,7 +165,7 @@ def build_summary_messages(
             "content": f"<previous_summary>\n{prev_summary.content}\n</previous_summary>",
         })
     for m in raw_prefix:
-        p = m.to_openai()
+        p: dict[str, Any] | None = m.to_openai()
         if p is not None:
             messages.append(p)
     # 固定 user 指令收尾，避免以 assistant 结尾触发续写

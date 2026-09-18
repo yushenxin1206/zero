@@ -170,7 +170,7 @@ def test_approval_flow():
         assert event.kind == "approval" and event.turn_id == "t-1"
         req = ApprovalRequest.model_validate_json(event.content)
         assert req.summary == "npm install"
-        assert [o.key for o in req.options] == ["y", "n", "a", "w"]
+        assert [o.key for o in req.options] == ["y", "a", "s", "t", "n", "d"]
         # deadline 是 CLI 倒计时的权威时点，由插件端统一签发
         assert req.deadline > time.time()
         assert d is None
@@ -189,8 +189,8 @@ def test_approval_flow():
         assert await guard(
             "shell", {"command": "npm run build"}, fresh_ctx()) is None
 
-        # w：拒绝并沉淀 deny 规则
-        _, d = await _ask_roundtrip("npm publish", "w")
+        # d：拒绝并沉淀 deny 规则
+        _, d = await _ask_roundtrip("npm publish", "d")
         assert d is not None and not d.proceed and "always" in d.reason
         assert store.rules() == (["npm run build"], ["npm publish"])
 

@@ -10,6 +10,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
+from config import TOOL_RESULT_MAX_CHARS
 from core.compactor import Compactor
 from core.context import Context
 from core.hooks import HookContext, Hooks
@@ -230,8 +231,8 @@ class AgentRunner:
                         )
                         content = json.dumps(result, ensure_ascii=False)
                     # 截断是核心安全不变量，永远在 hook 之后执行
-                    if len(content) > 10000:
-                        content = content[:10000] + "...truncated"
+                    if len(content) > TOOL_RESULT_MAX_CHARS:
+                        content = content[:TOOL_RESULT_MAX_CHARS] + "...truncated"
                 except Exception as e:
                     logger.exception("Tool execution failed: %s", tc.function.name)
                     content = json.dumps({"error": str(e)}, ensure_ascii=False)

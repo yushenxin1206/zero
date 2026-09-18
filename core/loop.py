@@ -84,8 +84,9 @@ class AgentLoop:
                     reply_text += event.content
                 elif event.kind == "done":
                     reply_text = event.content or reply_text
-                    if u := (event.metadata or {}).get("token_usage"):
-                        final_usage = TokenUsage(**u)
+                    usage_data = (event.metadata or {}).get("token_usage")
+                    if isinstance(usage_data, dict):
+                        final_usage = TokenUsage(**usage_data)
             content = reply_text
 
             msg_out = MessageOut(

@@ -28,13 +28,15 @@ logger = logging.getLogger(__name__)
 # 等待用户作答的最长时间；超时按拒绝处理
 TIMEOUT = 180
 
-ANSWERS = ("y", "n", "a", "w")  # 允许一次 / 拒绝 / 总是允许 / 总是拒绝
+ANSWERS = ("y", "a", "s", "t", "n", "d")  # 允许一次 / 总是允许 / 会话放行 / 本轮放行 / 拒绝 / 总是拒绝
 
 _OPTIONS = [
     ApprovalOption(key="y", label="允许一次"),
+    ApprovalOption(key="a", label="总是允许(该命令)"),
+    ApprovalOption(key="s", label="本会话放行"),
+    ApprovalOption(key="t", label="本轮放行"),
     ApprovalOption(key="n", label="拒绝"),
-    ApprovalOption(key="a", label="总是允许"),
-    ApprovalOption(key="w", label="总是拒绝"),
+    ApprovalOption(key="d", label="总是拒绝"),
 ]
 
 _TIMEOUT_HINT = (

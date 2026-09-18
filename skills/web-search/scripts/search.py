@@ -3,6 +3,7 @@
 Web Search tool - Bing search (no API key required).
 Usage: python search.py "query" [max_results]
 """
+import os
 import sys
 import re
 import html as html_mod
@@ -14,6 +15,31 @@ USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+# Exotic whitespace / invisible chars found in scraped snippets (e.g. U+2002 EN SPACE)
+_WS_RE = re.compile("[\u00a0\u1680\u2000-\u200a\u202f\u205f\u3000\ufeff]")
+
+
+def setup_stdio():
+    """Force UTF-8 output so non-GBK characters don't crash on Windows consoles."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+        except Exception:
+            pass
+
+
+def clean(s: str) -> str:
+    """Normalize exotic whitespace and drop control chars."""
+    s = _WS_RE.sub(" ", s)
+    return "".join(ch for ch in s if ch == "\n" or ch >= " ").strip()
 
 
 def fetch(query: str, retries: int = 3) -> str:
@@ -70,7 +96,7 @@ def parse_ddg(html_text: str, max_results: int):
 
 
 def strip_tags(s: str) -> str:
-    return html_mod.unescape(re.sub(r"<[^>]+>", "", s)).strip()
+    return clean(html_mod.unescape(re.sub(r"<[^>]+>", "", s)))
 
 
 def decode_url(u: str) -> str:
@@ -105,6 +131,7 @@ def parse(html_text: str, max_results: int):
 
 
 def main():
+    setup_stdio()
     if len(sys.argv) < 2:
         print('Usage: python search.py "query" [max_results]', file=sys.stderr)
         sys.exit(1)

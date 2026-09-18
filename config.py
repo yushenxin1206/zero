@@ -12,6 +12,10 @@ HOME = Path.home()
 ZERO_ROOT = HOME / '.zero'
 CONFIG_PATH = ZERO_ROOT / 'config.json'
 
+# 工具结果截断阈值（字符）。core/runner.py 执行截断、core/context.py
+# 提示词说明共用同一值，只在此定义一次，防止两处漂移。
+TOOL_RESULT_MAX_CHARS = 10000
+
 
 class Config(BaseSettings):
     agent_runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
