@@ -1,4 +1,4 @@
-"""
+ """
 Tool for editing file content via find-and-replace
 """
 import os
