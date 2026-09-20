@@ -4,7 +4,6 @@ Run: python tests/test_compactor.py
 """
 import asyncio
 import json
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -142,30 +141,6 @@ assert msgs[3] == {"role": "tool", "tool_call_id": "call_1", "content": "结果"
 # 无 previous_summary 时同样以 user 指令收尾（防止 assistant 裸结尾续写）
 assert msgs[-1] == {"role": "user", "content": SUMMARY_FINAL_INSTRUCTION}
 print("build_summary_messages ok")
-
-
-# --- _extract_files -----------------------------------------------------------
-tmpf = tempfile.NamedTemporaryFile(delete=False, suffix=".txt")
-tmpf.write(b"x")
-tmpf.close()
-summary = (
-    f"Goal: test\n"
-    f"{tmpf.name}\n"
-    f"pyproject.toml\n"
-    f"- pyproject.toml\n"
-    f"1. pyproject.toml\n"
-    f"not/existing/path.txt\n"
-    f"(none)\n"
-    f"List the file paths read.\n"
-    f"pyproject.toml\n"
-)
-files = Compactor._extract_files(summary)
-assert tmpf.name in files and "pyproject.toml" in files
-assert "not/existing/path.txt" not in files
-assert "(none)" not in files and "List the file paths read." not in files
-assert files.count("pyproject.toml") == 1  # 去重（含 markdown 前缀行）
-os.unlink(tmpf.name)
-print("_extract_files ok")
 
 
 # --- load_history synthesis & fallback ----------------------------------------

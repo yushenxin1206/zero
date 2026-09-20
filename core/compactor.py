@@ -14,12 +14,10 @@ load_history 用 [摘要消息] + 尾部 合成 payload。
 import json
 import logging
 import math
-import re
 import unicodedata
-from pathlib import Path
 from typing import Any
 
-from core.context import Context, get_cwd
+from core.context import Context
 from models import (
     AgentRuntimeConfig,
     LLMConfig,
@@ -108,7 +106,7 @@ Rules:
 - A <previous_summary> block, if present, is the sole record of earlier history: merge all its facts, prune what is stale or superseded.
 - Record current state and outcomes, not step-by-step transcripts. Keep exact wording only for paths, commands, error text, and names/titles.
 - Each fact appears in exactly one section. Empty sections get "(none)"; never omit a heading.
-- If space is tight, keep errors/fixes, paths/identifiers, decisions/rationale, pending work — drop tool-call narration first.
+- If space is tight, keep errors/fixes, paths/identifiers, decisions/rationale, pending work — drop tool-call narration first, then Read file entries.
 
 Follow this exact format:
 
@@ -136,7 +134,16 @@ Follow this exact format:
 - [Technical facts, exact error text, and details that must not be lost; "(none)" if none]
 
 ## Files
-[Every file path read or modified, absolute or relative to the working directory, one per line; "(none)" if none]"""
+Group every file path (absolute or relative to the working directory) by action; each file appears in exactly one group, under its most significant action (deleted > created > modified > read):
+
+### Read
+- [files only inspected, never changed]
+### Created
+- [files newly created]
+### Modified
+- [pre-existing files edited]
+### Deleted
+- [files removed]"""
 
 # 压缩调用 max_tokens 额外为 reasoning 思考预留的余量（思考 tokens 与
 # 正文共享同一 completion 预算，不留余量时正文会被截断成残句）
@@ -226,11 +233,7 @@ class Compactor:
                 "摘要缺少必需小节（疑似被截断），放弃落盘保留旧摘要: session=%s",
                 session_id)
             return False
-        files = self._extract_files(summary)
-        files_block = ""
-        if files:
-            files_block = "\n\n<files_touched>\n" + "\n".join(files) + "\n</files_touched>"
-        content = f"<summary>\n{summary}{files_block}\n</summary>"
+        content = f"<summary>\n{summary}\n</summary>"
         try:
             SessionStore.save_summary(
                 channel, session_id,
@@ -296,30 +299,3 @@ class Compactor:
         has_goal = "goal" in low or "目标" in text
         has_progress = "progress" in low or "进度" in text
         return has_goal and has_progress
-
-    @staticmethod
-    def _extract_files(summary: str) -> list[str]:
-        """从摘要文本中抽取存在的文件路径（相对路径按工作目录解析）。
-
-        逐行处理：跳过空行/"(none)" 等占位行/含空格且无路径分隔符的句子行，
-        只保留 os.path 存在（相对 cwd 或绝对）的路径，最后按出现顺序去重。
-        """
-        cwd = get_cwd()
-        files: list[str] = []
-        for line in summary.splitlines():
-            p = line.strip().rstrip(".").strip()
-            # 剥离 markdown 列表/编号前缀（"- "、"* "、"1. " 等），否则
-            # Path("- C:\\...") 永远判定不存在，文件清单会整体丢失
-            m = re.match(r"^(?:[-*•]\s*|\d+[.、)]\s*)+(.*)$", p)
-            if m:
-                p = m.group(1).strip()
-            if not p or p.lower() in {"(none)", "none", "n/a"}:
-                continue
-            if " " in p and not any(sep in p for sep in ("/", "\\")):
-                continue
-            path = Path(p)
-            if not path.is_absolute():
-                path = cwd / path
-            if path.exists():
-                files.append(p)
-        return list(dict.fromkeys(files))

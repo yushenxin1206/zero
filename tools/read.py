@@ -52,9 +52,9 @@ class Read(Tool):
         }
 
     async def run(self, context=None, **kwargs):
-        file_path = kwargs["file_path"]
-        start_line = kwargs.get("start_line")
-        end_line = kwargs.get("end_line")
+        file_path: str = kwargs["file_path"]
+        start_line: int | None = kwargs.get("start_line")
+        end_line: int | None = kwargs.get("end_line")
 
         file_path = os.path.expanduser(file_path)
 
