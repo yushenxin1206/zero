@@ -255,9 +255,9 @@ class CLIChannel:
 
     def _render_message_line(self, m, max_len: int = 600):
         # 压缩摘要（load_history 合成的消息）：独立样式，避免被误读为用户发言
-        if m.metadata.get("kind") == "summary":
+        if m.metadata.get("kind") == "compact":
             self.console.print(
-                f"[dim magenta]summary ›[/dim magenta] "
+                f"[dim magenta]compact ›[/dim magenta] "
                 f"{self._clip(m.body.content or '', max_len)}")
             return
         if m.sender == "user":

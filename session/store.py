@@ -11,23 +11,33 @@ Channel-level index for session lookup:
             "session_id": "<uuid4>",
             "date": "2026-08-12",
             "last_updated_at": "2026-08-12T14:30:00",
-            "title": "调试飞书消息丢失问题"
+            "title": "调试飞书消息丢失问题",
+            "description": "……（maintenance session_summary 定时任务回写）"
         }
     }
 
 Index entries are modeled by session.models.SessionMeta. Fields missing in older
-index files (e.g. title) fall back to model defaults; unknown fields are
-ignored on validation. The on-disk format stays snake_case JSON.
+index files (e.g. title, description) fall back to model defaults; unknown fields
+are ignored on validation. The on-disk format stays snake_case JSON.
+
+Session-level files inside {session_dir}:
+    messages.jsonl  append-only 原始消息
+    compact.json    上下文压缩记录（CompactRecord）
+    summary.json    会话复盘（SessionSummary，maintenance session_summary 写入）
 """
 import json
+import logging
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from models import Message, MessageBody, SummaryRecord
-from session.models import SessionMeta
+from models import Message, MessageBody, CompactRecord
+from session.models import SessionMeta, SessionSummary
+from config import ZERO_ROOT
 
-SESSIONS_ROOT = Path.home() / ".zero" / "sessions"
+logger = logging.getLogger(__name__)
+
+SESSIONS_ROOT = ZERO_ROOT / "sessions"
 
 # 自动标题（首条用户消息截断）的最大长度
 TITLE_MAX_LEN = 30
@@ -87,6 +97,10 @@ class SessionStore:
     @staticmethod
     def _session_file(channel: str, session_id: str) -> Path:
         return SessionStore._session_dir(channel, session_id) / "messages.jsonl"
+
+    @staticmethod
+    def _compact_file(channel: str, session_id: str) -> Path:
+        return SessionStore._session_dir(channel, session_id) / "compact.json"
 
     @staticmethod
     def _summary_file(channel: str, session_id: str) -> Path:
@@ -243,20 +257,20 @@ class SessionStore:
                 return
 
     @staticmethod
-    def load_summary(channel: str, session_id: str) -> SummaryRecord | None:
-        """Load the compression summary record, or None if absent/corrupt."""
-        path = SessionStore._summary_file(channel, session_id)
+    def load_compact(channel: str, session_id: str) -> CompactRecord | None:
+        """Load the context compression record, or None if absent/corrupt."""
+        path = SessionStore._compact_file(channel, session_id)
         if not path.exists():
             return None
         try:
-            return SummaryRecord.model_validate_json(path.read_text(encoding="utf-8"))
+            return CompactRecord.model_validate_json(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return None
 
     @staticmethod
-    def save_summary(channel: str, session_id: str, record: SummaryRecord) -> None:
-        """Atomically persist a summary record (tmp file + replace)."""
-        path = SessionStore._summary_file(channel, session_id)
+    def save_compact(channel: str, session_id: str, record: CompactRecord) -> None:
+        """Atomically persist a compression record (tmp file + replace)."""
+        path = SessionStore._compact_file(channel, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(record.model_dump_json(), encoding="utf-8")
@@ -266,13 +280,13 @@ class SessionStore:
     def load_history(
             session_id: str,
             channel: str,
-            include_summary: bool = True,
+            include_compact: bool = True,
     ) -> list[Message]:
         """Load all messages for a session in chronological order.
 
-        When include_summary is True and a summary record exists, the covered
-        prefix is replaced by a single synthetic summary user message
-        (metadata.kind == "summary"), keeping the tail (messages after
+        When include_compact is True and a compression record exists, the
+        covered prefix is replaced by a single synthetic compact user message
+        (metadata.kind == "compact"), keeping the tail (messages after
         covered_upto) intact. Falls back to full history if the covered
         message id can't be located.
         """
@@ -289,20 +303,138 @@ class SessionStore:
                 if not line:
                     continue
                 messages.append(Message.model_validate_json(line))
-        if not include_summary:
+        if not include_compact:
             return messages
-        rec = SessionStore.load_summary(channel, session_id)
+        rec = SessionStore.load_compact(channel, session_id)
         if rec is None:
             return messages
         for i, m in enumerate(messages):
             if m.id == rec.covered_upto:
-                summary_msg = Message(
+                compact_msg = Message(
                     session_id=session_id,
                     channel=channel,
                     sender="user",
                     recipient="assistant",
                     body=MessageBody(content=rec.content),
-                    metadata={"kind": "summary"},
+                    metadata={"kind": "compact"},
                 )
-                return [summary_msg] + messages[i + 1:]
+                return [compact_msg] + messages[i + 1:]
         return messages
+
+    # ------------------------------------------------------------------
+    # Maintenance APIs（session_summary/memory 定时任务专用，纯存储无业务）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def list_channels() -> list[str]:
+        """List all channel names that have session directories on disk."""
+        if not SESSIONS_ROOT.exists():
+            return []
+        return sorted(p.name for p in SESSIONS_ROOT.iterdir() if p.is_dir())
+
+    @staticmethod
+    def list_recent(channel: str, since: datetime) -> list[SessionMeta]:
+        """List sessions of the channel with last_updated_at >= since
+        (source_id filled, most recently updated first)."""
+        return [e for e in SessionStore.list_sessions(channel)
+                if e.last_updated_at >= since]
+
+    @staticmethod
+    def load_summary(channel: str, session_id: str) -> SessionSummary | None:
+        """Load the session summary, or None if absent/corrupt."""
+        path = SessionStore._summary_file(channel, session_id)
+        if not path.exists():
+            return None
+        try:
+            return SessionSummary.model_validate_json(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def save_summary(channel: str, session_id: str, summary: SessionSummary) -> None:
+        """Atomically persist a session summary (tmp file + replace)."""
+        path = SessionStore._summary_file(channel, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(summary.model_dump_json(), encoding="utf-8")
+        tmp.replace(path)
+
+    @staticmethod
+    def update_meta_by_summary(
+            channel: str,
+            session_id: str,
+            title: str | None = None,
+            description: str | None = None,
+    ) -> bool:
+        """Write back the index's title/description. None means "don't change".
+
+        绝不触碰 last_updated_at——否则复盘回写会让会话在维护任务的
+        "24h 活跃"过滤中永远自激（复盘→更新索引→看起来活跃→再次复盘）。
+        Returns True if the session was found and updated.
+        """
+        index = SessionStore._load_index(channel)
+        for entry in index.values():
+            if entry.session_id == session_id:
+                if title is not None:
+                    entry.title = title.strip()
+                if description is not None:
+                    entry.description = description.strip()
+                SessionStore._save_index(channel, index)
+                return True
+        return False
+
+    @staticmethod
+    def migrate_legacy_summaries() -> int:
+        """一次性迁移：旧版压缩摘要 summary.json → compact.json。
+
+        旧结构（SummaryRecord：content + covered_upto，content 包裹
+        <summary>...</summary> 标签）。能识别为旧结构且尚无 compact.json
+        的会话：重命名文件，并把 content 的标签确定性改写为 <compact>；
+        content 不匹配精确格式则只改名不改写并记日志。损坏的 JSON 同样
+        只改名保数据。
+
+        新版会话复盘 summary.json（SessionSummary）不会被误判：它没有
+        content 字段，直接跳过。返回迁移的会话数。
+        """
+        migrated = 0
+        if not SESSIONS_ROOT.exists():
+            return 0
+        for channel_dir in SESSIONS_ROOT.iterdir():
+            if not channel_dir.is_dir():
+                continue
+            for date_dir in channel_dir.iterdir():
+                if not date_dir.is_dir():
+                    continue
+                for session_dir in date_dir.iterdir():
+                    if not session_dir.is_dir():
+                        continue
+                    old = session_dir / "summary.json"
+                    new = session_dir / "compact.json"
+                    if not old.exists() or new.exists():
+                        continue
+                    try:
+                        raw = json.loads(old.read_text(encoding="utf-8"))
+                    except (OSError, json.JSONDecodeError):
+                        # 损坏文件：改名保留原数据，load_compact 会安全返回 None
+                        old.rename(new)
+                        migrated += 1
+                        continue
+                    if not (isinstance(raw, dict)
+                            and isinstance(raw.get("content"), str)
+                            and "covered_upto" in raw):
+                        # 新版 SessionSummary 或无法识别的结构 → 跳过
+                        continue
+                    content = raw["content"]
+                    if content.startswith("<summary>\n") and content.endswith("\n</summary>"):
+                        raw["content"] = ("<compact>\n"
+                                          + content[len("<summary>\n"):-len("\n</summary>")]
+                                          + "\n</compact>")
+                    else:
+                        logger.warning(
+                            "legacy summary content 不符合精确格式，仅改名不改写标签: %s", old)
+                    new.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+                    old.unlink(missing_ok=True)
+                    migrated += 1
+        if migrated:
+            logger.info("旧版压缩摘要迁移完成：%d 个会话 summary.json → compact.json", migrated)
+        return migrated

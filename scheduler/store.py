@@ -6,11 +6,11 @@ Persists scheduled tasks as JSONL:
 one ScheduleTask per line, keyed by task id.
 """
 from datetime import datetime
-from pathlib import Path
 
+from config import ZERO_ROOT
 from scheduler.models import ScheduleTask
 
-SCHEDULER_ROOT = Path.home() / ".zero" / "scheduler"
+SCHEDULER_ROOT = ZERO_ROOT / "scheduler"
 TASKS_FILE = SCHEDULER_ROOT / "tasks.jsonl"
 
 

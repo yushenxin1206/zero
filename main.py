@@ -8,14 +8,17 @@ from core.hooks import HookChain, Hooks
 from core.loop import AgentLoop
 from channels.cli import CLIChannel
 from channels.feishu import FeishuChannel
+from maintenance import MaintenanceEngine
+from providers.openai import OpenAI
 from scheduler import Scheduler
+from session.store import SessionStore
 from tools.registry import ToolRegistry
 from tools.read import Read
 from tools.write import Write
 from tools.edit import Edit
 from tools.shell import Shell
 from tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
-from config import default_config
+from config import ZERO_ROOT, default_config
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +74,12 @@ async def run(cli_only: bool = False):
     agent_loop = build_agent_loop(msg_bus)
     scheduler = Scheduler(msg_bus=msg_bus)
 
+    maintenance_engine = MaintenanceEngine(
+        config=default_config.maintenance,
+        provider=OpenAI(default_config.providers.get(default_config.agent_runtime.provider)),
+        runtime_config=default_config.agent_runtime,
+    )
+
     async def guard(coro, name: str):
         """运行后台协程；单个 channel 崩溃只记日志，不拖垮整体。"""
         try:
@@ -82,6 +91,7 @@ async def run(cli_only: bool = False):
 
     background: list[asyncio.Task] = [
         asyncio.create_task(guard(scheduler.run(), "scheduler")),
+        asyncio.create_task(guard(maintenance_engine.run(), "maintenance")),
         asyncio.create_task(guard(msg_bus.run_out_dispatcher(), "out-dispatcher")),
         asyncio.create_task(guard(msg_bus.run_stream_dispatcher(), "stream-dispatcher")),
     ]
@@ -133,7 +143,7 @@ def main():
 
     # 日志统一写文件（绝对路径，任意目录启动都不会散落 debug.log），
     # 避免打断 rich 渲染的终端界面
-    log_dir = Path.home() / ".zero"
+    log_dir = ZERO_ROOT
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=str(log_dir / "debug.log"),

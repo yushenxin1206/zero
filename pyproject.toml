@@ -30,6 +30,7 @@ packages = [
     "bus",
     "channels",
     "core",
+    "maintenance",
     "plugins",
     "plugins.shell_guard",
     "providers",

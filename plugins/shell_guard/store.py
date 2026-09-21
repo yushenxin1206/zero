@@ -7,9 +7,10 @@ shell_guard 用户规则存储：~/.zero/shell_guard.json
     {"allow": ["git fetch*", ...], "deny": ["rm -rf *", ...]}
 """
 import json
-from pathlib import Path
 
-STORE_PATH = Path.home() / ".zero" / "shell_guard.json"
+from config import ZERO_ROOT
+
+STORE_PATH = ZERO_ROOT / "shell_guard.json"
 
 _KINDS = ("allow", "deny")
 

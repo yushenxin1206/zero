@@ -145,12 +145,12 @@ class MessageTool(Message):
     recipient: str = "assistant"
 
 
-class SummaryRecord(Base):
-    """会话历史压缩摘要（{session_dir}/summary.json）。
+class CompactRecord(Base):
+    """会话历史压缩记录（{session_dir}/compact.json）。
 
-    covered_upto 指向被压缩进摘要的最后一条原始消息 id（messages.jsonl 中
-    某条 Message.id）；load_history 据此定位尾部起点，合成 [摘要消息] + 尾部。
-    content 已包裹 <summary>...</summary> 标签，由压缩模型生成。
+    covered_upto 指向被压缩进记录的最后一条原始消息 id（messages.jsonl 中
+    某条 Message.id）；load_history 据此定位尾部起点，合成 [压缩消息] + 尾部。
+    content 已包裹 <compact>...</compact> 标签，由压缩模型生成。
     """
     content: str
     covered_upto: str
@@ -255,7 +255,7 @@ class AgentRuntimeConfig(Base):
     context_compress_enabled: bool = True
     context_compress_trigger_ratio: float = 0.75  # 触发阈值 min(窗口×比例, 窗口-max_tokens-4096)
     context_compress_tail_ratio: float = 0.25  # 保留在 payload 中的尾部预算（软上限）
-    context_compress_summary_max_tokens: int = 2000  # 压缩模型输出的摘要上限
+    context_compact_max_tokens: int = 2000  # 压缩模型输出的 compact 记录上限
 
 
 class FeishuConfig(Base):
@@ -267,6 +267,18 @@ class FeishuConfig(Base):
 class ChannelConfigs(Base):
     """Channel configurations container for extensible channel support."""
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+
+
+class MaintenanceConfig(Base):
+    """后台维护任务：会话复盘（session_summary）与长期记忆沉淀（memory）。
+
+    两个任务独立开关、独立 cron；由 maintenance.MaintenanceEngine 在进程内
+    调度，不经过 Scheduler/AgentLoop。
+    """
+    session_summary_enabled: bool = True
+    session_summary_cron: str = "0 23 * * *"  # 会话复盘：每天 23:00 复盘 24h 内活跃会话
+    memory_enabled: bool = True
+    memory_cron: str = "30 23 * * *"  # 记忆沉淀：每天 23:30 从复盘提炼长期记忆
 
 
 # ---------------------------------------------------------------------------
