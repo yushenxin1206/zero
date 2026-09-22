@@ -22,8 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import session.store as store_mod
-import scheduler.store as sched_mod
+import zero.session.store as store_mod
+import zero.scheduler.store as sched_mod
 
 # Isolate storage: redirect sessions/scheduler roots to a temp dir.
 _tmp = tempfile.TemporaryDirectory()
@@ -33,12 +33,12 @@ sched_mod.TASKS_FILE = sched_mod.SCHEDULER_ROOT / "tasks.jsonl"
 
 from rich.console import Console
 
-from bus.queue import MessageBus
-from models import MessageBody, MessageOut, Origin, StreamEvent
-from scheduler.models import ScheduleTask
-from scheduler.store import SchedulerStore
-import channels.cli as cli_mod
-from channels.cli import CLIChannel, CHANNEL
+from zero.bus.queue import MessageBus
+from zero.models import MessageBody, MessageOut, Origin, StreamEvent
+from zero.scheduler.models import ScheduleTask
+from zero.scheduler.store import SchedulerStore
+import zero.channels.cli as cli_mod
+from zero.channels.cli import CLIChannel, CHANNEL
 
 
 async def main():

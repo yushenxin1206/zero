@@ -2,9 +2,9 @@
 import asyncio
 import sys
 
-from core.context import Context
-from core.runner import AgentRunner
-from models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ProviderConfig, StreamEvent
+from zero.core.context import Context
+from zero.core.runner import AgentRunner
+from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ProviderConfig, StreamEvent
 
 
 class FakeProvider:
@@ -17,7 +17,7 @@ class FakeProvider:
 
 
 async def main():
-    import core.runner as runner_mod
+    import zero.core.runner as runner_mod
     runner_mod.OpenAI = FakeProvider  # monkeypatch
 
     cfg = AgentRuntimeConfig(provider="deepseek", llm_config=LLMConfig(model="fake"))
@@ -36,15 +36,15 @@ async def main():
     print("runner stream ok:", kinds)
 
     # --- store roundtrip with channel=cli ---
-    from session.store import SessionStore
+    from zero.session.store import SessionStore
     sid = SessionStore.create_session("cli", "smoke-src")
     sessions = SessionStore.list_sessions("cli")
     assert any(s.session_id == sid for s in sessions)
     print("store ok: cli sessions =", len(sessions))
 
     # --- bus stream dispatch ---
-    from bus.queue import MessageBus
-    from models import MessageIn, MessageBody
+    from zero.bus.queue import MessageBus
+    from zero.models import MessageIn, MessageBody
     bus = MessageBus()
     sub = bus.subscribe_stream("cli")
     dispatcher = asyncio.create_task(bus.run_stream_dispatcher())

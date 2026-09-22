@@ -20,23 +20,23 @@ dependencies = [
 
 # 控制台命令：pip install -e . 后生成 zero.exe / zero-guard.exe，任意目录可用
 [project.scripts]
-zero = "main:main"
-zero-guard = "plugins.shell_guard.manage:main"
+zero = "zero.main:main"
+zero-guard = "zero.plugins.shell_guard.manage:main"
 
-# 扁平布局，显式声明包与顶层模块，避免 setuptools 自动发现
-# 把 tests/docs/skills 等非包目录卷进来
+# 单一 stable 顶层包 zero/，内部子模块随包自动发现，
+# 结构性改动（增删/重命名子模块）不再需要重装，避免 editable MAPPING 过期。
 [tool.setuptools]
 packages = [
-    "bus",
-    "channels",
-    "core",
-    "maintenance",
-    "plugins",
-    "plugins.shell_guard",
-    "providers",
-    "scheduler",
-    "session",
-    "tools",
-    "utils",
+    "zero",
+    "zero.bus",
+    "zero.channels",
+    "zero.core",
+    "zero.maintenance",
+    "zero.plugins",
+    "zero.plugins.shell_guard",
+    "zero.providers",
+    "zero.scheduler",
+    "zero.session",
+    "zero.tools",
+    "zero.utils",
 ]
-py-modules = ["main", "config", "models"]

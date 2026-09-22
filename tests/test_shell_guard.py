@@ -19,8 +19,8 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import core.context as ctx_mod
-import session.store as session_mod
+import zero.core.context as ctx_mod
+import zero.session.store as session_mod
 
 # 隔离会话存储与记忆文件
 _tmp = tempfile.TemporaryDirectory()
@@ -28,18 +28,18 @@ _tmp_root = Path(_tmp.name)
 session_mod.SESSIONS_ROOT = _tmp_root / "sessions"
 ctx_mod.ZERO_ROOT = _tmp_root
 
-from bus.queue import MessageBus
-from core.context import Context
-from core.hooks import HookChain, HookContext
-from core.runner import AgentRunner
-from models import (
+from zero.bus.queue import MessageBus
+from zero.core.context import Context
+from zero.core.hooks import HookChain, HookContext
+from zero.core.runner import AgentRunner
+from zero.models import (
     AgentRuntimeConfig, ApprovalRequest, LLMConfig, Origin, ProviderConfigs,
     ToolContext)
-from plugins.shell_guard import approval, install, manage, policy, store
-from plugins.shell_guard.handler import ShellGuard
-from session.store import SessionStore
-from tools.base import Tool
-from tools.registry import ToolRegistry
+from zero.plugins.shell_guard import approval, install, manage, policy, store
+from zero.plugins.handler import ShellGuard
+from zero.session.store import SessionStore
+from zero.tools.base import Tool
+from zero.tools.registry import ToolRegistry
 
 CHANNEL = "cli"
 

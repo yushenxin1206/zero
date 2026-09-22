@@ -10,8 +10,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import session.store as store_mod
-from core.compactor import (
+import zero.session.store as store_mod
+from zero.core.compactor import (
     COMPACT_FINAL_INSTRUCTION,
     COMPRESS_PROMPT,
     Compactor,
@@ -21,7 +21,7 @@ from core.compactor import (
     estimate_tokens,
     find_tail_boundary,
 )
-from models import (
+from zero.models import (
     AgentRuntimeConfig,
     CompactRecord,
     LLMConfig,
@@ -31,7 +31,7 @@ from models import (
     ToolCall,
     ToolCallFunction,
 )
-from session.store import SessionStore
+from zero.session.store import SessionStore
 
 # Isolate storage: redirect SESSIONS_ROOT to a temp dir for this test run.
 _tmp = tempfile.TemporaryDirectory()
@@ -358,7 +358,7 @@ print("maybe_compress chained ok")
 
 
 # --- migrate_legacy_summaries ---------------------------------------------------
-from session.models import SessionSummary  # noqa: E402
+from zero.session.models import SessionSummary  # noqa: E402
 
 
 def _write_legacy_summary(sid: str, content: str, covered: str) -> Path:

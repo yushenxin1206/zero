@@ -19,8 +19,8 @@ from prompt_toolkit.application.current import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from bus.queue import MessageBus
-from channels.cli import CLIChannel
+from zero.bus.queue import MessageBus
+from zero.channels.cli import CLIChannel
 
 
 async def _read_once(ch, typed: str) -> str:

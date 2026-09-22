@@ -9,9 +9,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import session.store as store_mod
-from models import MessageBody, MessageIn, MessageOut
-from session.store import TITLE_MAX_LEN, SessionStore
+import zero.session.store as store_mod
+from zero.models import MessageBody, MessageIn, MessageOut
+from zero.session.store import TITLE_MAX_LEN, SessionStore
 
 # Isolate storage: redirect SESSIONS_ROOT to a temp dir for this test run.
 _tmp = tempfile.TemporaryDirectory()

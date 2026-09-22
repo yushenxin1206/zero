@@ -18,8 +18,8 @@ from uuid import uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import core.context as ctx_mod
-import session.store as store_mod
+import zero.core.context as ctx_mod
+import zero.session.store as store_mod
 
 # 隔离存储与记忆文件：全部重定向到临时目录
 _tmp = tempfile.TemporaryDirectory()
@@ -27,13 +27,13 @@ _tmp_root = Path(_tmp.name)
 store_mod.SESSIONS_ROOT = _tmp_root / "sessions"
 ctx_mod.ZERO_ROOT = _tmp_root
 
-from core.context import Context
-from core.hooks import HookChain, Hooks, ToolCallDecision
-from core.runner import AgentRunner
-from models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
-from session.store import SessionStore
-from tools.base import Tool
-from tools.registry import ToolRegistry
+from zero.core.context import Context
+from zero.core.hooks import HookChain, Hooks, ToolCallDecision
+from zero.core.runner import AgentRunner
+from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
+from zero.session.store import SessionStore
+from zero.tools.base import Tool
+from zero.tools.registry import ToolRegistry
 
 CHANNEL = "test"
 TRUNC_SUFFIX = "...truncated"
