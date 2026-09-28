@@ -7,11 +7,12 @@ import platform
 from datetime import date
 from typing import Any
 from pathlib import Path
+from uuid import uuid4
 from xml.sax.saxutils import escape
 
 import frontmatter
 
-from zero.models import ToolContext
+from zero.models import Message, MessageBody, ToolContext
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 from zero.config import MEMORY_PATH, TOOL_RESULT_MAX_CHARS
@@ -55,6 +56,10 @@ class Context:
     # skills 清单的进程级缓存：(skills 目录 mtime, 最新 skill 文件 mtime) -> 渲染结果
     _skills_cache: tuple[tuple[float, float], str] | None = None
 
+    # 会话级能力标记：SubAgentContext 等纯内存上下文覆写为 False，
+    # runner 据此跳过上下文压缩（Compactor 直接读写 SessionStore）
+    compressible: bool = True
+
     def __init__(
             self,
             session_id: str,
@@ -72,6 +77,14 @@ class Context:
         # system prompt 按实例缓存（Context 每 turn 新建）：避免 runner 每次
         # 迭代都重读 memory.md / 重解析 skills frontmatter
         self._prompt_cache: str | None = None
+
+    def record(self, message: Message) -> None:
+        """把 runner 产生的消息写入会话历史（session 模式落 SessionStore）。
+
+        runner 的持久化缝隙：会话上下文落盘，内存上下文（SubAgentContext）
+        只追加内存列表，对 runner 透明。
+        """
+        SessionStore.append(message)
 
     @property
     def system_prompt(self) -> str:
@@ -193,6 +206,68 @@ The following skills provide specialized instructions for specific tasks. When a
             return None
         schemas = self.tool_registry.schemas()
         return schemas if schemas else None
+
+
+class SubAgentContext(Context):
+    """子 agent 单次调用的隔离上下文：消息只留在内存，不读写 SessionStore。
+
+    - 初始消息为单条 user prompt（任务指令）
+    - record() 只追加内存列表：工具循环的中间消息（assistant tool_calls /
+      tool 结果）不落任何会话
+    - system_prompt 可整体替换；默认复用标准提示词（含 skills/环境/记忆）
+    - tool_context 建议传父轮实例：channel/turn_id 等路由字段被继承，
+      hooks（如审批交互）才能把事件挂回触发它的那一轮；未传时用独立
+      标识（channel=subagent），仅供消息头与环境块展示，不落盘
+    """
+
+    compressible = False  # 单次任务生命周期短，且无会话历史可压
+
+    def __init__(
+            self,
+            prompt: str,
+            *,
+            tool_registry: ToolRegistry | None = None,
+            tool_context: ToolContext | None = None,
+            system_prompt: str | None = None,
+    ):
+        tc = tool_context or ToolContext(
+            channel="subagent", session_id=str(uuid4()))
+        super().__init__(
+            session_id=tc.session_id,
+            channel=tc.channel,
+            tool_registry=tool_registry,
+            tool_context=tc,
+        )
+        self._custom_system_prompt = system_prompt
+        self._messages: list[Message] = [
+            Message(
+                session_id=self.session_id,
+                channel=self.channel,
+                sender="user",
+                recipient="assistant",
+                body=MessageBody(content=prompt),
+            )
+        ]
+
+    @property
+    def system_prompt(self) -> str:
+        if self._custom_system_prompt is not None:
+            return self._custom_system_prompt
+        return super().system_prompt
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        msgs: list[dict[str, Any]] = [
+            {"content": self.system_prompt, "role": "system"}
+        ]
+        for m in self._messages:
+            p = m.to_openai()
+            if p is not None:
+                msgs.append(p)
+        return msgs
+
+    def record(self, message: Message) -> None:
+        self._messages.append(message)
 
 
 if __name__ == "__main__":

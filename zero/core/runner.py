@@ -1,9 +1,13 @@
 """
-Agent runner:
-1. Receives messages from the bus
-2. Builds context with history, memory, skills
-3. Invoke agent loop
-4. Sends responses back
+Agent runner：agent 核心循环，两种调用方式共享同一实现。
+
+1. 会话模式（AgentLoop）：每 turn 由 loop 构造，历史读写 SessionStore，
+   中间消息（assistant tool_calls / tool 结果）落会话存储
+2. 子 agent 单次模式（run_subagent）：以 SubAgentContext 隔离运行，
+   prompt 是唯一输入，中间消息只留内存，不污染任何会话
+
+runner 通过 context.record() / context.compressible 与上下文解耦，
+自身不感知消息落盘还是留内存。
 """
 import json
 import logging
@@ -12,7 +16,7 @@ from uuid import uuid4
 
 from zero.config import TOOL_RESULT_MAX_CHARS
 from zero.core.compactor import Compactor
-from zero.core.context import Context
+from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
 from zero.models import (
     AgentRuntimeConfig,
@@ -24,10 +28,10 @@ from zero.models import (
     TokenUsage,
     ToolCall,
     ToolCallFunction,
+    ToolContext,
 )
 from zero.providers.base import LLMPayload
 from zero.providers.openai import OpenAI
-from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -102,8 +106,10 @@ class AgentRunner:
             usage: TokenUsage | None = None
 
             # 每次构建 payload 之前检查是否触发上下文压缩（第 0 次迭代即
-            # turn 起点；压缩后 context.messages 自动合成 [摘要消息] + 尾部）
-            await self.compactor.maybe_compress(context=self.context)
+            # turn 起点；压缩后 context.messages 自动合成 [摘要消息] + 尾部）。
+            # 纯内存上下文（SubAgentContext）无会话历史可压，跳过
+            if self.context.compressible:
+                await self.compactor.maybe_compress(context=self.context)
 
             payload = LLMPayload(
                 messages=self.context.messages,
@@ -189,7 +195,10 @@ class AgentRunner:
             tool_calls: list[ToolCall],
             usage: TokenUsage | None = None,
     ) -> None:
-        """Persist assistant message that triggered tool calls."""
+        """Record assistant message that triggered tool calls.
+
+        经 context.record() 落盘（会话上下文）或留内存（子 agent 上下文）。
+        """
         msg_out = MessageOut(
             session_id=self.context.session_id,
             channel=self.context.channel,
@@ -199,10 +208,11 @@ class AgentRunner:
                 token_usage=usage,
             ),
         )
-        SessionStore.append(msg_out)
+        self.context.record(msg_out)
 
     async def _execute_and_persist(self, tc: ToolCall) -> None:
-        """Execute a single tool call and persist its result."""
+        """Execute a single tool call and record its result
+        (SessionStore 或内存，取决于上下文实现)。"""
         if self.tool_registry is None:
             content = json.dumps({"error": "no tool registry available"}, ensure_ascii=False)
         else:
@@ -248,5 +258,50 @@ class AgentRunner:
                 tool_call_id=tc.id,
             ),
         )
-        SessionStore.append(tool_msg)
+        self.context.record(tool_msg)
+
+
+async def run_subagent(
+        prompt: str,
+        *,
+        runtime_config: AgentRuntimeConfig,
+        provider_configs: ProviderConfigs,
+        tool_registry: ToolRegistry | None = None,
+        hooks: Hooks | None = None,
+        tool_context: ToolContext | None = None,
+        system_prompt: str | None = None,
+) -> str:
+    """以子 agent 身份单次执行任务，返回最终回复文本。
+
+    与 AgentLoop 的常驻会话用法完全隔离：
+    - prompt 是唯一输入消息；工具循环的全部中间消息只留在内存
+      （SubAgentContext），不读写 SessionStore，不污染任何会话历史
+    - tool_registry 由调用方给定（通常是裁剪后的子集）
+    - tool_context 建议传父轮的 ToolContext：channel/turn_id 等路由字段
+      被继承，hooks（如 shell_guard 审批）才能把交互事件挂回触发轮
+    - hooks 透传父级链：子 agent 的工具调用受同一套护栏约束
+    - 失败抛 RuntimeError（error 事件的错误文本），不返回残缺回复
+    """
+    context = SubAgentContext(
+        prompt,
+        tool_registry=tool_registry,
+        tool_context=tool_context,
+        system_prompt=system_prompt,
+    )
+    runner = AgentRunner(
+        runtime_config=runtime_config,
+        provider_configs=provider_configs,
+        running_context=context,
+        tool_registry=tool_registry,
+        hooks=hooks,
+    )
+    reply = ""
+    async for event in runner.run_stream():
+        if event.kind == "error":
+            raise RuntimeError(event.content)
+        if event.kind == "delta":
+            reply += event.content
+        elif event.kind == "done":
+            reply = event.content or reply
+    return reply
 
