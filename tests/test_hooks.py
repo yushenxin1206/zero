@@ -30,7 +30,7 @@ ctx_mod.ZERO_ROOT = _tmp_root
 from zero.core.context import Context
 from zero.core.hooks import HookChain, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner
-from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ToolContext
+from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfig, ToolContext
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
@@ -90,8 +90,8 @@ def make_runner(hooks: Hooks, tool: EchoTool, session_id: str) -> AgentRunner:
     context = Context(session_id=session_id, channel=CHANNEL, tool_registry=registry)
     runner = AgentRunner(
         runtime_config=AgentRuntimeConfig(
-            provider="dashscope", llm_config=LLMConfig(model="stub")),
-        provider_configs=ProviderConfigs(),
+            provider=ProviderConfig(api_base="https://x.local", api_key="k"),
+            llm_config=LLMConfig(model="stub")),
         running_context=context,
         tool_registry=registry,
         hooks=hooks,

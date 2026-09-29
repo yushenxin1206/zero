@@ -20,11 +20,9 @@ from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
 from zero.models import (
     AgentRuntimeConfig,
-    ProviderConfigs,
     MessageBody,
     MessageOut,
     MessageTool,
-    ResolvedLLM,
     StreamEvent,
     TokenUsage,
     ToolCall,
@@ -43,24 +41,23 @@ class AgentRunner:
     def __init__(
             self,
             runtime_config: AgentRuntimeConfig,
-            provider_configs: ProviderConfigs,
             running_context: Context,
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
-            compact: ResolvedLLM | None = None,
+            compact: AgentRuntimeConfig | None = None,
     ):
         self.runtime_config = runtime_config
-        self.provider = OpenAI(provider_configs.get(runtime_config.provider))
+        # provider 已是解析阶段结算好的对象（见 ModelResolver），直接构造 client
+        self.provider = OpenAI(runtime_config.provider)
         self.context = running_context
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
         # compact 任务解析结果（模型可与主对话不同，走独立 provider client）；
         # 未提供时（如子 agent 单次模式）跟随主对话配置
         if compact is None:
-            compact = ResolvedLLM(provider=runtime_config.provider,
-                                  llm_config=runtime_config.llm_config)
+            compact = runtime_config
         self.compactor = Compactor(
-            provider=OpenAI(provider_configs.get(compact.provider)),
+            provider=OpenAI(compact.provider),
             runtime_config=self.runtime_config,
             compact_llm=compact.llm_config,
         )
@@ -276,7 +273,6 @@ async def run_subagent(
         prompt: str,
         *,
         runtime_config: AgentRuntimeConfig,
-        provider_configs: ProviderConfigs,
         tool_registry: ToolRegistry | None = None,
         hooks: Hooks | None = None,
         tool_context: ToolContext | None = None,
@@ -301,7 +297,6 @@ async def run_subagent(
     )
     runner = AgentRunner(
         runtime_config=runtime_config,
-        provider_configs=provider_configs,
         running_context=context,
         tool_registry=tool_registry,
         hooks=hooks,

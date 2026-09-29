@@ -4,7 +4,7 @@ import sys
 
 from zero.core.context import Context
 from zero.core.runner import AgentRunner
-from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfigs, ProviderConfig, StreamEvent
+from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfig, StreamEvent
 
 
 class FakeProvider:
@@ -20,9 +20,10 @@ async def main():
     import zero.core.runner as runner_mod
     runner_mod.OpenAI = FakeProvider  # monkeypatch
 
-    cfg = AgentRuntimeConfig(provider="deepseek", llm_config=LLMConfig(model="fake"))
+    cfg = AgentRuntimeConfig(provider=ProviderConfig(api_base="https://x.local", api_key="k"),
+                              llm_config=LLMConfig(model="fake"))
     ctx = Context(session_id="smoke-test-session", channel="cli")
-    runner = AgentRunner(cfg, ProviderConfigs(deepseek=ProviderConfig()), ctx)
+    runner = AgentRunner(cfg, ctx)
 
     events = []
     async for ev in runner.run_stream():

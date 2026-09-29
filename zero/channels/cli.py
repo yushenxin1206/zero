@@ -440,8 +440,10 @@ class CLIChannel:
         arg = arg.strip()
         models = default_config.models
         current = SessionStore.get_model(CHANNEL, self.session_id)
-        default_model = (default_config.tasks.get("default").model
-                         if default_config.tasks.get("default") else None) or ""
+        default_model = (default_config.tasks.get("default").llm_config.model
+                         if default_config.tasks.get("default")
+                         and default_config.tasks.get("default").llm_config
+                         else None) or ""
 
         if not arg:
             if not models:

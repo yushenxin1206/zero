@@ -27,6 +27,7 @@ from zero.models import (
     LLMConfig,
     Message,
     MessageBody,
+    ProviderConfig,
     TokenUsage,
     ToolCall,
     ToolCallFunction,
@@ -186,7 +187,7 @@ class FakeProvider:
 
 def make_compactor(fake, window=20000, enabled=True, max_tokens=100, compact_max=500):
     rc = AgentRuntimeConfig(
-        provider="fake",
+        provider=ProviderConfig(),
         llm_config=LLMConfig(model="mock-model", max_tokens=max_tokens),
         context_window_tokens=window,
         context_compress_enabled=enabled,

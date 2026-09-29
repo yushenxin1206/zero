@@ -39,7 +39,7 @@ from zero.models import (
     LLMConfig,
     MessageBody,
     MessageIn,
-    ProviderConfigs,
+    ProviderConfig,
     ToolContext,
 )
 from zero.session.store import SessionStore
@@ -101,7 +101,8 @@ def make_registry(tool) -> ToolRegistry:
 
 def stub_config() -> AgentRuntimeConfig:
     return AgentRuntimeConfig(
-        provider="dashscope", llm_config=LLMConfig(model="stub"))
+        provider=ProviderConfig(api_base="https://x.local", api_key="k"),
+        llm_config=LLMConfig(model="stub"))
 
 
 def install_provider(*scripts) -> list[ScriptedProvider]:
@@ -156,7 +157,7 @@ def test_single_shot_with_tools():
     reply = asyncio.run(run_subagent(
         "做点事",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         tool_registry=make_registry(tool),
     ))
     assert reply == "子代理完成"
@@ -190,7 +191,7 @@ def test_isolation_from_session_store():
     reply = asyncio.run(run_subagent(
         "子任务",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         tool_registry=make_registry(tool),
         tool_context=ToolContext(channel=CHANNEL, session_id=sid, turn_id="t1"),
     ))
@@ -212,7 +213,7 @@ def test_custom_system_prompt():
     asyncio.run(run_subagent(
         "翻译任务",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         system_prompt="你是翻译代理，只输出译文。",
     ))
     first = providers[0].payloads[0].messages[0]
@@ -235,7 +236,7 @@ def test_error_raises():
         asyncio.run(run_subagent(
             "必败任务",
             runtime_config=stub_config(),
-            provider_configs=ProviderConfigs(),
+            # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         ))
         raise AssertionError("run_subagent 应当抛 RuntimeError")
     except RuntimeError as e:
@@ -253,7 +254,7 @@ def test_compression_gate():
     asyncio.run(run_subagent(
         "任务",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
     ))
     assert spy["calls"] == 0, "子 agent 不应触发上下文压缩"
 
@@ -263,7 +264,7 @@ def test_compression_gate():
         session_id=str(uuid4()), channel=CHANNEL, tool_registry=registry)
     runner = AgentRunner(
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         running_context=context,
         tool_registry=registry,
     )
@@ -302,7 +303,7 @@ def test_tool_context_inherited():
     asyncio.run(run_subagent(
         "任务",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         tool_registry=make_registry(tool),
         hooks=chain,
         tool_context=parent_tc,
@@ -332,7 +333,7 @@ def test_hooks_apply_to_subagent():
     reply = asyncio.run(run_subagent(
         "任务",
         runtime_config=stub_config(),
-        provider_configs=ProviderConfigs(),
+        # (provider_configs 已移除：provider 由 runtime_config 直接携带)
         tool_registry=make_registry(tool),
         hooks=chain,
     ))

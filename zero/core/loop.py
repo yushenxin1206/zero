@@ -5,20 +5,16 @@
 4. Sends responses back
 """
 from zero.bus.queue import MessageBus
+from zero.config import Config
 from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
-    AgentRuntimeSpec,
     MessageBody,
     MessageOut,
-    ModelSpec,
-    ProviderConfigs,
-    TaskConfig,
+    ModelResolver,
     TokenUsage,
     ToolContext,
-    resolve_runtime,
-    resolve_task_llm,
 )
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -37,18 +33,12 @@ class AgentLoop:
     def __init__(
             self,
             msg_bus: MessageBus,
-            runtime_spec: AgentRuntimeSpec,
-            tasks: dict[str, TaskConfig],
-            models: dict[str, ModelSpec],
-            provider_configs: ProviderConfigs,
+            config: Config,
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
     ):
         self.msg_bus = msg_bus
-        self.runtime_spec = runtime_spec
-        self.tasks = tasks
-        self.models = models
-        self.provider_configs = provider_configs
+        self.config = config
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
 
@@ -66,11 +56,13 @@ class AgentLoop:
 
             # turn 起点解析运行时配置：会话级 /model 覆盖 > 任务级绑定；
             # compact 任务未显式绑定模型时跟随主对话有效模型
-            runtime_config = resolve_runtime(
-                self.runtime_spec, self.tasks, self.models,
+            runtime_config = ModelResolver.resolve_runtime(
+                'default', self.config.agent_runtime, self.config.tasks,
+                self.config.models, self.config.providers,
                 SessionStore.get_model(msg_in.channel, msg_in.session_id))
-            compact = resolve_task_llm(
-                'compact', self.tasks, self.models, runtime_config)
+            compact = ModelResolver.resolve_task_llm(
+                'compact', self.config.tasks, self.config.models,
+                self.config.providers, runtime_config)
 
             # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
             # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
@@ -95,7 +87,6 @@ class AgentLoop:
             runner = AgentRunner(
                 runtime_config=runtime_config,
                 running_context=context,
-                provider_configs=self.provider_configs,
                 tool_registry=self.tool_registry,
                 hooks=self.hooks,
                 compact=compact,

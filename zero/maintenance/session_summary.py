@@ -9,7 +9,7 @@ import datetime as dt
 import json
 import logging
 
-from zero.models import Message, ResolvedLLM
+from zero.models import AgentRuntimeConfig, Message
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
 from zero.session.store import SessionStore
@@ -50,7 +50,7 @@ SESSION_SUMMARY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_session_summary(provider: Provider, llm: ResolvedLLM) -> None:
+async def run_session_summary(provider: Provider, llm: AgentRuntimeConfig) -> None:
     """入口：复盘所有渠道 24h 内活跃的会话。单会话失败不中断批次。"""
     since = dt.datetime.now() - SESSION_SUMMARY_WINDOW
     model = llm.llm_config.model

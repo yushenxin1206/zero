@@ -33,7 +33,7 @@ from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext
 from zero.core.runner import AgentRunner
 from zero.models import (
-    AgentRuntimeConfig, ApprovalRequest, LLMConfig, Origin, ProviderConfigs,
+    AgentRuntimeConfig, ApprovalRequest, LLMConfig, Origin, ProviderConfig,
     ToolContext)
 from zero.plugins.shell_guard import approval, install, manage, policy, store
 from zero.plugins.handler import ShellGuard
@@ -256,8 +256,8 @@ def _run_turn_with_guard(command: str):
     context = Context(session_id=sid, channel=CHANNEL, tool_registry=registry)
     runner = AgentRunner(
         runtime_config=AgentRuntimeConfig(
-            provider="dashscope", llm_config=LLMConfig(model="stub")),
-        provider_configs=ProviderConfigs(),
+            provider=ProviderConfig(api_base="https://x.local", api_key="k"),
+            llm_config=LLMConfig(model="stub")),
         running_context=context,
         tool_registry=registry,
         hooks=chain,

@@ -9,7 +9,7 @@ import json
 import logging
 
 from zero.config import MEMORY_PATH
-from zero.models import ResolvedLLM
+from zero.models import AgentRuntimeConfig
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
 from zero.session.store import SessionStore
@@ -43,7 +43,7 @@ MEMORY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_memory(provider: Provider, llm: ResolvedLLM) -> None:
+async def run_memory(provider: Provider, llm: AgentRuntimeConfig) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
     summaries: list[SessionSummary] = []

@@ -11,7 +11,7 @@ import json
 import logging
 
 from zero.config import ZERO_ROOT
-from zero.models import MaintenanceConfig, ResolvedLLM
+from zero.models import AgentRuntimeConfig, MaintenanceConfig
 from zero.providers.base import Provider
 from zero.scheduler import cron
 
@@ -34,8 +34,8 @@ class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
     def __init__(self, config: MaintenanceConfig,
-                 summary_provider: Provider, summary_llm: ResolvedLLM,
-                 memory_provider: Provider, memory_llm: ResolvedLLM):
+                 summary_provider: Provider, summary_llm: AgentRuntimeConfig,
+                 memory_provider: Provider, memory_llm: AgentRuntimeConfig):
         """纯调度器：模型解析与 provider client 组装由组合根（main.py）
         在实例化之前完成——维护任务是进程级常量（不跟会话级 /model 切换
         走），没有 AgentLoop 那种 turn 级重解析的需求。"""
