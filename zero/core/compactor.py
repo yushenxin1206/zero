@@ -3,7 +3,7 @@
 
 每次构建 LLM payload 前调用 Compactor.maybe_compress：当历史估算超出触发
 阈值时，把历史前缀交给压缩模型生成压缩记录并落盘 compact.json；后续
-load_history 用 [压缩消息] + 尾部 合成 payload。
+context.messages / load_history 用 [压缩消息] + 尾部 合成 payload。
 
 设计约束：
 - 纯核心实现，不经过 hooks（hook 无法替换已构建的 payload）。
@@ -60,9 +60,8 @@ def estimate_session_payload(
     """估算当前会话待发 payload 的 token 占用。
 
     与 estimate_payload(context.messages, context.tools) 口径一致，但直接
-    从已加载的全量历史 raw 与压缩记录 rec 合成（[压缩] + 尾部；找不到
-    covered_upto 时退化为全量，不计压缩记录），供 maybe_compress 避免为触发
-    判断把 messages.jsonl 再读一遍。
+    从 turn 级快照的全量历史 raw 与压缩记录 rec 合成（[压缩] + 尾部；找不到
+    covered_upto 时退化为全量，不计压缩记录）。
     """
     total = estimate_tokens(system_prompt)
     if tools:
@@ -181,11 +180,19 @@ def build_compact_messages(
 
 
 class Compactor:
-    """会话历史压缩器：判断是否触发压缩并生成/落盘压缩记录。"""
+    """会话历史压缩器：判断是否触发压缩并生成/落盘压缩记录。
 
-    def __init__(self, provider: Provider, runtime_config: AgentRuntimeConfig):
+    窗口/阈值判断使用主对话的 runtime_config（判断的是主对话 payload
+    是否超窗）；压缩调用本身使用 compact 任务的解析结果 compact_llm
+    （模型/temperature 可与主对话不同，见 models.resolve_task_llm）。
+    """
+
+    def __init__(self, provider: Provider, runtime_config: AgentRuntimeConfig,
+                 compact_llm: LLMConfig | None = None):
         self.provider = provider
         self.runtime_config = runtime_config
+        # compact 任务未显式配置时跟随主对话调用参数
+        self.compact_llm = compact_llm or runtime_config.llm_config
 
     async def maybe_compress(self, context: Context) -> bool:
         """检查是否需要压缩，需要则生成压缩记录并落盘。返回是否发生了压缩。"""
@@ -193,11 +200,12 @@ class Compactor:
         if not rc.context_compress_enabled:
             return False
         session_id, channel = context.session_id, context.channel
-        raw = SessionStore.load_history(session_id, channel, include_compact=False)
+        # 从 turn 级快照取数（Context 每 turn 只读一次盘），不再重读存储
+        raw = context.raw_history
         if not raw:
             return False
-        rec = SessionStore.load_compact(channel, session_id)
-        # 从 raw + rec 合成估算（与 context.messages 同口径），只读一次存储
+        rec = context.compact_record
+        # 从 raw + rec 合成估算，与 context.messages 同口径
         tools = context.tools
         total = estimate_session_payload(context.system_prompt, tools, raw, rec)
         window = rc.context_window_tokens
@@ -214,7 +222,7 @@ class Compactor:
         # 尾部。若仍不低于触发阈值，说明窗口装不下「压缩记录 + 尾部」，压缩
         # 无收益；放行会导致同一 turn 内每次迭代都重复压缩，故放弃。
         post = (estimate_session_payload(context.system_prompt, tools, [], None)
-                + rc.context_compact_max_tokens
+                + rc.context_compress_output_tokens
                 + sum(estimate_message(m) for m in raw[tail_start:]))
         if post >= trigger:
             logger.warning(
@@ -222,7 +230,23 @@ class Compactor:
                 "（建议调大 context_window_tokens 或调小 max_tokens）: session=%s",
                 post, trigger, session_id)
             return False
-        text = await self._call_compact(raw[:tail_start], rec)
+        # 增量压缩：prev_compact 已承载 covered_upto 之前的全部历史，只送其后的
+        # 新消息，避免每次重送全量前缀导致压缩输入随历史无界增长（第 N 次链式
+        # 压缩超过压缩模型窗口 → API 报错 → fail-safe 跳过 → 压缩永久停滞）。
+        # 与 apply_compact / estimate_session_payload 的 fallback 语义一致：
+        # covered_upto 定位失败时退化为全量，并丢弃旧记录（否则与全量前缀重复）。
+        prefix_start = 0
+        prev = rec
+        if rec is not None:
+            for i, m in enumerate(raw):
+                if m.id == rec.covered_upto:
+                    prefix_start = i + 1
+                    break
+            else:
+                prev = None
+        if prefix_start >= tail_start:
+            return False  # 无未覆盖消息可压缩（如窗口调小导致边界回退）
+        text = await self._call_compact(raw[prefix_start:tail_start], prev)
         if not text:
             logger.warning("压缩模型返回空结果，跳过本轮压缩: session=%s", session_id)
             return False
@@ -234,14 +258,15 @@ class Compactor:
                 session_id)
             return False
         content = f"<compact>\n{text}\n</compact>"
+        record = CompactRecord(
+            content=content, covered_upto=raw[tail_start - 1].id)
         try:
-            SessionStore.save_compact(
-                channel, session_id,
-                CompactRecord(content=content, covered_upto=raw[tail_start - 1].id),
-            )
+            SessionStore.save_compact(channel, session_id, record)
         except OSError:
             logger.exception("压缩记录落盘失败，跳过本轮压缩: session=%s", session_id)
             return False
+        # 回写 turn 级快照：后续迭代的 messages 立即合成 [压缩] + 尾部
+        context.compact_record = record
         logger.info(
             "会话压缩完成: session=%s 覆盖 %d 条消息(至 %s)",
             session_id, tail_start, raw[tail_start - 1].id,
@@ -253,20 +278,22 @@ class Compactor:
             raw_prefix: list[Message],
             prev_compact: CompactRecord | None,
     ) -> str | None:
-        """调用压缩模型生成压缩记录文本；任何异常/截断返回 None（fail-safe）。"""
-        # reasoning 型模型的思考 tokens 计入 max_tokens 预算，会挤占正文
-        # 空间导致输出被截断，故额外加一段余量
-        budget = (self.runtime_config.context_compact_max_tokens
+        """调用压缩模型生成压缩记录文本；任何异常/截断返回 None（fail-safe）。
+
+        输出预算 = context_compress_output_tokens（由 tasks.compact 的
+        llmConfig.maxTokens 回填）+ reasoning 思考预留：思考 tokens 与
+        正文共享同一 completion 预算，不留余量时正文会被截断成残句。
+        temperature 等其余参数由 compact 任务的解析结果决定（可经
+        tasks.compact.llmConfig 差异化配置）。
+        """
+        budget = (self.runtime_config.context_compress_output_tokens
                   + REASONING_TOKEN_HEADROOM)
         try:
             payload = LLMPayload(
                 messages=build_compact_messages(raw_prefix, prev_compact),
                 tools=None,
-                llm_config=LLMConfig(
-                    model=self.runtime_config.llm_config.model,
-                    temperature=0,
-                    max_tokens=budget,
-                ),
+                llm_config=self.compact_llm.model_copy(
+                    update={'max_tokens': budget}),
             )
             parts: list[str] = []
             completion_tokens = 0

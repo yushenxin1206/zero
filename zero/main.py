@@ -9,9 +9,7 @@ from zero.core.loop import AgentLoop
 from zero.channels.cli import CLIChannel
 from zero.channels.feishu import FeishuChannel
 from zero.maintenance import MaintenanceEngine
-from zero.providers.openai import OpenAI
 from zero.scheduler import Scheduler
-from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 from zero.tools.read import Read
 from zero.tools.write import Write
@@ -57,7 +55,9 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
 def build_agent_loop(msg_bus: MessageBus) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
-        runtime_config=default_config.agent_runtime,
+        runtime_spec=default_config.agent_runtime,
+        tasks=default_config.tasks,
+        models=default_config.models,
         provider_configs=default_config.providers,
         tool_registry=build_tool_registry(),
         hooks=build_hooks(msg_bus),
@@ -75,8 +75,10 @@ async def run(cli_only: bool = False):
 
     maintenance_engine = MaintenanceEngine(
         config=default_config.maintenance,
-        provider=OpenAI(default_config.providers.get(default_config.agent_runtime.provider)),
-        runtime_config=default_config.agent_runtime,
+        provider_configs=default_config.providers,
+        spec=default_config.agent_runtime,
+        tasks=default_config.tasks,
+        models=default_config.models,
     )
 
     async def guard(coro, name: str):

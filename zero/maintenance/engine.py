@@ -11,8 +11,17 @@ import json
 import logging
 
 from zero.config import ZERO_ROOT
-from zero.models import AgentRuntimeConfig, MaintenanceConfig
-from zero.providers.base import Provider
+from zero.models import (
+    AgentRuntimeSpec,
+    MaintenanceConfig,
+    ModelSpec,
+    ProviderConfigs,
+    ResolvedLLM,
+    TaskConfig,
+    resolve_runtime,
+    resolve_task_llm,
+)
+from zero.providers.openai import OpenAI
 from zero.scheduler import cron
 
 from zero.maintenance.memory import run_memory
@@ -33,11 +42,20 @@ _SLOT_SCAN_MINUTES = 24 * 60
 class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
-    def __init__(self, config: MaintenanceConfig, provider: Provider,
-                 runtime_config: AgentRuntimeConfig):
+    def __init__(self, config: MaintenanceConfig,
+                 provider_configs: ProviderConfigs,
+                 spec: AgentRuntimeSpec,
+                 tasks: dict[str, TaskConfig],
+                 models: dict[str, ModelSpec]):
         self.config = config
-        self.provider = provider
-        self.runtime_config = runtime_config
+        # 启动时解析一次（跨会话批处理任务不跟会话级 /model 切换走，
+        # 回退到主对话的任务级默认绑定）；任务未显式绑定模型时两个任务
+        # 共用主对话 provider client
+        default_rc = resolve_runtime(spec, tasks, models)
+        self._summary_llm = resolve_task_llm('session_summary', tasks, models, default_rc)
+        self._memory_llm = resolve_task_llm('memory', tasks, models, default_rc)
+        self._summary_provider = OpenAI(provider_configs.get(self._summary_llm.provider))
+        self._memory_provider = OpenAI(provider_configs.get(self._memory_llm.provider))
         self._state_lock = asyncio.Lock()
 
     async def run(self) -> None:
@@ -55,10 +73,10 @@ class MaintenanceEngine:
         await asyncio.gather(*loops)
 
     async def _run_session_summary(self) -> None:
-        await run_session_summary(self.provider, self.runtime_config)
+        await run_session_summary(self._summary_provider, self._summary_llm)
 
     async def _run_memory(self) -> None:
-        await run_memory(self.provider, self.runtime_config)
+        await run_memory(self._memory_provider, self._memory_llm)
 
     async def _loop(self, name: str, cron_expr: str, fn) -> None:
         """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。"""

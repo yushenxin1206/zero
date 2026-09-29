@@ -8,7 +8,18 @@ from zero.bus.queue import MessageBus
 from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
-from zero.models import AgentRuntimeConfig, MessageBody, MessageOut, ProviderConfigs, TokenUsage, ToolContext
+from zero.models import (
+    AgentRuntimeSpec,
+    MessageBody,
+    MessageOut,
+    ModelSpec,
+    ProviderConfigs,
+    TaskConfig,
+    TokenUsage,
+    ToolContext,
+    resolve_runtime,
+    resolve_task_llm,
+)
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
@@ -17,18 +28,26 @@ class AgentLoop:
 
     """
     The agent loop is the core processing engine.
+
+    持有声明形态（spec/tasks/models），每 turn 按会话模型覆盖解析出
+    AgentRuntimeConfig 再构造 AgentRunner——会话内 /model 切换在下一个
+    turn 生效，turn 中途不受影响。
     """
 
     def __init__(
             self,
             msg_bus: MessageBus,
-            runtime_config: AgentRuntimeConfig,
+            runtime_spec: AgentRuntimeSpec,
+            tasks: dict[str, TaskConfig],
+            models: dict[str, ModelSpec],
             provider_configs: ProviderConfigs,
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
     ):
         self.msg_bus = msg_bus
-        self.runtime_config = runtime_config
+        self.runtime_spec = runtime_spec
+        self.tasks = tasks
+        self.models = models
         self.provider_configs = provider_configs
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
@@ -38,9 +57,20 @@ class AgentLoop:
         while True:
             msg_in = await self.msg_bus.in_queue.dequeue()
             SessionStore.append(msg_in)
+            # turn 边界统一刷新活跃时间戳：msg_in 紧跟出队、无前置分支，
+            # 即使本轮中途失败也已标记活跃（turn 内其它 append 不再触索引）
+            SessionStore.touch(msg_in.channel, msg_in.session_id)
             # 首条用户消息自动生成会话标题（已有标题则不覆盖）
             SessionStore.auto_title(
                 msg_in.channel, msg_in.session_id, msg_in.body.content or "")
+
+            # turn 起点解析运行时配置：会话级 /model 覆盖 > 任务级绑定；
+            # compact 任务未显式绑定模型时跟随主对话有效模型
+            runtime_config = resolve_runtime(
+                self.runtime_spec, self.tasks, self.models,
+                SessionStore.get_model(msg_in.channel, msg_in.session_id))
+            compact = resolve_task_llm(
+                'compact', self.tasks, self.models, runtime_config)
 
             # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
             # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
@@ -63,11 +93,12 @@ class AgentLoop:
             )
 
             runner = AgentRunner(
-                runtime_config=self.runtime_config,
+                runtime_config=runtime_config,
                 running_context=context,
                 provider_configs=self.provider_configs,
                 tool_registry=self.tool_registry,
                 hooks=self.hooks,
+                compact=compact,
             )
 
             # runner.run_stream() yields incremental events while executing;

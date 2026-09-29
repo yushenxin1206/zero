@@ -190,13 +190,18 @@ def make_compactor(fake, window=20000, enabled=True, max_tokens=100, compact_max
         llm_config=LLMConfig(model="mock-model", max_tokens=max_tokens),
         context_window_tokens=window,
         context_compress_enabled=enabled,
-        context_compact_max_tokens=compact_max,
+        context_compress_output_tokens=compact_max,
     )
     return Compactor(provider=fake, runtime_config=rc)
 
 
 class FakeContext:
-    """maybe_compress 依赖的 Context 最小桩（避免构造真 Context 的副作用）。"""
+    """maybe_compress 依赖的 Context 最小桩（避免构造真 Context 的副作用）。
+
+    模拟 Context 的 turn 级快照接口：raw_history / compact_record 直连
+    SessionStore（真 Context 每 turn 只读一次盘；桩不做缓存也不影响断言，
+    因为每个用例里 maybe_compress 只调用一次）。
+    """
 
     tools = None
 
@@ -204,6 +209,19 @@ class FakeContext:
         self.session_id = sid
         self.channel = CHANNEL
         self.system_prompt = prompt
+
+    @property
+    def raw_history(self):
+        return SessionStore.load_history(
+            self.session_id, self.channel, include_compact=False)
+
+    @property
+    def compact_record(self):
+        return SessionStore.load_compact(self.channel, self.session_id)
+
+    @compact_record.setter
+    def compact_record(self, rec):
+        pass  # 桩始终从磁盘读，回写为 no-op
 
 
 def seed_big(sid):
@@ -232,7 +250,9 @@ assert len(hist) == 4  # [压缩, user, assistant(带tool_calls), tool]
 assert len(fake.payloads) == 1
 pl = fake.payloads[0]
 assert pl.tools is None
-assert pl.llm_config.temperature == 0
+# temperature 不再强制 0：由 compact 任务的解析结果决定（未显式配置时
+# 跟随主对话 llm_config，见 models.resolve_task_llm）
+assert pl.llm_config.temperature == 0.1
 assert pl.llm_config.max_tokens == 500 + 4096  # compact_max + reasoning 余量
 assert pl.messages[0] == {"role": "system", "content": COMPRESS_PROMPT}
 print("maybe_compress over-threshold ok")
@@ -352,6 +372,10 @@ SessionStore.append(make_msg("assistant", "第二轮", session_id=sid9))
 assert run(comp9.maybe_compress(FakeContext(sid9))) is True
 second_msgs = fake9.payloads[1].messages
 assert any(m["role"] == "user" and "<previous_compact>" in m["content"] for m in second_msgs)
+# 增量压缩：首次已覆盖的旧消息不再重送，仅送 covered_upto 之后的新消息
+second_texts = [m.get("content") or "" for m in second_msgs]
+assert not any(t == "你好" * 3500 for t in second_texts)
+assert any(t == "继续" * 3500 for t in second_texts)
 rec9 = SessionStore.load_compact(CHANNEL, sid9)
 assert rec9.covered_upto != first_covered
 print("maybe_compress chained ok")

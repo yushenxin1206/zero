@@ -43,8 +43,9 @@ out = buf.getvalue()
 
 assert ESCAPED not in out, "history output contains literal \\u203a escape"
 assert f"you {PROMPT_CHAR}" in out, "user prompt line missing"
-assert f"tool {PROMPT_CHAR}" in out, "tool line missing"
+assert "tool output" not in out, "tool line should be filtered out"
+assert "tool " not in out, "tool data should not appear in history"
 assert "助手回复内容" in out, "assistant reply missing"
-print("history render ok: no escapes, all message kinds present")
+print("history render ok: no escapes, tool data filtered, no backslash-u escapes")
 
 print("ALL HISTORY RENDER TESTS PASSED")

@@ -5,7 +5,14 @@ from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 
-from zero.models import AgentRuntimeConfig, ChannelConfigs, MaintenanceConfig, ProviderConfigs
+from zero.models import (
+    AgentRuntimeSpec,
+    ChannelConfigs,
+    MaintenanceConfig,
+    ModelSpec,
+    ProviderConfigs,
+    TaskConfig,
+)
 from zero.utils.file import save_or_create_file
 
 HOME = Path.home()
@@ -19,7 +26,11 @@ TOOL_RESULT_MAX_CHARS = 10000
 
 
 class Config(BaseSettings):
-    agent_runtime: AgentRuntimeConfig = Field(default_factory=AgentRuntimeConfig)
+    agent_runtime: AgentRuntimeSpec = Field(default_factory=AgentRuntimeSpec)
+    # 模型注册表：键 = API 模型名，值 = 接入事实（provider / 上下文窗口）
+    models: dict[str, ModelSpec] = Field(default_factory=dict)
+    # 任务级模型绑定：default 主对话 / compact / session_summary / memory
+    tasks: dict[str, TaskConfig] = Field(default_factory=dict)
     providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)

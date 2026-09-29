@@ -12,8 +12,8 @@ from xml.sax.saxutils import escape
 
 import frontmatter
 
-from zero.models import Message, MessageBody, ToolContext
-from zero.session.store import SessionStore
+from zero.models import Message, MessageBody, CompactRecord, ToolContext
+from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import MEMORY_PATH, TOOL_RESULT_MAX_CHARS
 
@@ -77,14 +77,53 @@ class Context:
         # system prompt 按实例缓存（Context 每 turn 新建）：避免 runner 每次
         # 迭代都重读 memory.md / 重解析 skills frontmatter
         self._prompt_cache: str | None = None
+        # turn 级历史快照（Context 每 turn 新建）：首次访问 raw_history /
+        # compact_record / messages 时读一次盘，之后 turn 内只走 record()
+        # 增量追加，避免每次 LLM 迭代重读整个 messages.jsonl
+        self._history_loaded = False
+        self._raw_history: list[Message] = []
+        self._compact_record: CompactRecord | None = None
+
+    def _ensure_history(self) -> None:
+        """懒加载 turn 级历史快照；一个 turn 内至多读一次盘。"""
+        if self._history_loaded:
+            return
+        self._raw_history = SessionStore.load_history(
+            self.session_id, self.channel, include_compact=False)
+        self._compact_record = SessionStore.load_compact(
+            self.channel, self.session_id)
+        self._history_loaded = True
+
+    @property
+    def raw_history(self) -> list[Message]:
+        """全量未压缩历史（供 compactor 计算压缩边界）。"""
+        self._ensure_history()
+        return list(self._raw_history)
+
+    @property
+    def compact_record(self) -> CompactRecord | None:
+        """当前生效的压缩记录（None 表示未压缩）。"""
+        self._ensure_history()
+        return self._compact_record
+
+    @compact_record.setter
+    def compact_record(self, rec: CompactRecord | None) -> None:
+        """compactor 落盘成功后回写，使后续 messages 立即合成新视图。"""
+        self._ensure_history()
+        self._compact_record = rec
 
     def record(self, message: Message) -> None:
         """把 runner 产生的消息写入会话历史（session 模式落 SessionStore）。
+
+        磁盘优先：落盘成功后再追加到 turn 级快照，保证同一 turn 的后续
+        迭代立刻看到新消息；落盘失败直接抛出，内存视图不被污染。
 
         runner 的持久化缝隙：会话上下文落盘，内存上下文（SubAgentContext）
         只追加内存列表，对 runner 透明。
         """
         SessionStore.append(message)
+        if self._history_loaded:
+            self._raw_history.append(message)
 
     @property
     def system_prompt(self) -> str:
@@ -187,7 +226,11 @@ The following skills provide specialized instructions for specific tasks. When a
 
     @property
     def messages(self) -> list[dict[str, Any]]:
-        history = SessionStore.load_history(self.session_id, self.channel)
+        # 从 turn 级快照合成（[压缩] + 尾部），不再每次迭代重读盘
+        self._ensure_history()
+        history = apply_compact(
+            self._raw_history, self._compact_record,
+            self.session_id, self.channel)
         msgs: list[dict[str, Any]] = [
             {
                 "content": self.system_prompt,

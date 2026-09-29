@@ -12,7 +12,7 @@ Module-specific models live in their own modules:
 """
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, Mapping
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -246,16 +246,159 @@ class LLMConfig(Base):
         return base_data
 
 
-class AgentRuntimeConfig(Base):
+class ModelSpec(Base):
+    """模型注册表条目（config.json "models" 的 value）。
+
+    键为 API 模型名（如 "deepseek-v4-flash"），值声明该模型的接入事实：
+    provider 指向 providers 配置的键，context_window_tokens 供主对话的
+    上下文压缩阈值计算使用。
+    """
     provider: str = ''
-    llm_config: LLMConfig = Field(default_factory=LLMConfig)
     context_window_tokens: int = 65536
+
+
+class TaskConfig(Base):
+    """任务级模型绑定（config.json "tasks" 的 value）。
+
+    这里的"任务"指 LLM 调用场景（default 主对话 / compact 上下文压缩 /
+    session_summary 会话复盘 / memory 记忆沉淀），与 scheduler 的定时
+    任务无关。model 为 models 注册表键；未设置时由解析方决定回退
+    （主对话报错、派生任务跟随主对话）。llm_config 是 overlay：仅覆盖
+    显式设置的字段，其余继承基座（绑定模型的默认值或主对话配置）。
+    """
+    model: str | None = None
+    llm_config: LLMConfig | None = None
+
+
+class AgentRuntimeSpec(Base):
+    """agentRuntime 的声明形态（config.json 里用户手写的形状）。
+
+    只声明策略，不重复模型事实：模型与调用参数由 tasks/models 按任务
+    解析（见 resolve_runtime）。extra='forbid' 让遗留字段（如旧版内联
+    的 provider/llmConfig）在加载时立即报错，而不是被静默忽略后悄悄
+    回退到默认值。
+    """
+    model_config = ConfigDict(
+        alias_generator=to_camel, populate_by_name=True, extra='forbid')
+
+    task: str = 'default'
     max_iterations: int = 50
     # 会话上下文自动压缩：历史超出阈值时，把前缀压缩成摘要后落盘
     context_compress_enabled: bool = True
     context_compress_trigger_ratio: float = 0.75  # 触发阈值 min(窗口×比例, 窗口-max_tokens-4096)
     context_compress_tail_ratio: float = 0.25  # 保留在 payload 中的尾部预算（软上限）
-    context_compact_max_tokens: int = 2000  # 压缩模型输出的 compact 记录上限
+
+
+class AgentRuntimeConfig(AgentRuntimeSpec):
+    """agentRuntime 的解析产物：spec 声明 + 物化的模型事实。
+
+    由 resolve_runtime() 构造：provider/llm_config/context_window_tokens
+    来自解析出的 ModelSpec 与 TaskConfig，context_compress_output_tokens
+    由 tasks.compact.llmConfig.maxTokens 回填。继承 AgentRuntimeSpec 使
+    策略字段单点定义，且 spec 的全部字段即本类合法构造 kwargs。
+    """
+    provider: str = ''
+    llm_config: LLMConfig = Field(default_factory=LLMConfig)
+    context_window_tokens: int = 65536
+    context_compress_output_tokens: int = 2000  # 压缩模型输出的 compact 记录上限
+
+
+class ResolvedLLM(Base):
+    """派生任务（compact/session_summary/memory）的解析产物。
+
+    与 AgentRuntimeConfig 的关系：后者是主对话专属（额外携带 spec 策略
+    字段），本模型只含派生任务需要的模型事实——provider 键与合成后的
+    调用参数。
+    """
+    provider: str = ''
+    llm_config: LLMConfig = Field(default_factory=LLMConfig)
+
+
+# 压缩输出上限的默认值：tasks.compact 未显式配置 maxTokens 时的兜底
+DEFAULT_COMPACT_OUTPUT_TOKENS = 2000
+
+
+def _task_overlay(task_cfg: TaskConfig | None, base: LLMConfig) -> LLMConfig:
+    """把任务级 llm_config overlay 叠加到基座上（仅显式设置的字段）。"""
+    if task_cfg is None or task_cfg.llm_config is None:
+        return base
+    return base.model_copy(
+        update=task_cfg.llm_config.model_dump(exclude_unset=True))
+
+
+def resolve_runtime(
+        spec: AgentRuntimeSpec,
+        tasks: Mapping[str, TaskConfig],
+        models: Mapping[str, ModelSpec],
+        session_model: str = '',
+) -> AgentRuntimeConfig:
+    """解析主对话运行时配置（AgentLoop 每 turn 调用一次）。
+
+    模型绑定优先级：session_model（会话内 /model 切换的覆盖）>
+    tasks[spec.task].model；两者皆空视为配置缺失，立即报错（fail-fast，
+    防止静默回退默认模型后用错误配置跑对话）。llm_config 以绑定模型的
+    LLMConfig 默认值为基座叠加任务级 overlay。context_window_tokens
+    取自 ModelSpec；context_compress_output_tokens 由 tasks.compact 的
+    llmConfig.maxTokens 显式值回填（默认 2000）。
+    """
+    task_cfg = tasks.get(spec.task)
+    model_name = session_model or (task_cfg.model if task_cfg else None)
+    if not model_name:
+        raise ValueError(
+            f"任务 {spec.task!r} 未绑定模型：请在 config.json 的 "
+            f"tasks.{spec.task}.model 指定 models 注册表中的键")
+    ms = models.get(model_name)
+    if ms is None:
+        raise ValueError(
+            f"模型 {model_name!r} 不在 models 注册表中，已知键: {sorted(models)}")
+    return AgentRuntimeConfig(
+        **spec.model_dump(),
+        provider=ms.provider,
+        llm_config=_task_overlay(task_cfg, LLMConfig(model=model_name)),
+        context_window_tokens=ms.context_window_tokens,
+        context_compress_output_tokens=_compact_output_tokens(tasks),
+    )
+
+
+def resolve_task_llm(
+        task: str,
+        tasks: Mapping[str, TaskConfig],
+        models: Mapping[str, ModelSpec],
+        fallback: ResolvedLLM,
+) -> ResolvedLLM:
+    """解析派生任务的模型与调用参数（compact/session_summary/memory）。
+
+    模型绑定：tasks[task].model 未设置时跟随 fallback（主对话有效配置），
+    未显式绑定模型的任务默认与会话同模型，避免上下文口径漂移。
+    fallback 通常传 resolve_runtime() 的产物（AgentRuntimeConfig 是
+    ResolvedLLM 的结构超集）。任务绑定模型时 llm_config 以该模型的
+    LLMConfig 默认值为基座；overlay 语义与 resolve_runtime 一致。
+    """
+    task_cfg = tasks.get(task)
+    if task_cfg is None or task_cfg.model is None:
+        provider, base = fallback.provider, fallback.llm_config.model_copy()
+    else:
+        ms = models.get(task_cfg.model)
+        if ms is None:
+            raise ValueError(
+                f"tasks.{task}.model {task_cfg.model!r} 不在 models 注册表中，"
+                f"已知键: {sorted(models)}")
+        provider, base = ms.provider, LLMConfig(model=task_cfg.model)
+    return ResolvedLLM(provider=provider,
+                       llm_config=_task_overlay(task_cfg, base))
+
+
+def _compact_output_tokens(tasks: Mapping[str, TaskConfig]) -> int:
+    """压缩输出上限：tasks.compact.llmConfig 显式设置的 maxTokens。
+
+    只认显式设置（model_fields_set）——任务配了 llmConfig 但没写
+    maxTokens 时不应把 LLMConfig 的字段默认值 8192 误当成输出上限。
+    """
+    cc = tasks.get('compact')
+    if (cc is not None and cc.llm_config is not None
+            and 'max_tokens' in cc.llm_config.model_fields_set):
+        return cc.llm_config.max_tokens
+    return DEFAULT_COMPACT_OUTPUT_TOKENS
 
 
 class FeishuConfig(Base):

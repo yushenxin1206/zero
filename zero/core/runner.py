@@ -24,6 +24,7 @@ from zero.models import (
     MessageBody,
     MessageOut,
     MessageTool,
+    ResolvedLLM,
     StreamEvent,
     TokenUsage,
     ToolCall,
@@ -46,13 +47,23 @@ class AgentRunner:
             running_context: Context,
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
+            compact: ResolvedLLM | None = None,
     ):
         self.runtime_config = runtime_config
         self.provider = OpenAI(provider_configs.get(runtime_config.provider))
         self.context = running_context
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
-        self.compactor = Compactor(provider=self.provider, runtime_config=self.runtime_config)
+        # compact 任务解析结果（模型可与主对话不同，走独立 provider client）；
+        # 未提供时（如子 agent 单次模式）跟随主对话配置
+        if compact is None:
+            compact = ResolvedLLM(provider=runtime_config.provider,
+                                  llm_config=runtime_config.llm_config)
+        self.compactor = Compactor(
+            provider=OpenAI(provider_configs.get(compact.provider)),
+            runtime_config=self.runtime_config,
+            compact_llm=compact.llm_config,
+        )
 
     def _hook_context(self) -> HookContext:
         """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。"""

@@ -21,6 +21,8 @@ class SessionMeta(Base):
     date: str = ""  # 创建日期 YYYY-MM-DD，用于会话目录分桶
     last_updated_at: datetime = Field(default_factory=datetime.now)
     title: str = ""
+    # 会话内 /model 切换绑定的模型（models 注册表键）；空 = 跟随默认任务配置
+    model: str = ""
     # 复盘性描述（会话级摘要），由 maintenance session_summary 定时任务回写
     description: str = ""
     # 索引的 key，仅 list_sessions 返回时回填，不落盘

@@ -43,6 +43,42 @@ SESSIONS_ROOT = ZERO_ROOT / "sessions"
 TITLE_MAX_LEN = 30
 
 
+# ---------------------------------------------------------------------------
+# 压缩记录合成（纯函数：磁盘路径与内存快照路径共用）
+# ---------------------------------------------------------------------------
+
+def compact_message(
+        rec: CompactRecord, session_id: str, channel: str) -> Message:
+    """合成承载压缩记录的 user 消息（metadata.kind == "compact"）。"""
+    return Message(
+        session_id=session_id,
+        channel=channel,
+        sender="user",
+        recipient="assistant",
+        body=MessageBody(content=rec.content),
+        metadata={"kind": "compact"},
+    )
+
+
+def apply_compact(
+        raw: list[Message],
+        rec: CompactRecord | None,
+        session_id: str,
+        channel: str,
+) -> list[Message]:
+    """把压缩记录套用到全量历史上，返回 [压缩消息] + 尾部。
+
+    covered_upto 在 raw 中定位失败时退化为全量历史（不计压缩记录），
+    与 load_history 的容错语义一致；rec 为 None 时返回全量副本。
+    """
+    if rec is None:
+        return list(raw)
+    for i, m in enumerate(raw):
+        if m.id == rec.covered_upto:
+            return [compact_message(rec, session_id, channel)] + list(raw[i + 1:])
+    return list(raw)
+
+
 class SessionStore:
     """Append-only JSONL storage for conversation sessions."""
 
@@ -192,6 +228,24 @@ class SessionStore:
         return False
 
     @staticmethod
+    def get_model(channel: str, session_id: str) -> str:
+        """Return the session's model override (models registry key),
+        or "" if unset/unknown (meaning "follow the default task config")."""
+        entry = SessionStore._find_entry_by_session_id(channel, session_id)
+        return entry.model if entry else ""
+
+    @staticmethod
+    def set_model(channel: str, session_id: str, model: str) -> bool:
+        """Set/clear the session's model override. Returns True if updated."""
+        index = SessionStore._load_index(channel)
+        for entry in index.values():
+            if entry.session_id == session_id:
+                entry.model = model.strip()
+                SessionStore._save_index(channel, index)
+                return True
+        return False
+
+    @staticmethod
     def auto_title(channel: str, session_id: str, text: str) -> None:
         """Set the title from the first user message, unless one is already
         set (auto or manual). No-op for sessions not in the index."""
@@ -240,15 +294,24 @@ class SessionStore:
 
     @staticmethod
     def append(message: Message) -> None:
-        """Append a Message to its session file."""
+        """Append a Message to its session file.
+
+        不触碰 index.json：turn 内每条中间消息都 touch 会让整个索引被反复
+        读改写（随渠道会话数放大的写放大）。活跃时间戳由调用方在 turn 边界
+        用 touch() 统一刷新一次。
+        """
         path = SessionStore._session_file(message.channel, message.session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(message.model_dump_json() + "\n")
-        SessionStore._touch_last_updated(message.channel, message.session_id)
 
     @staticmethod
-    def _touch_last_updated(channel: str, session_id: str) -> None:
+    def touch(channel: str, session_id: str) -> None:
+        """刷新会话的 last_updated_at（turn 边界调用一次即可）。
+
+        last_updated_at 只服务列表排序与 maintenance 的 24h 活跃过滤，
+        per-turn 粒度足够。
+        """
         index = SessionStore._load_index(channel)
         for entry in index.values():
             if entry.session_id == session_id:
@@ -305,21 +368,9 @@ class SessionStore:
                 messages.append(Message.model_validate_json(line))
         if not include_compact:
             return messages
-        rec = SessionStore.load_compact(channel, session_id)
-        if rec is None:
-            return messages
-        for i, m in enumerate(messages):
-            if m.id == rec.covered_upto:
-                compact_msg = Message(
-                    session_id=session_id,
-                    channel=channel,
-                    sender="user",
-                    recipient="assistant",
-                    body=MessageBody(content=rec.content),
-                    metadata={"kind": "compact"},
-                )
-                return [compact_msg] + messages[i + 1:]
-        return messages
+        return apply_compact(
+            messages, SessionStore.load_compact(channel, session_id),
+            session_id, channel)
 
     # ------------------------------------------------------------------
     # Maintenance APIs（session_summary/memory 定时任务专用，纯存储无业务）
