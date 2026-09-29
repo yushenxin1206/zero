@@ -15,6 +15,7 @@ from zero.models import (
     AgentRuntimeConfig,
     AgentRuntimeSpec,
     LLMConfig,
+    LLMConfigOverlay,
     ModelSpec,
     TaskConfig,
     resolve_runtime,
@@ -42,9 +43,9 @@ def spec(**kw) -> AgentRuntimeSpec:
 tasks = {
     "default": TaskConfig(
         model="model-a",
-        llm_config=LLMConfig(temperature=0.3, max_tokens=4096)),
+        llm_config=LLMConfigOverlay(temperature=0.3, max_tokens=4096)),
     "compact": TaskConfig(
-        llm_config=LLMConfig(temperature=0, max_tokens=777)),
+        llm_config=LLMConfigOverlay(temperature=0, max_tokens=777)),
 }
 rc = resolve_runtime(spec(), tasks, MODELS)
 assert isinstance(rc, AgentRuntimeConfig) and isinstance(rc, AgentRuntimeSpec)
@@ -79,14 +80,36 @@ print("resolve_runtime alternate task ok")
 # compact 任务未配置 → 默认
 rc4 = resolve_runtime(spec(), {"default": TaskConfig(model="model-a")}, MODELS)
 assert rc4.context_compress_output_tokens == DEFAULT_COMPACT_OUTPUT_TOKENS == 2000
-# compact 配了 llmConfig 但未写 maxTokens → 不把 LLMConfig 字段默认 8192 当上限
+# compact 配了 llmConfig 但未写 maxTokens → 不把任何兜底值当上限
 rc5 = resolve_runtime(
     spec(),
     {"default": TaskConfig(model="model-a"),
-     "compact": TaskConfig(llm_config=LLMConfig(temperature=0))},
+     "compact": TaskConfig(llm_config=LLMConfigOverlay(temperature=0))},
     MODELS)
 assert rc5.context_compress_output_tokens == 2000
 print("resolve_runtime compact output tokens ok")
+
+# --- overlay 对 save_config 全字段展开的健壮性 -----------------------------------
+# save_config 用全字段 model_dump_json 写盘：磁盘上的 llmConfig 会出现
+# "model": "" 与大量 null。overlay 必须把空串归一为 None、null 不覆盖，
+# 否则一次保存往返就会让 model='' 盖掉基座模型名（fields_set 污染问题）。
+expanded = LLMConfigOverlay.model_validate({
+    "model": "", "toolChoice": None, "responseFormat": None, "stop": None,
+    "stream": None, "streamOptions": None, "temperature": 0.1,
+    "maxTokens": 100000, "reasoningEffort": None, "extraBody": None,
+})
+assert expanded.model is None and expanded.max_tokens == 100000
+tasks_expanded = {
+    "default": TaskConfig(model="model-a", llm_config=expanded),
+    "compact": TaskConfig(llm_config=expanded),
+}
+rc6 = resolve_runtime(spec(), tasks_expanded, MODELS)
+assert rc6.llm_config.model == "model-a"   # 空串 model 不覆盖基座
+assert rc6.llm_config.temperature == 0.1
+assert rc6.llm_config.max_tokens == 100000
+assert rc6.llm_config.response_format == {"type": "text"}  # null 不覆盖
+assert rc6.context_compress_output_tokens == 100000
+print("overlay robust to save_config roundtrip ok")
 
 # --- resolve_runtime: fail-fast --------------------------------------------------
 for bad_kwargs, hint in [
@@ -143,7 +166,7 @@ print("resolve_task_llm follow fallback ok")
 # --- resolve_task_llm: 显式绑定模型 → 独立基座 + overlay --------------------------
 tasks2 = {
     "default": TaskConfig(model="model-a"),
-    "compact": TaskConfig(model="model-b", llm_config=LLMConfig(temperature=0)),
+    "compact": TaskConfig(model="model-b", llm_config=LLMConfigOverlay(temperature=0)),
     "memory": TaskConfig(),
 }
 c2 = resolve_task_llm("compact", tasks2, MODELS, rc)

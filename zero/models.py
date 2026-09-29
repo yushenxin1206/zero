@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Literal, Mapping
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -257,17 +257,43 @@ class ModelSpec(Base):
     context_window_tokens: int = 65536
 
 
+class LLMConfigOverlay(Base):
+    """LLMConfig 的 overlay 形状：None = 不覆盖（继承基座）。
+
+    TaskConfig.llm_config 用本类而非 LLMConfig：overlay 语义若靠
+    exclude_unset（model_fields_set）表达，一次 save_config 的全字段
+    dump 往返就会把 fields_set 污染成全集，"未设置"与"显式写入默认值"
+    从此不可区分，空串 model 会盖掉基座绑定的模型名。
+    """
+    model: str | None = None
+    tool_choice: dict | str | None = None
+    response_format: dict[str, Any] | None = None
+    stop: list[str] | None = None
+    stream: bool | None = None
+    stream_options: dict[str, Any] | None = None
+    temperature: float | int | None = None
+    max_tokens: int | None = None
+    reasoning_effort: str | None = None
+    extra_body: dict[str, Any] | None = None
+
+    @field_validator('model', mode='before')
+    @classmethod
+    def _blank_model_to_none(cls, v):
+        """全字段展开的旧配置里 model 常为空串，归一为 None（不覆盖）。"""
+        return v or None
+
+
 class TaskConfig(Base):
     """任务级模型绑定（config.json "tasks" 的 value）。
 
     这里的"任务"指 LLM 调用场景（default 主对话 / compact 上下文压缩 /
     session_summary 会话复盘 / memory 记忆沉淀），与 scheduler 的定时
     任务无关。model 为 models 注册表键；未设置时由解析方决定回退
-    （主对话报错、派生任务跟随主对话）。llm_config 是 overlay：仅覆盖
-    显式设置的字段，其余继承基座（绑定模型的默认值或主对话配置）。
+    （主对话报错、派生任务跟随主对话）。llm_config 是 overlay（None
+    字段不覆盖），其余继承基座（绑定模型的默认值或主对话配置）。
     """
     model: str | None = None
-    llm_config: LLMConfig | None = None
+    llm_config: LLMConfigOverlay | None = None
 
 
 class AgentRuntimeSpec(Base):
@@ -319,11 +345,12 @@ DEFAULT_COMPACT_OUTPUT_TOKENS = 2000
 
 
 def _task_overlay(task_cfg: TaskConfig | None, base: LLMConfig) -> LLMConfig:
-    """把任务级 llm_config overlay 叠加到基座上（仅显式设置的字段）。"""
+    """把任务级 llm_config overlay 叠加到基座上（None 字段不覆盖）。"""
     if task_cfg is None or task_cfg.llm_config is None:
         return base
-    return base.model_copy(
-        update=task_cfg.llm_config.model_dump(exclude_unset=True))
+    updates = {k: v for k, v in task_cfg.llm_config.model_dump().items()
+               if v is not None}
+    return base.model_copy(update=updates)
 
 
 def resolve_runtime(
@@ -391,12 +418,12 @@ def resolve_task_llm(
 def _compact_output_tokens(tasks: Mapping[str, TaskConfig]) -> int:
     """压缩输出上限：tasks.compact.llmConfig 显式设置的 maxTokens。
 
-    只认显式设置（model_fields_set）——任务配了 llmConfig 但没写
-    maxTokens 时不应把 LLMConfig 的字段默认值 8192 误当成输出上限。
+    只认非 None 值——任务配了 llmConfig 但没写 maxTokens（或磁盘被
+    save_config 全字段展开成 null）时，不应把兜底值误当输出上限。
     """
     cc = tasks.get('compact')
     if (cc is not None and cc.llm_config is not None
-            and 'max_tokens' in cc.llm_config.model_fields_set):
+            and cc.llm_config.max_tokens is not None):
         return cc.llm_config.max_tokens
     return DEFAULT_COMPACT_OUTPUT_TOKENS
 

@@ -11,17 +11,8 @@ import json
 import logging
 
 from zero.config import ZERO_ROOT
-from zero.models import (
-    AgentRuntimeSpec,
-    MaintenanceConfig,
-    ModelSpec,
-    ProviderConfigs,
-    ResolvedLLM,
-    TaskConfig,
-    resolve_runtime,
-    resolve_task_llm,
-)
-from zero.providers.openai import OpenAI
+from zero.models import MaintenanceConfig, ResolvedLLM
+from zero.providers.base import Provider
 from zero.scheduler import cron
 
 from zero.maintenance.memory import run_memory
@@ -43,19 +34,16 @@ class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
     def __init__(self, config: MaintenanceConfig,
-                 provider_configs: ProviderConfigs,
-                 spec: AgentRuntimeSpec,
-                 tasks: dict[str, TaskConfig],
-                 models: dict[str, ModelSpec]):
+                 summary_provider: Provider, summary_llm: ResolvedLLM,
+                 memory_provider: Provider, memory_llm: ResolvedLLM):
+        """纯调度器：模型解析与 provider client 组装由组合根（main.py）
+        在实例化之前完成——维护任务是进程级常量（不跟会话级 /model 切换
+        走），没有 AgentLoop 那种 turn 级重解析的需求。"""
         self.config = config
-        # 启动时解析一次（跨会话批处理任务不跟会话级 /model 切换走，
-        # 回退到主对话的任务级默认绑定）；任务未显式绑定模型时两个任务
-        # 共用主对话 provider client
-        default_rc = resolve_runtime(spec, tasks, models)
-        self._summary_llm = resolve_task_llm('session_summary', tasks, models, default_rc)
-        self._memory_llm = resolve_task_llm('memory', tasks, models, default_rc)
-        self._summary_provider = OpenAI(provider_configs.get(self._summary_llm.provider))
-        self._memory_provider = OpenAI(provider_configs.get(self._memory_llm.provider))
+        self._summary_provider = summary_provider
+        self._summary_llm = summary_llm
+        self._memory_provider = memory_provider
+        self._memory_llm = memory_llm
         self._state_lock = asyncio.Lock()
 
     async def run(self) -> None:
