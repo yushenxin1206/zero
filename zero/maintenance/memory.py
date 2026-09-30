@@ -9,7 +9,7 @@ import json
 import logging
 
 from zero.config import MEMORY_PATH
-from zero.models import AgentRuntimeConfig
+from zero.models import AgentRuntimeConfig, MaintenanceConfig
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
 from zero.session.store import SessionStore
@@ -17,9 +17,6 @@ from zero.session.store import SessionStore
 from zero.maintenance.llm import complete_text
 
 logger = logging.getLogger(__name__)
-
-# 记忆文件重写输出的 token 上限（约束 ~100 行 Markdown）
-MEMORY_MAX_TOKENS = 8000
 
 # 会话筛选窗口
 MEMORY_WINDOW = dt.timedelta(hours=24)
@@ -43,7 +40,11 @@ MEMORY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_memory(provider: Provider, runtime: AgentRuntimeConfig) -> None:
+async def run_memory(
+        provider: Provider,
+        runtime: AgentRuntimeConfig,
+        maintenance_cfg: MaintenanceConfig,
+) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
     summaries: list[SessionSummary] = []
@@ -72,7 +73,8 @@ async def run_memory(provider: Provider, runtime: AgentRuntimeConfig) -> None:
     ]
     new_text = await complete_text(
         provider, runtime.llm_call_options.model,
-        messages, MEMORY_MAX_TOKENS, label="记忆沉淀",
+        messages, maintenance_cfg.memory_max_tokens,
+        runtime.reasoning_token_headroom, label="记忆沉淀",
     )
     if not new_text:
         logger.warning("记忆沉淀输出为空，保留原记忆")

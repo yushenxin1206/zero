@@ -13,15 +13,24 @@ from zero.models import (
     AgentRuntimeConfig,
     AgentRuntimeSpec,
     AgentRuntimeSpecs,
+    CompactConfig,
     LLMCallOptions,
     LLMRuntime,
+    MaintenanceConfig,
     ModelSpec,
     ProviderConfig,
     ProviderConfigs,
 )
 
-# 未显式配置 maxTokens 时，压缩输出上限就是 LLMCallOptions 的默认 max_tokens
-COMPACT_OUTPUT_FALLBACK = LLMCallOptions().max_tokens
+# 顶层区块（compact / maintenance）与共享 spec 的 token 预算默认值
+COMPACT_DEFAULTS = {
+    "enabled": True, "trigger_ratio": 0.75, "tail_ratio": 0.25,
+    "context_compact_max_tokens": 2000,
+}
+MAINTENANCE_TOKEN_DEFAULTS = {
+    "session_summary_max_tokens": 2000, "memory_max_tokens": 8000,
+}
+SPEC_HEADROOM_DEFAULT = 4096
 
 MODELS = {
     "model-a": ModelSpec(provider="deepseek", context_window_tokens=11111),
@@ -101,17 +110,18 @@ assert inherited.llm_call_options.temperature == 0.2
 assert inherited.llm_call_options.max_tokens == 4096
 print("resolve_runtime llm option priority ok")
 
-# --- resolve_runtime: 策略字段走同一条优先级链（合并 agentRuntime 后的新能力）-------
+# --- resolve_runtime: 共享 spec 标量字段走同一条优先级链 ---------------------------
+# reasoning_token_headroom / max_iterations 仍在 AgentRuntimeSpec（各任务通用），
+# 压缩策略与输出上限已迁至顶层 CompactConfig，不再走任务级继承链
 strat = cfg(AgentRuntimeSpecs(
     default=AgentRuntimeSpec(
-        max_iterations=50, context_compress_trigger_ratio=0.5,
+        max_iterations=50, reasoning_token_headroom=2048,
         llm_call_options=LLMCallOptions(model="model-a")),
     compact=AgentRuntimeSpec(max_iterations=3),
 )).resolve_runtime("compact")
 assert strat.max_iterations == 3                     # task 显式覆盖 default
-assert strat.context_compress_trigger_ratio == 0.5    # 继承 default 显式
-assert strat.context_compress_tail_ratio == 0.25      # 两层都没写 → 数据模型默认
-assert strat.context_compress_enabled is True
+assert strat.reasoning_token_headroom == 2048        # 继承 default 显式
+assert AgentRuntimeSpec().reasoning_token_headroom == SPEC_HEADROOM_DEFAULT
 print("resolve_runtime strategy field priority ok")
 
 # --- resolve_runtime: 换 task ---------------------------------------------------
@@ -126,22 +136,44 @@ assert rc3.llm_runtime.context_window_tokens == 22222
 assert rc3.llm_call_options.temperature == 0.1      # 无显式字段 → 数据模型默认
 print("resolve_runtime alternate task ok")
 
-# --- resolve_runtime: 压缩输出上限 = compact 解析后的 max_tokens ------------------
-# compact 未显式写 maxTokens（default 也没写）→ 落数据模型默认
+# --- 顶层区块：compact / maintenance 承载压缩策略与输出上限 ------------------------
+# CompactConfig 默认值（开关/触发比例/尾部比例/压缩输出上限）
+cc_default = CompactConfig()
+for k, v in COMPACT_DEFAULTS.items():
+    assert getattr(cc_default, k) == v, (k, getattr(cc_default, k))
+# MaintenanceConfig 新增两个输出上限字段（与 enable/cron 同区块，策略自洽）
+mc_default = MaintenanceConfig()
+for k, v in MAINTENANCE_TOKEN_DEFAULTS.items():
+    assert getattr(mc_default, k) == v, (k, getattr(mc_default, k))
+# Config 顶层字段：compact 区块与 maintenance 区块各自独立解析、camelCase 别名正常
+root = Config.model_validate({
+    "models": MODELS,
+    "providers": PROVIDERS,
+    "compact": {"enabled": False, "triggerRatio": 0.5,
+                "tailRatio": 0.2, "contextCompactMaxTokens": 1500},
+    "maintenance": {"sessionSummaryMaxTokens": 3000, "memoryMaxTokens": 9000},
+})
+assert root.compact.enabled is False and root.compact.trigger_ratio == 0.5
+assert root.compact.tail_ratio == 0.2
+assert root.compact.context_compact_max_tokens == 1500
+assert root.maintenance.session_summary_max_tokens == 3000
+assert root.maintenance.memory_max_tokens == 9000
+# 压缩输出上限 = 顶层 CompactConfig.context_compact_max_tokens，与 compact
+# 任务的 llm_call_options.max_tokens 无关（完全取代语义）
 rc4 = cfg(AgentRuntimeSpecs(
     default=AgentRuntimeSpec(llm_call_options=LLMCallOptions(model="model-a"))),
 ).resolve_runtime("compact")
-assert rc4.llm_call_options.max_tokens == COMPACT_OUTPUT_FALLBACK
-# default 写了 maxTokens、compact 只写 temperature → 上限继承 default
-rc5 = cfg(AgentRuntimeSpecs(
-    default=AgentRuntimeSpec(
-        llm_call_options=LLMCallOptions(model="model-a", max_tokens=5000)),
+assert not hasattr(rc4, "context_compact_max_tokens")   # 不在运行时承载
+assert not hasattr(rc4, "context_compress_output_tokens")
+assert CompactConfig().context_compact_max_tokens == 2000  # 未配置 → 数据模型默认
+# compact 任务显式写 maxTokens=5000 不带动压缩输出上限（它只属于调用选项）
+cfg(AgentRuntimeSpecs(
+    default=AgentRuntimeSpec(llm_call_options=LLMCallOptions(
+        model="model-a", max_tokens=5000)),
     compact=AgentRuntimeSpec(llm_call_options=LLMCallOptions(temperature=0)),
 )).resolve_runtime("compact")
-assert rc5.llm_call_options.max_tokens == 5000
-# AgentRuntimeConfig 上不再有独立字段承载它
-assert not hasattr(rc5, "context_compress_output_tokens")
-print("compact output tokens come from compact max_tokens ok")
+assert CompactConfig().context_compact_max_tokens == 2000
+print("top-level compact/maintenance sections ok")
 
 # --- 条目对全字段展开旧配置的健壮性 ----------------------------------------------
 # 旧版 save_config 全字段落盘：磁盘 llmCallOptions 会带 "model": ""、null 的
@@ -208,12 +240,19 @@ except ValueError as e:
     assert "extra" in str(e).lower()
 else:
     raise AssertionError("expected ValidationError for legacy llmConfig key")
-# 策略字段与 llmCallOptions 共存，camelCase 别名正常
+# 共享 spec 字段与 llmCallOptions 共存，camelCase 别名正常
 s = AgentRuntimeSpec.model_validate(
-    {"maxIterations": 7, "contextCompressEnabled": False,
+    {"maxIterations": 7, "reasoningTokenHeadroom": 2048,
      "llmCallOptions": {"model": "x"}})
-assert s.max_iterations == 7 and s.context_compress_enabled is False
+assert s.max_iterations == 7 and s.reasoning_token_headroom == 2048
 assert s.llm_call_options is not None and s.llm_call_options.model == "x"
+# 压缩策略字段已迁出 spec：旧键 contextCompressEnabled 现在触发 extra 报错
+try:
+    AgentRuntimeSpec.model_validate({"contextCompressEnabled": False})
+except ValueError as e:
+    assert "extra" in str(e).lower()
+else:
+    raise AssertionError("expected ValidationError for moved-out compact strategy key")
 print("AgentRuntimeSpec extra=forbid ok")
 
 # --- AgentRuntimeSpecs: extra='forbid'（未知任务名立即报错）------------------------
@@ -225,17 +264,16 @@ else:
     raise AssertionError("expected ValidationError for unknown task name")
 print("AgentRuntimeSpecs extra=forbid ok")
 
-# --- 类型收窄：Spec 里 llm_call_options 可空，Config 里非空 ------------------------
-assert AgentRuntimeSpec().llm_call_options is None
+# --- 类型一致：Spec 与 Config 的 llm_call_options 同为非空 LLMCallOptions ----------
+assert AgentRuntimeSpec().llm_call_options == LLMCallOptions()   # 空对象默认 = 未覆盖
+assert AgentRuntimeSpec().llm_call_options.model == ''           # 空 model = 未绑定
 assert isinstance(AgentRuntimeConfig().llm_call_options, LLMCallOptions)
 assert isinstance(AgentRuntimeConfig().llm_runtime, LLMRuntime)
 config_like = AgentRuntimeConfig(
     llm_call_options=LLMCallOptions(model="m"),
     llm_runtime=LLMRuntime(provider=PROVIDERS.deepseek, context_window_tokens=999),
     max_iterations=3,
-    context_compress_enabled=True,
-    context_compress_trigger_ratio=0.5,
-    context_compress_tail_ratio=0.2,
+    reasoning_token_headroom=2048,
 )
 assert config_like.llm_runtime.provider is PROVIDERS.deepseek
 assert config_like.llm_runtime.context_window_tokens == 999

@@ -2,7 +2,8 @@
 
 复用 Compactor._call_compact 的调用模式：LLMPayload + stream_chunks
 收集 content；completion_tokens >= budget 视为截断（reasoning 型模型的
-思考 tokens 与正文共享 completion 预算，额外留 4096 余量）。
+思考 tokens 与正文共享 completion 预算，余量由调用方按各自 runtime 的
+reasoning_token_headroom 传入）。
 """
 import logging
 
@@ -11,19 +12,21 @@ from zero.providers.base import LLMPayload, Provider
 
 logger = logging.getLogger(__name__)
 
-# reasoning 思考 tokens 计入 max_tokens 预算，不留余量正文会被截断
-REASONING_TOKEN_HEADROOM = 4096
-
 
 async def complete_text(
         provider: Provider,
         model: str,
         messages: list[dict],
         max_tokens: int,
+        headroom: int,
         label: str,
 ) -> str | None:
-    """调用 LLM 生成纯文本输出；任何异常/截断返回 None（fail-safe）。"""
-    budget = max_tokens + REASONING_TOKEN_HEADROOM
+    """调用 LLM 生成纯文本输出；任何异常/截断返回 None（fail-safe）。
+
+    max_tokens 为正文输出上限，headroom 为 reasoning 思考预留余量（思考
+    tokens 与正文共享同一 completion 预算，不留余量正文会被截断成残句）。
+    """
+    budget = max_tokens + headroom
     try:
         payload = LLMPayload(
             messages=messages,

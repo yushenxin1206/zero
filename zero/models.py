@@ -225,6 +225,7 @@ class ProviderConfig(Base):
 class ProviderConfigs(Base):
     dashscope: ProviderConfig = Field(default_factory=ProviderConfig)
     deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
+    zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
 
 
 class LLMCallOptions(Base):
@@ -274,14 +275,16 @@ class AgentRuntimeSpec(Base):
 
     llm_call_options.model 为 models 注册表键（模型绑定的唯一入口，空 =
     未绑定，未绑定时由解析方决定回退：主对话报错、派生任务跟随 default）。
-    llm_call_options 整体可空，表示该任务不覆盖任何调用选项、整条继承
-    default。字段是否"显式设置"由 model_fields_set 表达（未设置 = 继承
-    基座）；fields_set 来自磁盘文件的键集合，即手工维护的精简配置是显式性
-    的唯一来源（save_config 的全字段 dump 仅用于生成模板）。
+    默认空对象即"未覆盖任何调用选项、整条继承 default"；是否继承由
+    model_fields_set 表达（磁盘未写该键 = 继承基座），显式写 llmCallOptions
+    则逐子键与 default 合并。fields_set 来自磁盘文件的键集合，即手工维护的
+    精简配置是显式性的唯一来源（save_config 的全字段 dump 仅用于生成模板）。
 
-    策略字段（max_iterations / context_compress_*）对派生任务会一并继承但
-    不被消费——只有主对话做上下文压缩，compact/session_summary/memory 不
-    压缩自己。
+    策略字段（max_iterations）对派生任务会一并继承但不被消费——只有主对话
+    做上下文压缩。压缩功能本身的策略（开关/触发比例/尾部比例/输出上限）
+    已迁至顶层 CompactConfig（与 maintenance 同级），见 config.compact；
+    compact/session_summary/memory 的模型/temperature 仍走本任务的
+    llm_call_options，输出上限分别由 CompactConfig / MaintenanceConfig 决定。
 
     extra='forbid' 让未知键（如改名前的 llmConfig、手滑拼错的键）在加载时
     立即报错——默认的 extra='ignore' 会把它丢掉，最终表现为"未绑定模型"
@@ -291,11 +294,9 @@ class AgentRuntimeSpec(Base):
         alias_generator=to_camel, populate_by_name=True, extra='forbid')
 
     max_iterations: int = 50
-    # 会话上下文自动压缩：历史超出阈值时，把前缀压缩成摘要后落盘
-    context_compress_enabled: bool = True
-    context_compress_trigger_ratio: float = 0.75  # 触发阈值 min(窗口×比例, 窗口-max_tokens-4096)
-    context_compress_tail_ratio: float = 0.25  # 保留在 payload 中的尾部预算（软上限）
-    llm_call_options: LLMCallOptions | None = None
+    # 单次 LLM 调用为 reasoning 思考预留的 completion 预算余量（思考与正文共享预算）
+    reasoning_token_headroom: int = 4096
+    llm_call_options: LLMCallOptions = Field(default_factory=LLMCallOptions)
 
 
 class AgentRuntimeSpecs(Base):
@@ -308,7 +309,7 @@ class AgentRuntimeSpecs(Base):
     model_config = ConfigDict(
         alias_generator=to_camel, populate_by_name=True, extra='forbid')
 
-    default: AgentRuntimeSpec | None = None
+    default: AgentRuntimeSpec = Field(default_factory=AgentRuntimeSpec)
     compact: AgentRuntimeSpec | None = None
     session_summary: AgentRuntimeSpec | None = None
     memory: AgentRuntimeSpec | None = None
@@ -338,14 +339,12 @@ class AgentRuntimeConfig(AgentRuntimeSpec):
     条 task 显式 > default 显式 > 数据模型默认 优先级链合并而来；
     llm_runtime 由合并出的 model（LLMCallOptions.model）查 models 注册表
     结算。继承 AgentRuntimeSpec 使字段单点定义，且 spec 的全部字段即本类
-    合法构造 kwargs。
+    合法构造 kwargs（llm_call_options 类型与 Spec 一致，同为非空）。
 
-    与 Spec 的唯一类型差异：llm_call_options 收窄为非空——解析产物必须
-    带着物化好的调用选项。压缩记录的输出上限不再单独留字段，消费方直接
-    取 compact 任务解析结果的 max_tokens。
+    压缩记录的输出上限与压缩策略由顶层 CompactConfig（config.compact）
+    决定，不在本类承载。
     """
     llm_runtime: LLMRuntime = Field(default_factory=LLMRuntime)
-    llm_call_options: LLMCallOptions = Field(default_factory=LLMCallOptions)
 
 
 class FeishuConfig(Base):
@@ -359,16 +358,36 @@ class ChannelConfigs(Base):
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
 
 
+class CompactConfig(Base):
+    """上下文压缩功能配置（config.json 顶层 "compact"，与 maintenance 同级）。
+
+    压缩是主对话的运行时行为，但作为独立功能统一在此配置：开关、触发
+    比例、尾部保留比例、压缩记录输出上限。compact 任务的模型/temperature
+    等调用选项仍走 agentRuntimes.compact 条目（model 跟随会话绑定）；
+    reasoning 余量取各自 runtime 的 reasoning_token_headroom。
+    """
+    enabled: bool = True
+    # 触发阈值 min(窗口×比例, 窗口-max_tokens-reasoning_token_headroom)
+    trigger_ratio: float = 0.75
+    # 保留在 payload 中的尾部预算（软上限，按主对话窗口的比例）
+    tail_ratio: float = 0.25
+    # 压缩记录输出上限（不再取 compact 任务 llm_call_options.max_tokens）
+    context_compact_max_tokens: int = 2000
+
+
 class MaintenanceConfig(Base):
     """后台维护任务：会话复盘（session_summary）与长期记忆沉淀（memory）。
 
     两个任务独立开关、独立 cron；由 maintenance.MaintenanceEngine 在进程内
-    调度，不经过 Scheduler/AgentLoop。
+    调度，不经过 Scheduler/AgentLoop。各任务的模型/temperature/reasoning
+    余量仍走 agentRuntimes 对应条目，本区块只放"开关/频率/输出上限"策略。
     """
     session_summary_enabled: bool = True
     session_summary_cron: str = "0 23 * * *"  # 会话复盘：每天 23:00 复盘 24h 内活跃会话
+    session_summary_max_tokens: int = 2000   # 复盘正文（六字段 JSON）的输出上限
     memory_enabled: bool = True
     memory_cron: str = "30 23 * * *"  # 记忆沉淀：每天 23:30 从复盘提炼长期记忆
+    memory_max_tokens: int = 8000     # 记忆文件重写输出上限（约束 ~100 行 Markdown）
 
 
 # ---------------------------------------------------------------------------

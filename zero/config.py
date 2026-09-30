@@ -10,6 +10,7 @@ from zero.models import (
     AgentRuntimeConfig,
     AgentRuntimeSpecs,
     ChannelConfigs,
+    CompactConfig,
     LLMRuntime,
     MaintenanceConfig,
     ModelSpec,
@@ -35,6 +36,7 @@ class Config(BaseSettings):
     agent_runtimes: AgentRuntimeSpecs = Field(default_factory=AgentRuntimeSpecs)
     providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
+    compact: CompactConfig = Field(default_factory=CompactConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
     model_config = SettingsConfigDict(alias_generator=to_camel, populate_by_name=True)

@@ -57,8 +57,9 @@ class AgentRunner:
         self.hooks = hooks or Hooks()
         self.compactor = Compactor(
             provider=OpenAI(compact_config.llm_runtime.provider),
-            runtime_config=self.runtime_config,
-            compact_config=compact_config,
+            session_runtime=self.runtime_config,
+            compact_runtime=compact_config,
+            compact_config=config.compact,
         )
 
     def _hook_context(self) -> HookContext:
@@ -128,7 +129,8 @@ class AgentRunner:
                     content_parts.append(data)
                     yield StreamEvent(kind="delta", content=data)
                 elif kind == "reasoning":
-                    logger.info("[reasoning] %s", data)
+                    # 暂不处理reasoning
+                    continue
                 elif kind == "tool_calls":
                     self._accumulate_tool_call(tool_call_acc, data)
                 elif kind == "usage":

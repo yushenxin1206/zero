@@ -61,10 +61,12 @@ class MaintenanceEngine:
         await asyncio.gather(*loops)
 
     async def _run_session_summary(self) -> None:
-        await run_session_summary(self._summary_provider, self._summary_runtime)
+        await run_session_summary(self._summary_provider, self._summary_runtime,
+                                  self._maintenance)
 
     async def _run_memory(self) -> None:
-        await run_memory(self._memory_provider, self._memory_runtime)
+        await run_memory(self._memory_provider, self._memory_runtime,
+                         self._maintenance)
 
     async def _loop(self, name: str, cron_expr: str, fn) -> None:
         """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。"""

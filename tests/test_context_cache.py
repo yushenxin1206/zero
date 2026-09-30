@@ -19,6 +19,7 @@ from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
 from zero.models import (
     AgentRuntimeConfig,
+    CompactConfig,
     CompactRecord,
     LLMCallOptions,
     LLMRuntime,
@@ -130,15 +131,22 @@ class FakeProvider:
             yield kind, data
 
 
-def make_compactor(fake, window=20000, max_tokens=100, compact_max=500):
+def make_compactor(fake, window=20000, max_tokens=100,
+                   context_compact_max=500, headroom=4096):
     rc = AgentRuntimeConfig(
         llm_call_options=LLMCallOptions(model="mock-model", max_tokens=max_tokens),
         llm_runtime=LLMRuntime(provider=ProviderConfig(),
                                context_window_tokens=window),
+        reasoning_token_headroom=headroom,
     )
+    # 压缩输出预算来自顶层 CompactConfig 的 context_compact_max_tokens
+    # （不再取 compact 任务的 llm_call_options.max_tokens）+ compact 任务余量
     cc = AgentRuntimeConfig(
-        llm_call_options=LLMCallOptions(model="mock-model", max_tokens=compact_max))
-    return Compactor(provider=fake, runtime_config=rc, compact_config=cc)
+        reasoning_token_headroom=headroom,
+        llm_call_options=LLMCallOptions(model="mock-model"))
+    cs = CompactConfig(context_compact_max_tokens=context_compact_max)
+    return Compactor(provider=fake, session_runtime=rc, compact_runtime=cc,
+                     compact_config=cs)
 
 
 def seed_big(sid):

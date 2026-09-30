@@ -9,7 +9,7 @@ import datetime as dt
 import json
 import logging
 
-from zero.models import AgentRuntimeConfig, Message
+from zero.models import AgentRuntimeConfig, MaintenanceConfig, Message
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
 from zero.session.store import SessionStore
@@ -17,9 +17,6 @@ from zero.session.store import SessionStore
 from zero.maintenance.llm import complete_text
 
 logger = logging.getLogger(__name__)
-
-# 复盘正文（六字段 JSON）的输出上限
-SESSION_SUMMARY_MAX_TOKENS = 2000
 
 # 会话筛选窗口
 SESSION_SUMMARY_WINDOW = dt.timedelta(hours=24)
@@ -50,14 +47,18 @@ SESSION_SUMMARY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_session_summary(provider: Provider, runtime: AgentRuntimeConfig) -> None:
+async def run_session_summary(
+        provider: Provider,
+        runtime: AgentRuntimeConfig,
+        maintenance_cfg: MaintenanceConfig,
+) -> None:
     """入口：复盘所有渠道 24h 内活跃的会话。单会话失败不中断批次。"""
     since = dt.datetime.now() - SESSION_SUMMARY_WINDOW
-    model = runtime.llm_call_options.model
     for channel in SessionStore.list_channels():
         for meta in SessionStore.list_recent(channel, since):
             try:
-                await _summarize_session(provider, model, channel, meta.session_id)
+                await _summarize_session(
+                    provider, runtime, maintenance_cfg, channel, meta.session_id)
             except Exception:  # noqa: BLE001 - 单会话失败不中断批次
                 logger.exception(
                     "会话复盘失败: channel=%s session=%s", channel, meta.session_id)
@@ -100,7 +101,13 @@ def _extract_json(text: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-async def _summarize_session(provider: Provider, model: str, channel: str, session_id: str) -> None:
+async def _summarize_session(
+        provider: Provider,
+        runtime: AgentRuntimeConfig,
+        maintenance_cfg: MaintenanceConfig,
+        channel: str,
+        session_id: str,
+) -> None:
     """复盘单个会话：生成 SessionSummary 并落盘，回写索引。"""
     # 含压缩合成消息（load_history 默认 include_compact=True），天然有界
     raw = SessionStore.load_history(session_id, channel)
@@ -120,8 +127,10 @@ async def _summarize_session(provider: Provider, model: str, channel: str, sessi
         return  # 上次复盘后无新消息，幂等跳过
 
     text = await complete_text(
-        provider, model,
-        _build_messages(prev, tail), SESSION_SUMMARY_MAX_TOKENS,
+        provider, runtime.llm_call_options.model,
+        _build_messages(prev, tail),
+        maintenance_cfg.session_summary_max_tokens,
+        runtime.reasoning_token_headroom,
         label=f"会话复盘({session_id[:8]})",
     )
     if not text:
