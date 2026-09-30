@@ -50,10 +50,10 @@ SESSION_SUMMARY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_session_summary(provider: Provider, llm: AgentRuntimeConfig) -> None:
+async def run_session_summary(provider: Provider, runtime: AgentRuntimeConfig) -> None:
     """入口：复盘所有渠道 24h 内活跃的会话。单会话失败不中断批次。"""
     since = dt.datetime.now() - SESSION_SUMMARY_WINDOW
-    model = llm.llm_config.model
+    model = runtime.llm_call_options.model
     for channel in SessionStore.list_channels():
         for meta in SessionStore.list_recent(channel, since):
             try:

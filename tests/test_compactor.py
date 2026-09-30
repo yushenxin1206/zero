@@ -24,7 +24,8 @@ from zero.core.compactor import (
 from zero.models import (
     AgentRuntimeConfig,
     CompactRecord,
-    LLMConfig,
+    LLMCallOptions,
+    LLMRuntime,
     Message,
     MessageBody,
     ProviderConfig,
@@ -187,13 +188,16 @@ class FakeProvider:
 
 def make_compactor(fake, window=20000, enabled=True, max_tokens=100, compact_max=500):
     rc = AgentRuntimeConfig(
-        provider=ProviderConfig(),
-        llm_config=LLMConfig(model="mock-model", max_tokens=max_tokens),
-        context_window_tokens=window,
+        llm_call_options=LLMCallOptions(model="mock-model", max_tokens=max_tokens),
+        llm_runtime=LLMRuntime(provider=ProviderConfig(),
+                               context_window_tokens=window),
         context_compress_enabled=enabled,
-        context_compress_output_tokens=compact_max,
     )
-    return Compactor(provider=fake, runtime_config=rc)
+    # 压缩输出预算来自 compact 任务解析后的 max_tokens（消费方直接取值，
+    # 不再由 AgentRuntimeConfig 单独承载）
+    cc = AgentRuntimeConfig(
+        llm_call_options=LLMCallOptions(model="mock-model", max_tokens=compact_max))
+    return Compactor(provider=fake, runtime_config=rc, compact_config=cc)
 
 
 class FakeContext:
@@ -251,10 +255,10 @@ assert len(hist) == 4  # [压缩, user, assistant(带tool_calls), tool]
 assert len(fake.payloads) == 1
 pl = fake.payloads[0]
 assert pl.tools is None
-# temperature 不再强制 0：由 compact 任务的解析结果决定（未显式配置时
-# 跟随主对话 llm_config，见 models.resolve_task_llm）
-assert pl.llm_config.temperature == 0.1
-assert pl.llm_config.max_tokens == 500 + 4096  # compact_max + reasoning 余量
+# temperature 不再强制 0：由 compact 任务的解析结果决定（compact 未显式写
+# temperature，落 LLMCallOptions 默认 0.1）
+assert pl.llm_call_options.temperature == 0.1
+assert pl.llm_call_options.max_tokens == 500 + 4096  # compact_max + reasoning 余量
 assert pl.messages[0] == {"role": "system", "content": COMPRESS_PROMPT}
 print("maybe_compress over-threshold ok")
 

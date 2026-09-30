@@ -35,7 +35,6 @@ from rich.text import Text
 
 from zero.bus.queue import MessageBus
 from zero.channels.cli_prompt import COMMANDS, CommandStats, build_prompt_session
-from zero.config import default_config
 from zero.models import (
     ApprovalRequest, MessageBody, MessageIn, MessageOut, Origin, StreamEvent)
 from zero.session.models import SessionMeta
@@ -60,8 +59,7 @@ _PROMPT_STYLE = Style.from_dict({"prompt": "bold ansicyan"})
 # alias -> canonical command (canonical names defined in cli_prompt.COMMANDS)
 _COMMAND_ALIASES = {
     "/n": "/new", "/s": "/sessions", "/h": "/history", "/t": "/title",
-    "/m": "/model", "/ts": "/tasks", "/?": "/help", "/q": "/quit",
-    "/exit": "/quit",
+    "/ts": "/tasks", "/?": "/help", "/q": "/quit", "/exit": "/quit",
 }
 
 
@@ -434,60 +432,6 @@ class CLIChannel:
         else:
             self.console.print("[yellow]当前会话不在索引中，无法命名[/yellow]")
 
-    def _handle_model(self, arg: str):
-        """`/model` 列出模型注册表与当前生效项；`/model <name>` 切换；
-        `/model default` 清除会话覆盖、恢复任务级默认绑定。"""
-        arg = arg.strip()
-        models = default_config.models
-        current = SessionStore.get_model(CHANNEL, self.session_id)
-        default_model = (default_config.tasks.get("default").llm_config.model
-                         if default_config.tasks.get("default")
-                         and default_config.tasks.get("default").llm_config
-                         else None) or ""
-
-        if not arg:
-            if not models:
-                self.console.print("[yellow]config.json 未配置 models 注册表[/yellow]")
-                return
-            table = Table(title="models 注册表", expand=True)
-            table.add_column("模型", style="bold")
-            table.add_column("provider")
-            table.add_column("上下文窗口", justify="right")
-            table.add_column("状态")
-            for name, ms in models.items():
-                if name == current:
-                    status = "[green]当前会话[/green]"
-                elif not current and name == default_model:
-                    status = "[cyan]默认[/cyan]"
-                else:
-                    status = ""
-                table.add_row(name, ms.provider or "-",
-                              f"{ms.context_window_tokens:,}", status)
-            self.console.print(table)
-            self.console.print(
-                "[dim]/model <name> 切换（下一条消息生效）；"
-                "/model default 恢复默认[/dim]")
-            return
-
-        if arg == "default":
-            if SessionStore.set_model(CHANNEL, self.session_id, ""):
-                self.console.print(
-                    f"[green]已恢复默认模型:[/green] {escape(default_model) or '(未配置)'}")
-            else:
-                self.console.print("[yellow]当前会话不在索引中，无法切换[/yellow]")
-            return
-
-        if arg not in models:
-            self.console.print(
-                f"[yellow]未知模型 {escape(arg)}，models 注册表中的键:"
-                f" {', '.join(models) or '(空)'}[/yellow]")
-            return
-        if SessionStore.set_model(CHANNEL, self.session_id, arg):
-            self.console.print(f"[green]模型已切换:[/green] {escape(arg)} "
-                               "[dim]（下一条消息生效）[/dim]")
-        else:
-            self.console.print("[yellow]当前会话不在索引中，无法切换[/yellow]")
-
     def _handle_tasks(self, arg: str):
         """`/tasks` 列出当前会话的定时任务；`/tasks all` 列出 cli 渠道全部。"""
         show_all = arg.strip().lower() == "all"
@@ -567,9 +511,6 @@ class CLIChannel:
             return True
         if cmd in ("/title", "/t"):
             self._handle_title(_arg)
-            return True
-        if cmd in ("/model", "/m"):
-            self._handle_model(_arg)
             return True
         if cmd in ("/tasks", "/ts"):
             self._handle_tasks(_arg)

@@ -9,13 +9,7 @@ from zero.config import Config
 from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
-from zero.models import (
-    MessageBody,
-    MessageOut,
-    ModelResolver,
-    TokenUsage,
-    ToolContext,
-)
+from zero.models import MessageBody, MessageOut, TokenUsage, ToolContext
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
@@ -25,9 +19,8 @@ class AgentLoop:
     """
     The agent loop is the core processing engine.
 
-    持有声明形态（spec/tasks/models），每 turn 按会话模型覆盖解析出
-    AgentRuntimeConfig 再构造 AgentRunner——会话内 /model 切换在下一个
-    turn 生效，turn 中途不受影响。
+    只持有根配置（Config）：运行时配置由 AgentRunner 构造时按任务解析，
+    模型/provider 等事实不在本类留痕。
     """
 
     def __init__(
@@ -54,16 +47,6 @@ class AgentLoop:
             SessionStore.auto_title(
                 msg_in.channel, msg_in.session_id, msg_in.body.content or "")
 
-            # turn 起点解析运行时配置：会话级 /model 覆盖 > 任务级绑定；
-            # compact 任务未显式绑定模型时跟随主对话有效模型
-            runtime_config = ModelResolver.resolve_runtime(
-                'default', self.config.agent_runtime, self.config.tasks,
-                self.config.models, self.config.providers,
-                SessionStore.get_model(msg_in.channel, msg_in.session_id))
-            compact = ModelResolver.resolve_task_llm(
-                'compact', self.config.tasks, self.config.models,
-                self.config.providers, runtime_config)
-
             # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
             # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
             # 事件路由）据此把交互事件精确挂到触发它的那一轮
@@ -85,11 +68,10 @@ class AgentLoop:
             )
 
             runner = AgentRunner(
-                runtime_config=runtime_config,
+                config=self.config,
                 running_context=context,
                 tool_registry=self.tool_registry,
                 hooks=self.hooks,
-                compact=compact,
             )
 
             # runner.run_stream() yields incremental events while executing;

@@ -6,7 +6,7 @@
 """
 import logging
 
-from zero.models import LLMConfig
+from zero.models import LLMCallOptions
 from zero.providers.base import LLMPayload, Provider
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ async def complete_text(
         payload = LLMPayload(
             messages=messages,
             tools=None,
-            llm_config=LLMConfig(model=model, temperature=0, max_tokens=budget),
+            llm_call_options=LLMCallOptions(model=model, temperature=0, max_tokens=budget),
         )
         parts: list[str] = []
         completion_tokens = 0

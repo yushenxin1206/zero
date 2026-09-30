@@ -43,7 +43,7 @@ MEMORY_FINAL_INSTRUCTION = (
 )
 
 
-async def run_memory(provider: Provider, llm: AgentRuntimeConfig) -> None:
+async def run_memory(provider: Provider, runtime: AgentRuntimeConfig) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
     summaries: list[SessionSummary] = []
@@ -71,7 +71,7 @@ async def run_memory(provider: Provider, llm: AgentRuntimeConfig) -> None:
         {"role": "user", "content": MEMORY_FINAL_INSTRUCTION},
     ]
     new_text = await complete_text(
-        provider, llm.llm_config.model,
+        provider, runtime.llm_call_options.model,
         messages, MEMORY_MAX_TOKENS, label="记忆沉淀",
     )
     if not new_text:

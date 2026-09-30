@@ -21,7 +21,6 @@ from zero.core.context import Context
 from zero.models import (
     AgentRuntimeConfig,
     CompactRecord,
-    LLMConfig,
     Message,
 )
 from zero.providers.base import LLMPayload, Provider
@@ -183,16 +182,18 @@ class Compactor:
     """会话历史压缩器：判断是否触发压缩并生成/落盘压缩记录。
 
     窗口/阈值判断使用主对话的 runtime_config（判断的是主对话 payload
-    是否超窗）；压缩调用本身使用 compact 任务的解析结果 compact_llm
-    （模型/temperature 可与主对话不同，见 models.resolve_task_llm）。
+    是否超窗）；压缩调用本身使用 compact 任务的解析结果 compact_config
+    （模型/temperature 可与主对话不同，见 Config.resolve_runtime("compact")）
+    及其对应 provider client。
     """
 
     def __init__(self, provider: Provider, runtime_config: AgentRuntimeConfig,
-                 compact_llm: LLMConfig | None = None):
+                 compact_config: AgentRuntimeConfig):
         self.provider = provider
         self.runtime_config = runtime_config
-        # compact 任务未显式配置时跟随主对话调用参数
-        self.compact_llm = compact_llm or runtime_config.llm_config
+        # 压缩调用的参数取自 compact 任务的解析结果（模型/temperature 可与
+        # 主对话不同）；调用方必须 resolve_runtime("compact") 传入
+        self.compact_llm_options = compact_config.llm_call_options
 
     async def maybe_compress(self, context: Context) -> bool:
         """检查是否需要压缩，需要则生成压缩记录并落盘。返回是否发生了压缩。"""
@@ -208,10 +209,10 @@ class Compactor:
         # 从 raw + rec 合成估算，与 context.messages 同口径
         tools = context.tools
         total = estimate_session_payload(context.system_prompt, tools, raw, rec)
-        window = rc.context_window_tokens
+        window = rc.llm_runtime.context_window_tokens
         trigger = min(
             window * rc.context_compress_trigger_ratio,
-            window - rc.llm_config.max_tokens - 4096,
+            window - rc.llm_call_options.max_tokens - 4096,
         )
         if total < trigger:
             return False
@@ -222,7 +223,7 @@ class Compactor:
         # 尾部。若仍不低于触发阈值，说明窗口装不下「压缩记录 + 尾部」，压缩
         # 无收益；放行会导致同一 turn 内每次迭代都重复压缩，故放弃。
         post = (estimate_session_payload(context.system_prompt, tools, [], None)
-                + rc.context_compress_output_tokens
+                + self.compact_llm_options.max_tokens
                 + sum(estimate_message(m) for m in raw[tail_start:]))
         if post >= trigger:
             logger.warning(
@@ -280,19 +281,17 @@ class Compactor:
     ) -> str | None:
         """调用压缩模型生成压缩记录文本；任何异常/截断返回 None（fail-safe）。
 
-        输出预算 = context_compress_output_tokens（由 tasks.compact 的
-        llmConfig.maxTokens 回填）+ reasoning 思考预留：思考 tokens 与
-        正文共享同一 completion 预算，不留余量时正文会被截断成残句。
-        temperature 等其余参数由 compact 任务的解析结果决定（可经
-        tasks.compact.llmConfig 差异化配置）。
+        输出预算 = compact_llm_options.max_tokens（即 compact 任务解析后
+        llm_call_options 的 max_tokens）+ reasoning 思考预留：思考 tokens
+        与正文共享同一 completion 预算，不留余量时正文会被截断成残句。
+        temperature 等其余参数同样由 compact 任务的解析结果决定。
         """
-        budget = (self.runtime_config.context_compress_output_tokens
-                  + REASONING_TOKEN_HEADROOM)
+        budget = (self.compact_llm_options.max_tokens + REASONING_TOKEN_HEADROOM)
         try:
             payload = LLMPayload(
                 messages=build_compact_messages(raw_prefix, prev_compact),
                 tools=None,
-                llm_config=self.compact_llm.model_copy(
+                llm_call_options=self.compact_llm_options.model_copy(
                     update={'max_tokens': budget}),
             )
             parts: list[str] = []

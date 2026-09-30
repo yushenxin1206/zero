@@ -10,9 +10,9 @@ import datetime as dt
 import json
 import logging
 
-from zero.config import ZERO_ROOT
-from zero.models import AgentRuntimeConfig, MaintenanceConfig
-from zero.providers.base import Provider
+from zero.config import ZERO_ROOT, Config
+from zero.models import AgentRuntimeConfig
+from zero.providers.openai import OpenAI
 from zero.scheduler import cron
 
 from zero.maintenance.memory import run_memory
@@ -33,38 +33,38 @@ _SLOT_SCAN_MINUTES = 24 * 60
 class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
-    def __init__(self, config: MaintenanceConfig,
-                 summary_provider: Provider, summary_llm: AgentRuntimeConfig,
-                 memory_provider: Provider, memory_llm: AgentRuntimeConfig):
-        """纯调度器：模型解析与 provider client 组装由组合根（main.py）
-        在实例化之前完成——维护任务是进程级常量（不跟会话级 /model 切换
-        走），没有 AgentLoop 那种 turn 级重解析的需求。"""
-        self.config = config
-        self._summary_provider = summary_provider
-        self._summary_llm = summary_llm
-        self._memory_provider = memory_provider
-        self._memory_llm = memory_llm
+    def __init__(self, config: Config):
+        """入参是根配置：两个维护任务各按自己的任务名解析运行时配置
+        （模型/provider 可与主对话不同），并各构造独立 provider client。
+        维护任务是进程级常量，不跟会话级模型切换走，故只解析一次。"""
+        self._maintenance = config.maintenance
+        summary = config.resolve_runtime('session_summary')
+        memory = config.resolve_runtime('memory')
+        self._summary_provider = OpenAI(summary.llm_runtime.provider)
+        self._summary_runtime: AgentRuntimeConfig = summary
+        self._memory_provider = OpenAI(memory.llm_runtime.provider)
+        self._memory_runtime: AgentRuntimeConfig = memory
         self._state_lock = asyncio.Lock()
 
     async def run(self) -> None:
         loops = []
-        if self.config.session_summary_enabled:
-            loops.append(self._loop("session_summary", self.config.session_summary_cron, self._run_session_summary))
-        if self.config.memory_enabled:
-            loops.append(self._loop("memory", self.config.memory_cron, self._run_memory))
+        if self._maintenance.session_summary_enabled:
+            loops.append(self._loop("session_summary", self._maintenance.session_summary_cron, self._run_session_summary))
+        if self._maintenance.memory_enabled:
+            loops.append(self._loop("memory", self._maintenance.memory_cron, self._run_memory))
         if not loops:
             logger.info("maintenance 任务全部关闭")
             return
         logger.info("maintenance 启动: session_summary=%r memory=%r",
-                    self.config.session_summary_cron if self.config.session_summary_enabled else None,
-                    self.config.memory_cron if self.config.memory_enabled else None)
+                    self._maintenance.session_summary_cron if self._maintenance.session_summary_enabled else None,
+                    self._maintenance.memory_cron if self._maintenance.memory_enabled else None)
         await asyncio.gather(*loops)
 
     async def _run_session_summary(self) -> None:
-        await run_session_summary(self._summary_provider, self._summary_llm)
+        await run_session_summary(self._summary_provider, self._summary_runtime)
 
     async def _run_memory(self) -> None:
-        await run_memory(self._memory_provider, self._memory_llm)
+        await run_memory(self._memory_provider, self._memory_runtime)
 
     async def _loop(self, name: str, cron_expr: str, fn) -> None:
         """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。"""

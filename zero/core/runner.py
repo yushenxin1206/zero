@@ -14,7 +14,7 @@ import logging
 from typing import Any
 from uuid import uuid4
 
-from zero.config import TOOL_RESULT_MAX_CHARS
+from zero.config import Config, TOOL_RESULT_MAX_CHARS
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
@@ -40,26 +40,25 @@ class AgentRunner:
 
     def __init__(
             self,
-            runtime_config: AgentRuntimeConfig,
+            config: Config,
             running_context: Context,
+            task: str = "default",
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
-            compact: AgentRuntimeConfig | None = None,
     ):
-        self.runtime_config = runtime_config
-        # provider 已是解析阶段结算好的对象（见 ModelResolver），直接构造 client
-        self.provider = OpenAI(runtime_config.provider)
+        # 运行时配置在构造时按任务从根配置解析：主对话用 task（默认
+        # default），上下文压缩用 compact——两者可绑定不同模型，各走
+        # 独立 provider client（provider 已是结算好的 ProviderConfig 对象）
+        self.runtime_config: AgentRuntimeConfig = config.resolve_runtime(task)
+        self.provider = OpenAI(self.runtime_config.llm_runtime.provider)
+        compact_config = config.resolve_runtime("compact")
         self.context = running_context
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
-        # compact 任务解析结果（模型可与主对话不同，走独立 provider client）；
-        # 未提供时（如子 agent 单次模式）跟随主对话配置
-        if compact is None:
-            compact = runtime_config
         self.compactor = Compactor(
-            provider=OpenAI(compact.provider),
+            provider=OpenAI(compact_config.llm_runtime.provider),
             runtime_config=self.runtime_config,
-            compact_llm=compact.llm_config,
+            compact_config=compact_config,
         )
 
     def _hook_context(self) -> HookContext:
@@ -122,7 +121,7 @@ class AgentRunner:
             payload = LLMPayload(
                 messages=self.context.messages,
                 tools=self.context.tools,
-                llm_config=self.runtime_config.llm_config.model_copy(),
+                llm_call_options=self.runtime_config.llm_call_options.model_copy(),
             )
             async for kind, data in self.provider.stream_chunks(payload):
                 if kind == "content":
@@ -272,7 +271,8 @@ class AgentRunner:
 async def run_subagent(
         prompt: str,
         *,
-        runtime_config: AgentRuntimeConfig,
+        config: Config,
+        task: str = "default",
         tool_registry: ToolRegistry | None = None,
         hooks: Hooks | None = None,
         tool_context: ToolContext | None = None,
@@ -283,6 +283,7 @@ async def run_subagent(
     与 AgentLoop 的常驻会话用法完全隔离：
     - prompt 是唯一输入消息；工具循环的全部中间消息只留在内存
       （SubAgentContext），不读写 SessionStore，不污染任何会话历史
+    - config 是根配置，运行时配置按 task 解析（默认 default 主对话口径）
     - tool_registry 由调用方给定（通常是裁剪后的子集）
     - tool_context 建议传父轮的 ToolContext：channel/turn_id 等路由字段
       被继承，hooks（如 shell_guard 审批）才能把交互事件挂回触发轮
@@ -296,8 +297,9 @@ async def run_subagent(
         system_prompt=system_prompt,
     )
     runner = AgentRunner(
-        runtime_config=runtime_config,
+        config=config,
         running_context=context,
+        task=task,
         tool_registry=tool_registry,
         hooks=hooks,
     )

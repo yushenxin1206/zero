@@ -22,11 +22,11 @@ class OpenAI(Provider):
             "Content-Type": "application/json"
         }
 
-        payload.llm_config.stream = True
+        payload.llm_call_options.stream = True
         # 要求厂商在流末尾返回 usage chunk；不支持的厂商会忽略该参数
-        stream_options = dict(payload.llm_config.stream_options or {})
+        stream_options = dict(payload.llm_call_options.stream_options or {})
         stream_options.setdefault("include_usage", True)
-        payload.llm_config.stream_options = stream_options
+        payload.llm_call_options.stream_options = stream_options
 
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, stream=True,
@@ -97,7 +97,7 @@ class OpenAI(Provider):
             "Content-Type": "application/json"
         }
 
-        payload.llm_config.stream = False
+        payload.llm_call_options.stream = False
 
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, max_retries=max_retries,

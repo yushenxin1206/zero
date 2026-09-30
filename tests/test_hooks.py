@@ -27,10 +27,11 @@ _tmp_root = Path(_tmp.name)
 store_mod.SESSIONS_ROOT = _tmp_root / "sessions"
 ctx_mod.ZERO_ROOT = _tmp_root
 
+from zero.config import Config
 from zero.core.context import Context
 from zero.core.hooks import HookChain, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner
-from zero.models import AgentRuntimeConfig, LLMConfig, ProviderConfig, ToolContext
+from zero.models import ToolContext
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
@@ -84,14 +85,21 @@ class EchoTool(Tool):
         return {"echo": kwargs}
 
 
+def stub_config() -> Config:
+    """最小可解析的根配置桩（models/agentRuntimes/providers 三件套齐备）。"""
+    return Config.model_validate({
+        "models": {"stub": {"provider": "deepseek", "contextWindowTokens": 100000}},
+        "agentRuntimes": {"default": {"llmCallOptions": {"model": "stub"}}},
+        "providers": {"deepseek": {"apiBase": "https://x.local", "apiKey": "k"}},
+    })
+
+
 def make_runner(hooks: Hooks, tool: EchoTool, session_id: str) -> AgentRunner:
     registry = ToolRegistry()
     registry.register(tool)
     context = Context(session_id=session_id, channel=CHANNEL, tool_registry=registry)
     runner = AgentRunner(
-        runtime_config=AgentRuntimeConfig(
-            provider=ProviderConfig(api_base="https://x.local", api_key="k"),
-            llm_config=LLMConfig(model="stub")),
+        config=stub_config(),
         running_context=context,
         tool_registry=registry,
         hooks=hooks,

@@ -29,14 +29,14 @@ session_mod.SESSIONS_ROOT = _tmp_root / "sessions"
 ctx_mod.ZERO_ROOT = _tmp_root
 
 from zero.bus.queue import MessageBus
+from zero.config import Config
 from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext
 from zero.core.runner import AgentRunner
 from zero.models import (
-    AgentRuntimeConfig, ApprovalRequest, LLMConfig, Origin, ProviderConfig,
-    ToolContext)
+    ApprovalRequest, Origin, ToolContext)
 from zero.plugins.shell_guard import approval, install, manage, policy, store
-from zero.plugins.handler import ShellGuard
+from zero.plugins.shell_guard.handler import ShellGuard
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
@@ -246,6 +246,15 @@ class StubProvider:
             yield kind, data
 
 
+def stub_config() -> Config:
+    """最小可解析的根配置桩（models/agentRuntimes/providers 三件套齐备）。"""
+    return Config.model_validate({
+        "models": {"stub": {"provider": "deepseek", "contextWindowTokens": 100000}},
+        "agentRuntimes": {"default": {"llmCallOptions": {"model": "stub"}}},
+        "providers": {"deepseek": {"apiBase": "https://x.local", "apiKey": "k"}},
+    })
+
+
 def _run_turn_with_guard(command: str):
     chain = HookChain()
     install(chain, MessageBus())
@@ -255,9 +264,7 @@ def _run_turn_with_guard(command: str):
     sid = str(uuid4())
     context = Context(session_id=sid, channel=CHANNEL, tool_registry=registry)
     runner = AgentRunner(
-        runtime_config=AgentRuntimeConfig(
-            provider=ProviderConfig(api_base="https://x.local", api_key="k"),
-            llm_config=LLMConfig(model="stub")),
+        config=stub_config(),
         running_context=context,
         tool_registry=registry,
         hooks=chain,

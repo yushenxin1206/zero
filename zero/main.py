@@ -9,8 +9,6 @@ from zero.core.loop import AgentLoop
 from zero.channels.cli import CLIChannel
 from zero.channels.feishu import FeishuChannel
 from zero.maintenance import MaintenanceEngine
-from zero.models import ModelResolver
-from zero.providers.openai import OpenAI
 from zero.scheduler import Scheduler
 from zero.tools.registry import ToolRegistry
 from zero.tools.read import Read
@@ -64,26 +62,7 @@ def build_agent_loop(msg_bus: MessageBus) -> AgentLoop:
 
 
 def build_maintenance_engine() -> MaintenanceEngine:
-    """组合根：维护任务的模型解析与 provider client 组装。
-
-    维护任务是进程级常量（不跟会话级 /model 切换走），解析一次即可：
-    任务未显式绑定模型时回退到主对话的任务级默认绑定。"""
-    default_rc = ModelResolver.resolve_runtime(
-        'default', default_config.agent_runtime, default_config.tasks,
-        default_config.models, default_config.providers)
-    summary = ModelResolver.resolve_task_llm(
-        'session_summary', default_config.tasks, default_config.models,
-        default_config.providers, default_rc)
-    memory = ModelResolver.resolve_task_llm(
-        'memory', default_config.tasks, default_config.models,
-        default_config.providers, default_rc)
-    return MaintenanceEngine(
-        config=default_config.maintenance,
-        summary_provider=OpenAI(summary.provider),
-        summary_llm=summary,
-        memory_provider=OpenAI(memory.provider),
-        memory_llm=memory,
-    )
+    return MaintenanceEngine(config=default_config)
 
 
 async def run(cli_only: bool = False):

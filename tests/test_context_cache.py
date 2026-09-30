@@ -20,7 +20,8 @@ from zero.core.context import Context, SubAgentContext
 from zero.models import (
     AgentRuntimeConfig,
     CompactRecord,
-    LLMConfig,
+    LLMCallOptions,
+    LLMRuntime,
     Message,
     MessageBody,
     ProviderConfig,
@@ -131,12 +132,13 @@ class FakeProvider:
 
 def make_compactor(fake, window=20000, max_tokens=100, compact_max=500):
     rc = AgentRuntimeConfig(
-        provider=ProviderConfig(),
-        llm_config=LLMConfig(model="mock-model", max_tokens=max_tokens),
-        context_window_tokens=window,
-        context_compress_output_tokens=compact_max,
+        llm_call_options=LLMCallOptions(model="mock-model", max_tokens=max_tokens),
+        llm_runtime=LLMRuntime(provider=ProviderConfig(),
+                               context_window_tokens=window),
     )
-    return Compactor(provider=fake, runtime_config=rc)
+    cc = AgentRuntimeConfig(
+        llm_call_options=LLMCallOptions(model="mock-model", max_tokens=compact_max))
+    return Compactor(provider=fake, runtime_config=rc, compact_config=cc)
 
 
 def seed_big(sid):

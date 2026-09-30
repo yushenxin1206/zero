@@ -9,19 +9,22 @@ from typing import Any, AsyncIterator
 
 from pydantic import Field
 
-from zero.models import Base, LLMConfig, ProviderConfig
+from zero.models import Base, LLMCallOptions, ProviderConfig
 
 
 class LLMPayload(Base):
-    """LLM request payload: the contract between core (builder) and providers (executor)."""
+    """LLM request payload: the contract between core (builder) and providers (executor).
+
+    内容（messages / tools）+ 调用选项（llm_call_options）合成一次请求。
+    """
     messages: list[dict[str, Any]] | None = None
     tools: list[dict[str, Any]] | None = None
-    llm_config: LLMConfig = Field(default_factory=LLMConfig)
+    llm_call_options: LLMCallOptions = Field(default_factory=LLMCallOptions)
 
     @property
     def payload_dict(self) -> dict[str, Any]:
-        base_data = self.model_dump(exclude={'llm_config'})
-        base_data.update(self.llm_config.config_dict or {})
+        base_data = self.model_dump(exclude={'llm_call_options'})
+        base_data.update(self.llm_call_options.options_dict or {})
         return base_data
 
 
