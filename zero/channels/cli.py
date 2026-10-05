@@ -35,9 +35,12 @@ from rich.text import Text
 
 from zero.bus.queue import MessageBus
 from zero.channels.cli_prompt import COMMANDS, CommandStats, build_prompt_session
+from zero.config import Config
+from zero.core.model_switch import session_model, switch_model
 from zero.models import (
     ApprovalRequest, MessageBody, MessageIn, MessageOut, Origin, StreamEvent)
 from zero.session.models import SessionMeta
+from zero.tools.registry import ToolRegistry
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.formatted_text import ANSI as PtkANSI
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -72,8 +75,12 @@ class CLIChannel:
         await channel.start()   # runs the menu + chat loop, returns on /quit
     """
 
-    def __init__(self, msg_bus: MessageBus):
+    def __init__(self, msg_bus: MessageBus,
+                 config: Config | None = None,
+                 tool_registry: ToolRegistry | None = None):
         self.msg_bus = msg_bus
+        self.config = config
+        self.tool_registry = tool_registry
         self.console = Console(highlight=False)
         self._out_queue = msg_bus.subscribe_out(CHANNEL)
         self._stream_queue = msg_bus.subscribe_stream(CHANNEL)
@@ -368,6 +375,7 @@ class CLIChannel:
                     return await self._prompt.prompt_async(
                         [("class:prompt", prompt_text)],
                         style=_PROMPT_STYLE,
+                        bottom_toolbar=self._toolbar_line(),
                     )
             finally:
                 self._prompt_active = False
@@ -375,6 +383,17 @@ class CLIChannel:
         text = await asyncio.to_thread(input, "")
         self.console.print(f"[bold cyan]you ›[/bold cyan] {text}")
         return text
+
+    def _toolbar_line(self) -> str:
+        """常驻底部状态行：展示本会话当前生效模型（channel 无关查询）。"""
+        model = "?"
+        if self.config is not None:
+            try:
+                model = session_model(self.config, CHANNEL, self.session_id)
+            except ValueError:
+                model = "?"
+        return (f" model: {model} "
+                f"· session: {self.session_id[:8]}")
 
     async def _chat_loop(self):
         while True:
@@ -390,7 +409,7 @@ class CLIChannel:
             if not text:
                 continue
             if text.startswith("/"):
-                if not self._handle_command(text):
+                if not await self._handle_command(text):
                     return
                 continue
 
@@ -490,8 +509,55 @@ class CLIChannel:
                 "[green]定时任务流式输出已关闭[/green] "
                 "[dim]（任务完成后一次性展示结果）[/dim]")
 
-    def _handle_command(self, text: str) -> bool:
-        """Handle a slash command. Returns False to exit the chat loop."""
+    async def _handle_model(self, arg: str) -> None:
+        """查看 / 切换本会话模型（候选来自 config.models 注册表）。"""
+        config = self.config
+        if config is None:
+            self.console.print("[yellow]未注入配置，无法切换模型[/yellow]")
+            return
+        models = config.models
+        if not models:
+            self.console.print("[dim]models 注册表为空[/dim]")
+            return
+        current = session_model(config, CHANNEL, self.session_id)
+        name = arg.strip()
+        if not name:
+            keys = sorted(models)
+            lines = "\n".join(
+                f"  {i + 1}. {k}{' ← 当前' if k == current else ''}"
+                for i, k in enumerate(keys))
+            self.console.print(
+                f"[bold]当前模型[/bold]: {current}\n"
+                f"[bold]可用模型[/bold]\n{lines}")
+            choice = Prompt.ask("输入编号切换（回车取消）", default="").strip()
+            if not choice:
+                self.console.print("[dim]已取消[/dim]")
+                return
+            try:
+                name = keys[int(choice) - 1]
+            except (ValueError, IndexError):
+                self.console.print(f"[yellow]无效编号 {choice}[/yellow]")
+                return
+        try:
+            r = await switch_model(
+                config=config, channel=CHANNEL, session_id=self.session_id,
+                new_model=name,
+                tools=(self.tool_registry.schemas()
+                       if self.tool_registry is not None else None),
+            )
+        except ValueError as e:
+            self.console.print(f"[red]{e}[/red]")
+            return
+        if not r.switched:
+            self.console.print(f"[dim]当前已是 {r.new_model}，无需切换[/dim]")
+            return
+        note = " · [bold green]已按新窗口压缩会话[/]" if r.compacted else ""
+        self.console.print(
+            f"[green]模型已切换[/green] {r.old_model} → "
+            f"[bold]{r.new_model}[/bold]（窗口 {r.window_tokens}）{note}")
+
+    async def _handle_command(self, text: str) -> bool:
+        # 需要 await 的分支以外，其余与原同步行为一致（见各分支）
         cmd, _, _arg = text.partition(" ")
         cmd = cmd.lower()
         canonical = _COMMAND_ALIASES.get(cmd, cmd)
@@ -511,6 +577,9 @@ class CLIChannel:
             return True
         if cmd in ("/title", "/t"):
             self._handle_title(_arg)
+            return True
+        if cmd in ("/model", "/m"):
+            await self._handle_model(_arg)
             return True
         if cmd in ("/tasks", "/ts"):
             self._handle_tasks(_arg)

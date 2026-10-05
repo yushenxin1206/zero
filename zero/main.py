@@ -52,11 +52,12 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
     return chain
 
 
-def build_agent_loop(msg_bus: MessageBus) -> AgentLoop:
+def build_agent_loop(msg_bus: MessageBus,
+                     tool_registry: ToolRegistry | None = None) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=default_config,
-        tool_registry=build_tool_registry(),
+        tool_registry=tool_registry or build_tool_registry(),
         hooks=build_hooks(msg_bus),
     )
 
@@ -71,7 +72,8 @@ async def run(cli_only: bool = False):
     共享同一个 MessageBus / AgentLoop / Scheduler。
     """
     msg_bus = MessageBus()
-    agent_loop = build_agent_loop(msg_bus)
+    registry = build_tool_registry()
+    agent_loop = build_agent_loop(msg_bus, tool_registry=registry)
     scheduler = Scheduler(msg_bus=msg_bus)
 
     maintenance_engine = build_maintenance_engine()
@@ -101,7 +103,8 @@ async def run(cli_only: bool = False):
         else:
             log.warning("未配置飞书 app_id，跳过 feishu channel")
 
-    cli_channel = CLIChannel(msg_bus=msg_bus)
+    cli_channel = CLIChannel(
+        msg_bus=msg_bus, config=default_config, tool_registry=registry)
     core = asyncio.create_task(agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
 

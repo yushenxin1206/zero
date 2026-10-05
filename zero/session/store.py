@@ -228,6 +228,24 @@ class SessionStore:
         return False
 
     @staticmethod
+    def get_model(channel: str, session_id: str) -> str:
+        """Return the session's bound model (config.models key), or "" if
+        the session follows the global default."""
+        entry = SessionStore._find_entry_by_session_id(channel, session_id)
+        return entry.model if entry else ""
+
+    @staticmethod
+    def set_model(channel: str, session_id: str, model: str) -> bool:
+        """Bind a model to the session. Returns True if updated."""
+        index = SessionStore._load_index(channel)
+        for entry in index.values():
+            if entry.session_id == session_id:
+                entry.model = model.strip()
+                SessionStore._save_index(channel, index)
+                return True
+        return False
+
+    @staticmethod
     def auto_title(channel: str, session_id: str, text: str) -> None:
         """Set the title from the first user message, unless one is already
         set (auto or manual). No-op for sessions not in the index."""

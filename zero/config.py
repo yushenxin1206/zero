@@ -41,7 +41,7 @@ class Config(BaseSettings):
 
     model_config = SettingsConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    def resolve_runtime(self, task: str) -> AgentRuntimeConfig:
+    def resolve_runtime(self, task: str, model_override: str | None = None) -> AgentRuntimeConfig:
         """按任务名解析出物化的运行时配置（配置层唯一的解析入口）。
 
         字段优先级统一为：agentRuntimes[task] 显式值 > agentRuntimes.default
@@ -50,10 +50,17 @@ class Config(BaseSettings):
         一个普通字段——它同时决定 llm_runtime（provider / 上下文窗口），
         为空则立即报错（不静默回退到某个默认模型）。provider 由
         ModelSpec.provider 键在 providers 中结算成对象，结算不到立即报错。
+
+        model_override：非空时用注册表键覆盖合并出的 model（会话级模型绑定
+        的注入点）。窗口 / provider 按该模型查表结算，llm_call_options 同步
+        写回新模型名（请求体用新模型）。缺省 None 时行为与旧版完全一致。
         """
         explicit = self._merge_runtime(task)
         llm_explicit = explicit.get('llm_call_options', {}) or {}
         model_name = llm_explicit.get('model', '')
+        if model_override:
+            model_name = model_override
+            explicit.setdefault('llm_call_options', {})['model'] = model_override
         if not model_name:
             raise ValueError(
                 f"任务 {task!r} 未绑定模型（agentRuntimes.default 也未绑定）：请在 "

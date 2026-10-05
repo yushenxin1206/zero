@@ -22,6 +22,7 @@ from zero.models import (
     AgentRuntimeConfig,
     CompactConfig,
     CompactRecord,
+    LLMCallOptions,
     Message,
 )
 from zero.providers.base import LLMPayload, Provider
@@ -205,40 +206,75 @@ class Compactor:
 
     async def maybe_compress(self, context: Context) -> bool:
         """检查是否需要压缩，需要则生成压缩记录并落盘。返回是否发生了压缩。"""
-        rc = self.session_runtime
         if not self.compact_config.enabled:
             return False
-        session_id, channel = context.session_id, context.channel
-        # 从 turn 级快照取数（Context 每 turn 只读一次盘），不再重读存储
         raw = context.raw_history
         if not raw:
             return False
-        rec = context.compact_record
+        record = await self.compress_for_target(
+            session_id=context.session_id,
+            channel=context.channel,
+            raw=raw,
+            rec=context.compact_record,
+            system_prompt=context.system_prompt,
+            tools=context.tools,
+            target=self.session_runtime,
+        )
+        if record is not None:
+            # 回写 turn 级快照：后续迭代的 messages 立即合成 [压缩] + 尾部
+            context.compact_record = record
+            return True
+        return False
+
+    async def compress_for_target(
+            self,
+            *,
+            session_id: str,
+            channel: str,
+            raw: list[Message],
+            rec: CompactRecord | None,
+            system_prompt: str,
+            tools: list[dict] | None,
+            target: AgentRuntimeConfig,
+            force: bool = False,
+            provider: Provider | None = None,
+            llm_options: LLMCallOptions | None = None,
+    ) -> CompactRecord | None:
+        """针对 target 的窗口/预算执行一次压缩，产出则落盘并返回记录。
+
+        与 maybe_compress 的区别在参数化：target 决定触发阈值/尾部/输出预算
+        的参照窗口（主对话自动压缩传 session_runtime；会话切换模型时传新
+        模型的目标运行时）。provider / llm_options 缺省取 compact 任务自身
+        （即正常压缩路径），切换时由调用方传「旧模型」以规避新窗口装不下
+        前缀导致的溢出。force=True 时压缩后预估仍超阈值也尽力落盘（切换
+        场景），否则与正常路径一致地视为无收益跳过。
+        """
+        provider = provider or self.provider
+        llm_options = llm_options or self.compact_llm_options
         # 从 raw + rec 合成估算，与 context.messages 同口径
-        tools = context.tools
-        total = estimate_session_payload(context.system_prompt, tools, raw, rec)
-        window = rc.llm_runtime.context_window_tokens
+        total = estimate_session_payload(system_prompt, tools, raw, rec)
+        window = target.llm_runtime.context_window_tokens
         trigger = min(
             window * self.compact_config.trigger_ratio,
-            window - rc.llm_call_options.max_tokens - rc.reasoning_token_headroom,
+            window - target.llm_call_options.max_tokens - target.reasoning_token_headroom,
         )
         if total < trigger:
-            return False
+            return None
         tail_start = find_tail_boundary(raw, int(window * self.compact_config.tail_ratio))
         if tail_start <= 0:
-            return False
+            return None
         # 压缩后 payload 预估（保守上界）：system + tools + 压缩记录上限 + 保留
         # 尾部。若仍不低于触发阈值，说明窗口装不下「压缩记录 + 尾部」，压缩
-        # 无收益；放行会导致同一 turn 内每次迭代都重复压缩，故放弃。
-        post = (estimate_session_payload(context.system_prompt, tools, [], None)
+        # 无收益；正常路径放行会导致同 turn 内每次迭代都重复压缩，故放弃。
+        post = (estimate_session_payload(system_prompt, tools, [], None)
                 + self.compact_config.context_compact_max_tokens
                 + sum(estimate_message(m) for m in raw[tail_start:]))
-        if post >= trigger:
+        if post >= trigger and not force:
             logger.warning(
                 "压缩后预估 %d tokens 仍不低于触发阈值 %.0f，压缩无收益，跳过"
                 "（建议调大 context_window_tokens 或调小 max_tokens）: session=%s",
                 post, trigger, session_id)
-            return False
+            return None
         # 增量压缩：prev_compact 已承载 covered_upto 之前的全部历史，只送其后的
         # 新消息，避免每次重送全量前缀导致压缩输入随历史无界增长（第 N 次链式
         # 压缩超过压缩模型窗口 → API 报错 → fail-safe 跳过 → 压缩永久停滞）。
@@ -254,18 +290,19 @@ class Compactor:
             else:
                 prev = None
         if prefix_start >= tail_start:
-            return False  # 无未覆盖消息可压缩（如窗口调小导致边界回退）
-        text = await self._call_compact(raw[prefix_start:tail_start], prev)
+            return None  # 无未覆盖消息可压缩（如窗口调小导致边界回退）
+        text = await self._call_compact(
+            provider, llm_options, raw[prefix_start:tail_start], prev)
         if not text:
             logger.warning("压缩模型返回空结果，跳过本轮压缩: session=%s", session_id)
-            return False
+            return None
         # 残句/跑偏防御：截断的半截压缩记录（信息量为零）落盘会覆盖旧的
         # 好记录，必须先过小节完整性校验
         if not self._validate_compact(text):
             logger.warning(
                 "压缩记录缺少必需小节（疑似被截断），放弃落盘保留旧记录: session=%s",
                 session_id)
-            return False
+            return None
         content = f"<compact>\n{text}\n</compact>"
         record = CompactRecord(
             content=content, covered_upto=raw[tail_start - 1].id)
@@ -273,17 +310,17 @@ class Compactor:
             SessionStore.save_compact(channel, session_id, record)
         except OSError:
             logger.exception("压缩记录落盘失败，跳过本轮压缩: session=%s", session_id)
-            return False
-        # 回写 turn 级快照：后续迭代的 messages 立即合成 [压缩] + 尾部
-        context.compact_record = record
+            return None
         logger.info(
             "会话压缩完成: session=%s 覆盖 %d 条消息(至 %s)",
             session_id, tail_start, raw[tail_start - 1].id,
         )
-        return True
+        return record
 
     async def _call_compact(
             self,
+            provider: Provider,
+            llm_options: LLMCallOptions,
             raw_prefix: list[Message],
             prev_compact: CompactRecord | None,
     ) -> str | None:
@@ -293,7 +330,8 @@ class Compactor:
         记录上限，不再读 compact 任务的 llm_call_options.max_tokens）+
         compact 任务解析结果的 reasoning_token_headroom：思考 tokens 与正文
         共享同一 completion 预算，不留余量时正文会被截断成残句。temperature
-        等其余参数同样由 compact 任务的解析结果决定。
+        等其余参数同样由 llm_options 决定（正常路径取 compact 任务，切换
+        路径取旧模型）。
         """
         budget = (self.compact_config.context_compact_max_tokens
                   + self.compact_runtime.reasoning_token_headroom)
@@ -301,12 +339,12 @@ class Compactor:
             payload = LLMPayload(
                 messages=build_compact_messages(raw_prefix, prev_compact),
                 tools=None,
-                llm_call_options=self.compact_llm_options.model_copy(
+                llm_call_options=llm_options.model_copy(
                     update={'max_tokens': budget}),
             )
             parts: list[str] = []
             completion_tokens = 0
-            async for kind, data in self.provider.stream_chunks(payload):
+            async for kind, data in provider.stream_chunks(payload):
                 if kind == "content":
                     parts.append(data)
                 elif kind == "usage" and data:

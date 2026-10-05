@@ -72,6 +72,10 @@ class AgentLoop:
                 running_context=context,
                 tool_registry=self.tool_registry,
                 hooks=self.hooks,
+                # 会话级模型绑定：该会话若被 /model 切换到特定模型，则本轮
+                # 用绑定模型解析运行时；空串（未绑定）跟随全局 default
+                model_override=SessionStore.get_model(
+                    msg_in.channel, msg_in.session_id) or None,
             )
 
             # runner.run_stream() yields incremental events while executing;

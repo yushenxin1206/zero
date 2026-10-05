@@ -23,6 +23,8 @@ class SessionMeta(Base):
     title: str = ""
     # 复盘性描述（会话级摘要），由 maintenance session_summary 定时任务回写
     description: str = ""
+    # 会话级模型绑定（config.models 注册表键；空串 = 跟随全局 default）
+    model: str = ""
     # 索引的 key，仅 list_sessions 返回时回填，不落盘
     source_id: str = Field(default="", exclude=True)
 

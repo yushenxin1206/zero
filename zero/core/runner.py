@@ -45,11 +45,13 @@ class AgentRunner:
             task: str = "default",
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
+            model_override: str | None = None,
     ):
         # 运行时配置在构造时按任务从根配置解析：主对话用 task（默认
         # default），上下文压缩用 compact——两者可绑定不同模型，各走
         # 独立 provider client（provider 已是结算好的 ProviderConfig 对象）
-        self.runtime_config: AgentRuntimeConfig = config.resolve_runtime(task)
+        self.runtime_config: AgentRuntimeConfig = config.resolve_runtime(
+            task, model_override=model_override)
         self.provider = OpenAI(self.runtime_config.llm_runtime.provider)
         compact_config = config.resolve_runtime("compact")
         self.context = running_context
