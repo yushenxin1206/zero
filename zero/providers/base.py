@@ -2,6 +2,7 @@
 Base provider
 """
 
+import asyncio
 import requests
 
 from abc import ABC, abstractmethod
@@ -63,6 +64,7 @@ class Provider(ABC):
     def stream_chunks(
             self,
             payload: LLMPayload,
+            stop_event: "asyncio.Event | None" = None,
     ) -> AsyncIterator[tuple[str, Any]]:
         """Yield streamed LLM output as (kind, data) tuples.
 
@@ -71,6 +73,12 @@ class Provider(ABC):
           - "reasoning": data = reasoning delta (str)
           - "tool_calls": data = streamed tool_call fragment (dict)
           - "usage":     data = usage dict from the provider (final chunk)
+
+        stop_event：用户终止信号。实现必须在等待下一条流项时与它竞争
+        （如 asyncio.wait），置位后及时结束迭代——模型思考期可能长时间
+        无任何 chunk，若只依赖消费者侧的 chunk 边界检查，终止请求会一直
+        悬挂在挂起的读取上，turn 永不结束。None（如子 agent 单次模式）
+        表示无终止语义，行为与普通流一致。
         """
         pass
 

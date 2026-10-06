@@ -21,6 +21,7 @@ import time
 from uuid import uuid4
 
 from zero.bus.queue import MessageBus
+from zero.core.cancellation import TurnCancelled
 from zero.models import ApprovalOption, ApprovalRequest, StreamEvent
 
 logger = logging.getLogger(__name__)
@@ -53,8 +54,9 @@ async def request(
         turn_id: str,
         command: str,
         reason: str,
+        stop_event: asyncio.Event | None = None,
 ) -> str | None:
-    """发出审批请求并等待答案。返回答案（y/n/a/w）或 None（超时）。"""
+    """发出审批请求并等待答案。返回答案（y/n/a/w）或 None（超时/已终止）。"""
     req_id = uuid4().hex[:12]
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
@@ -77,6 +79,24 @@ async def request(
             content=req.model_dump_json(),
         )
         await bus.stream_queue.enqueue(event)
+        if stop_event is not None:
+            # 用户终止竞争：审批等待是最长的一个 await 点（TIMEOUT 秒），
+            # 不竞争的话 stop 置位后 runner 仍挂在这里直到超时。stop 胜出
+            # 则抛 TurnCancelled 走正常收尾，approval future 保持未决、
+            # 由 finally 丢弃。
+            stop_task = asyncio.create_task(stop_event.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {fut, stop_task}, timeout=TIMEOUT,
+                    return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                stop_task.cancel()
+            if stop_event.is_set():
+                raise TurnCancelled()
+            if fut in done:
+                return fut.result()
+            logger.info("shell_guard approval %s timed out", req_id)
+            return None
         return await asyncio.wait_for(fut, timeout=TIMEOUT)
     except (asyncio.TimeoutError, TimeoutError):
         logger.info("shell_guard approval %s timed out", req_id)

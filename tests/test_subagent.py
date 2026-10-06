@@ -61,7 +61,7 @@ class ScriptedProvider:
         self.script = [list(chunks) for chunks in script]
         self.payloads = []
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         self.payloads.append(payload)
         chunks = self.script.pop(0)
         for kind, data in chunks:
@@ -228,7 +228,7 @@ def test_custom_system_prompt():
 
 def test_error_raises():
     class BoomProvider:
-        async def stream_chunks(self, payload):
+        async def stream_chunks(self, payload, **_kw):
             raise RuntimeError("provider down")
             yield  # noqa: unreachable — 使其成为 async generator
 

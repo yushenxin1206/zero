@@ -11,10 +11,12 @@ runner 通过 context.record() / context.compressible 与上下文解耦，
 """
 import json
 import logging
+import asyncio
 from typing import Any
 from uuid import uuid4
 
 from zero.config import Config, TOOL_RESULT_MAX_CHARS
+from zero.core.cancellation import TurnCancelled
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
@@ -46,6 +48,7 @@ class AgentRunner:
             tool_registry: ToolRegistry | None = None,
             hooks: Hooks | None = None,
             model_override: str | None = None,
+            stop_event: asyncio.Event | None = None,
     ):
         # 运行时配置在构造时按任务从根配置解析：主对话用 task（默认
         # default），上下文压缩用 compact——两者可绑定不同模型，各走
@@ -57,12 +60,19 @@ class AgentRunner:
         self.context = running_context
         self.tool_registry = tool_registry
         self.hooks = hooks or Hooks()
+        # 协作式取消：None（子 agent 单次模式等）则永不触发
+        self._stop_event = stop_event
         self.compactor = Compactor(
             provider=OpenAI(compact_config.llm_runtime.provider),
             session_runtime=self.runtime_config,
             compact_runtime=compact_config,
             compact_config=config.compact,
         )
+
+    def _check_cancelled(self) -> None:
+        """安全点检查：用户已请求终止则抛 TurnCancelled。"""
+        if self._stop_event is not None and self._stop_event.is_set():
+            raise TurnCancelled()
 
     def _hook_context(self) -> HookContext:
         """构建 hook 透传上下文（复用 tool_context 引用，不做深拷贝）。"""
@@ -72,6 +82,7 @@ class AgentRunner:
             session_id=self.context.session_id,
             turn_id=tc.turn_id,
             tool_context=tc,
+            stop_event=self._stop_event,
         )
 
     async def run(self) -> str:
@@ -105,12 +116,16 @@ class AgentRunner:
         try:
             async for event in self._run_loop():
                 yield event
+        except TurnCancelled:
+            # 用户终止：原样放行给 AgentLoop 收尾，不转成 error 事件
+            raise
         except Exception as e:  # noqa: BLE001 - report failure to the channel
             logger.exception("Agent runner failed")
             yield StreamEvent(kind="error", content=str(e))
 
     async def _run_loop(self):
         for _ in range(self.runtime_config.max_iterations):
+            self._check_cancelled()
             content_parts: list[str] = []
             tool_call_acc: dict[int, dict] = {}
             usage: TokenUsage | None = None
@@ -126,20 +141,38 @@ class AgentRunner:
                 tools=self.context.tools,
                 llm_call_options=self.runtime_config.llm_call_options.model_copy(),
             )
-            async for kind, data in self.provider.stream_chunks(payload):
-                if kind == "content":
-                    content_parts.append(data)
-                    yield StreamEvent(kind="delta", content=data)
-                elif kind == "reasoning":
-                    # 暂不处理reasoning
-                    continue
-                elif kind == "tool_calls":
-                    self._accumulate_tool_call(tool_call_acc, data)
-                elif kind == "usage":
-                    usage = TokenUsage.from_openai(data)
+            # stop_event 传入 provider：思考期长时间无 chunk 时，流内
+            # chunk 边界检查到不了，由 provider 在读取处与终止信号竞争
+            stream = self.provider.stream_chunks(
+                payload, stop_event=self._stop_event)
+            try:
+                async for kind, data in stream:
+                    # 流内安全点：reasoner 思考期只流 reasoning chunk（这里
+                    # 全部跳过），若只在流结束后检查，终止请求要等整条流
+                    # 走完才生效——reasoner 的思考阶段可能很长，逐 chunk
+                    # 检查保证用户终止能及时停下
+                    self._check_cancelled()
+                    if kind == "content":
+                        content_parts.append(data)
+                        yield StreamEvent(kind="delta", content=data)
+                    elif kind == "reasoning":
+                        # 暂不处理reasoning
+                        continue
+                    elif kind == "tool_calls":
+                        self._accumulate_tool_call(tool_call_acc, data)
+                    elif kind == "usage":
+                        usage = TokenUsage.from_openai(data)
+            finally:
+                # 提前退出（取消/异常）时关闭生成器释放底层 HTTP 连接，
+                # 避免半途放弃的流占用连接；正常结束的 aclose 是空操作
+                await stream.aclose()
 
             content = "".join(content_parts)
             tool_calls_raw = [tool_call_acc[i] for i in sorted(tool_call_acc)]
+
+            # LLM 一轮流式结束后的安全点：期间收到终止请求则停下，
+            # 已产出的 delta 片段已送达 channel，由 AgentLoop 收尾
+            self._check_cancelled()
 
             # No tool calls: final text reply
             if not tool_calls_raw:
@@ -155,15 +188,43 @@ class AgentRunner:
 
             # Parse tool calls and persist assistant message with tool_calls
             tool_calls = [self._parse_tool_call(tc) for tc in tool_calls_raw]
+            # 持久化前的安全点：此时取消直接停下、不留孤儿 assistant(tool_calls)
+            self._check_cancelled()
             await self._persist_assistant_with_tools(content, tool_calls, usage)
 
             # Execute each tool and persist the result
-            for tc in tool_calls:
-                yield StreamEvent(
-                    kind="tool_call",
-                    content=f"{tc.function.name}({tc.function.arguments})",
-                )
-                await self._execute_and_persist(tc)
+            executed: set[str] = set()
+            try:
+                for tc in tool_calls:
+                    # 工具执行前的安全点：工具是长协程，边界检查不打断中途
+                    self._check_cancelled()
+                    yield StreamEvent(
+                        kind="tool_call",
+                        content=f"{tc.function.name}({tc.function.arguments})",
+                    )
+                    await self._execute_and_persist(tc)
+                    executed.add(tc.id)
+            except (TurnCancelled, asyncio.CancelledError, GeneratorExit) as e:
+                # 已落盘 assistant(tool_calls) 但部分工具未执行：补齐占位
+                # tool 结果，保证历史里每个 tool_call_id 都有对应 tool 消息，
+                # 否则下一轮加载该残缺序列时 API 报 400。
+                # 必须同时捕获 CancelledError/GeneratorExit：应用退出（如
+                # Windows Ctrl+C 触发 asyncio Runner 取消所有 task）时，
+                # 取消会直穿工具循环——except TurnCancelled 匹配不上它，
+                # 曾经因此留下孤儿 tool_calls（历史污染 → 后续 400）。
+                # 补齐落盘必须同步执行：被取消的 task 里再 await 会立即
+                # 再抛 CancelledError，占位永远写不进去。
+                # 占位文案按来源区分：谎称「用户取消」会误导 LLM 的后续
+                # 行为，也会误导事后排查（系统取消 ≠ 用户意图）。
+                reason = ("turn cancelled by user" if isinstance(e, TurnCancelled)
+                          else "aborted: runner cancelled (application shutdown)")
+                for tc in tool_calls:
+                    if tc.id not in executed:
+                        self._persist_tool_result(
+                            tc,
+                            json.dumps({"error": reason}, ensure_ascii=False),
+                        )
+                raise
 
         logger.warning("Agent runner exceeded max_iterations=%d", self.runtime_config.max_iterations)
         yield StreamEvent(kind="done", content="Agent runner exceeded max_iterations.")
@@ -254,10 +315,26 @@ class AgentRunner:
                     # 截断是核心安全不变量，永远在 hook 之后执行
                     if len(content) > TOOL_RESULT_MAX_CHARS:
                         content = content[:TOOL_RESULT_MAX_CHARS] + "...truncated"
+                except TurnCancelled:
+                    # 审批 hook 被打断（用户终止）：终止信号必须原样上抛，
+                    # 不能被 when-tool 错误吞掉，否则工具循环继续执行、
+                    # 终止不生效。由外层 _run_loop 的 except TurnCancelled
+                    # 统一补齐占位 tool 结果。
+                    raise
                 except Exception as e:
                     logger.exception("Tool execution failed: %s", tc.function.name)
                     content = json.dumps({"error": str(e)}, ensure_ascii=False)
 
+        # 工具结果统一经 _persist_tool_result 落盘，占位结果（取消补齐）复用
+        self._persist_tool_result(tc, content)
+
+    def _persist_tool_result(self, tc: ToolCall, content: str) -> None:
+        """以 role=tool 消息记录一次工具执行结果（含取消时的占位结果）。
+
+        同步方法：context.record() 是纯同步落盘；取消语境（CancelledError/
+        GeneratorExit 的 except 里）不能再 await——被取消的 task 中 await
+        会立即再抛，占位补齐将永远写不进去。
+        """
         tool_msg = MessageTool(
             id=str(uuid4()),
             session_id=self.context.session_id,

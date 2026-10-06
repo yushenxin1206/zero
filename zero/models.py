@@ -145,6 +145,18 @@ class MessageTool(Message):
     recipient: str = "assistant"
 
 
+class StopRequest(Base):
+    """用户终止指定 turn 的旁路信号（bus.stop_queue）。
+
+    不占用 in_queue（AgentLoop 串行消费，当前 turn 结束前轮不到下一条），
+    由 AgentLoop 后台协程实时消费，仅当精确匹配当前活跃 turn 时置位其
+    stop_event。channel 无关：CLI/飞书等任何渠道均可发。
+    """
+    channel: str
+    session_id: str
+    turn_id: str = ""
+
+
 class CompactRecord(Base):
     """会话历史压缩记录（{session_dir}/compact.json）。
 

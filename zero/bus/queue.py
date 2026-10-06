@@ -6,7 +6,7 @@ import logging
 from typing import TypeVar, Generic
 
 from abc import ABC
-from zero.models import Base, MessageIn, MessageOut, StreamEvent
+from zero.models import Base, MessageIn, MessageOut, StopRequest, StreamEvent
 
 T = TypeVar('T', bound=Base)
 
@@ -38,6 +38,10 @@ class MessageOutQueue(MessageQueue[MessageOut]):
 
 
 class StreamEventQueue(MessageQueue[StreamEvent]):
+    pass
+
+
+class StopRequestQueue(MessageQueue[StopRequest]):
     pass
 
 
@@ -79,6 +83,8 @@ class MessageBus:
         self.in_queue = MessageInQueue()
         self.out_queue = MessageOutQueue()
         self.stream_queue = StreamEventQueue()
+        # 终止信号旁路：AgentLoop 后台协程消费；不占 in_queue
+        self.stop_queue = StopRequestQueue()
         self.approvals = ApprovalBroker()
         self._out_subscribers: dict[str, MessageOutQueue] = {}
         self._stream_subscribers: dict[str, StreamEventQueue] = {}

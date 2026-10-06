@@ -13,13 +13,16 @@ hook 点位（①~⑥ 对应文档中的生命周期图）：
     ⑥ before_msg_out       MessageOut 组装后、持久化前      改写+抑制
 
 handler 一律 async；任何 handler 抛异常只记日志、视为 no-op（fail-open），
-需要 fail-closed 的插件应在正常返回路径里返回否决决策。
+需要 fail-closed 的插件应在正常返回路径里返回否决决策。唯一例外：
+TurnCancelled 是终止信号（非业务异常），必须透传，不允许被 fail-open 吞掉。
 """
+import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from zero.core.cancellation import TurnCancelled
 from zero.models import MessageIn, MessageOut, ToolCall, ToolContext
 from zero.providers.base import LLMPayload
 
@@ -38,6 +41,9 @@ class HookContext:
     turn_id: str = ""                       # 触发本轮的 MessageIn.id
     iteration: int = 0                      # 仅 iteration 级 hook 有意义
     tool_context: ToolContext | None = None
+    stop_event: asyncio.Event | None = None  # 当前 turn 的终止信号；长等待
+                                              # hook（如审批）需与之竞争，避免
+                                              # 用户终止后仍卡在等待上
 
 
 # ---------------------------------------------------------------------------
@@ -199,9 +205,15 @@ class HookChain(Hooks):
 
     @staticmethod
     async def _safe(fn: Callable, *args) -> Any:
-        """单 handler 异常隔离：记日志并视为不干预（fail-open）。"""
+        """单 handler 异常隔离：记日志并视为不干预（fail-open）。
+
+        TurnCancelled 除外：它是终止信号，不是业务异常，必须原样透传，
+        否则用户终止会被吞成"不干预"导致 turn 继续运行。
+        """
         try:
             return await fn(*args)
+        except TurnCancelled:
+            raise
         except Exception:  # noqa: BLE001 - hook 绝不能拖垮 agent loop
             logger.exception(
                 "hook handler failed: %s", getattr(fn, "__qualname__", fn))

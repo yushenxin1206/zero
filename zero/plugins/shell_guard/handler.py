@@ -94,6 +94,7 @@ class ShellGuard:
             turn_id=ctx.turn_id,
             command=command,
             reason=verdict.reason,
+            stop_event=ctx.stop_event,
         )
 
         if answer == "y":

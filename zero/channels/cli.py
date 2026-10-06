@@ -18,7 +18,9 @@ keeps consuming stream events, so rendering stays live.
 import asyncio
 import json
 import logging
+import signal
 import sys
+import threading
 import time
 from uuid import uuid4
 
@@ -38,7 +40,8 @@ from zero.channels.cli_prompt import COMMANDS, CommandStats, build_prompt_sessio
 from zero.config import Config
 from zero.core.model_switch import session_model, switch_model
 from zero.models import (
-    ApprovalRequest, MessageBody, MessageIn, MessageOut, Origin, StreamEvent)
+    ApprovalRequest, MessageBody, MessageIn, MessageOut, Origin,
+    StopRequest, StreamEvent)
 from zero.session.models import SessionMeta
 from zero.tools.registry import ToolRegistry
 from prompt_toolkit.application import run_in_terminal
@@ -109,6 +112,9 @@ class CLIChannel:
         # turn_ids already finalized (dedup stream-done vs MessageOut, and
         # discard late MessageOut of a normally finished interactive turn)
         self._bg_finalized: set[str] = set()
+        # 进行中审批的 abort 信号（worker 线程轮询）；Ctrl+C 终止渲染时置位，
+        # 让倒计时线程尽早退出，避免孤儿线程继续打印并吞掉后续输入按键
+        self._approval_abort: threading.Event | None = None
         # completed background results waiting to be rendered (FIFO worker)
         self._async_results: asyncio.Queue[dict] = asyncio.Queue()
         # results rendered since the last user input (prompt ⏰N indicator)
@@ -327,6 +333,7 @@ class CLIChannel:
 
         self._print_banner()
         self._print_recent_history()
+        self._install_sigint_handler()
 
         # 常驻出站消费者：stream / out 队列各一个，外加异步结果渲染 worker。
         # 定时任务等后台 turn 的结果不再依赖用户发消息才被看到。
@@ -425,15 +432,9 @@ class CLIChannel:
             # 误判成后台 turn
             self._active_turn_id = msg.id
             await self.msg_bus.in_queue.enqueue(msg)
-            try:
-                await self._render_turn(msg.id)
-            except asyncio.CancelledError:
-                # Ctrl+C during generation: abort rendering; the agent keeps
-                # running in the background and the remaining events flow
-                # into the background pipeline, so the finished reply is
-                # still rendered asynchronously when it completes.
-                self.console.print(
-                    "\n[yellow]已中断渲染，回答完成后将自动显示[/yellow]")
+            # 流式中 Ctrl+C 由 _render_turn 捕获并转为终止请求；空闲时
+            # Ctrl+C（prompt_async 抛 KeyboardInterrupt）走上面的退出分支
+            await self._render_turn(msg.id)
 
     def _handle_title(self, arg: str):
         """`/title` shows the current title; `/title <text>` renames."""
@@ -556,6 +557,64 @@ class CLIChannel:
             f"[green]模型已切换[/green] {r.old_model} → "
             f"[bold]{r.new_model}[/bold]（窗口 {r.window_tokens}）{note}")
 
+    async def _request_stop(self, turn_id: str) -> None:
+        """请求核心终止指定 turn：走 bus.stop_queue 旁路信号，channel 无关。"""
+        await self.msg_bus.stop_queue.enqueue(StopRequest(
+            channel=CHANNEL, session_id=self.session_id, turn_id=turn_id))
+
+    # ------------------------------------------------------------------
+    # SIGINT：turn 渲染中 Ctrl+C = 终止当前 turn（不退出应用）
+    # ------------------------------------------------------------------
+
+    def _install_sigint_handler(self):
+        """接管 SIGINT，堵住「渲染中 Ctrl+C 直接退出整个应用」的洞。
+
+        不接管时的路径（Windows / 无 loop signal 支持的平台）：
+        KeyboardInterrupt 从 run_forever 抛出 → asyncio Runner 取消主
+        task（run()）→ 它的 asyncio.wait 结束并连锁取消全部任务 →
+        _chat_loop 的 CancelledError 分支根本没机会执行 → 应用整体退出。
+        更糟的是取消直穿 runner 工具循环时曾留下孤儿 tool_calls（400）。
+
+        接管后的语义：
+        - turn 渲染中   → 转终止请求，应用不退（这就是「对话中终止」）
+        - ptk 输入会话  → ptk raw 模式下 Ctrl+C 不产生 SIGINT（键事件由
+                          ptk 处理 → KeyboardInterrupt → 现有 bye 路径），
+                          handler 不会被调到；保险起见直接 return
+        - 其余空闲      → SystemExit 传播，维持退出语义
+        """
+        def handler(signum, frame):
+            if self._prompt_active:
+                return
+            turn_id = self._active_turn_id
+            if not turn_id:
+                raise SystemExit(130)
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return
+            loop.call_soon_threadsafe(self._sigint_stop_turn, turn_id)
+
+        try:
+            signal.signal(signal.SIGINT, handler)
+        except ValueError:
+            # 非主线程（测试环境）：装不了信号处理器，维持默认行为
+            pass
+
+    def _sigint_stop_turn(self, turn_id: str):
+        """在事件循环线程里把 SIGINT 转成终止请求。
+
+        不取消 _render_turn：渲染循环继续等事件，runner 断流后
+        cancelled done 事件自然到达，由其 cancelled 分支展示
+        「已终止（以上为已生成内容）」。
+
+        审批面板若在倒计时也一并通知收工：SIGINT 路径不取消任何
+        task，_handle_approval 的 finally 不会执行，倒计时线程会
+        孤儿运行到 180s 超时（曾表现为「审批时 Ctrl+C 终止不了」）。
+        """
+        asyncio.ensure_future(self._request_stop(turn_id))
+        if self._approval_abort is not None:
+            self._approval_abort.set()
+
     async def _handle_command(self, text: str) -> bool:
         # 需要 await 的分支以外，其余与原同步行为一致（见各分支）
         cmd, _, _arg = text.partition(" ")
@@ -614,6 +673,19 @@ class CLIChannel:
             )
         return body
 
+    def _freeze_paragraph(self, live: Live, acc: str) -> None:
+        """把已累积的模型文本固化为静态段落（Live 帧之外），帧清零。
+
+        工具调用/审批等 Live 停启的间隙调用：已输出的文本只出现一次，
+        后续帧从空累积，避免旧文本被反复重绘造成「重复自述」的观感。
+        与历史共用 _assistant_panel，固化段落样式与历史消息一致。
+        """
+        live.stop()
+        self.console.print(self._assistant_panel(acc))
+        # 先更新再启动：start 首帧即空帧，不闪旧内容
+        live.update(self._frame("", ""))
+        live.start()
+
     async def _render_turn(self, turn_id: str):
         """Render one interactive turn live, consuming events that the
         standing stream listener routed into this turn's private queue."""
@@ -627,6 +699,7 @@ class CLIChannel:
             vertical_overflow="visible",
         )
         done = False
+        cancelled = False
         try:
             # 持证渲染：定时任务结果等异步输出会等本轮 Live 结束后再打印，
             # 避免撕裂流式画面
@@ -640,8 +713,19 @@ class CLIChannel:
                     if event.kind == "delta":
                         acc += event.content
                     elif event.kind == "tool_call":
+                        # 固化已累积文本后清零帧：否则该段落会随后续帧反复
+                        # 重绘，观感像模型在「重复自述」（实际只输出一次）
+                        if acc.strip():
+                            self._freeze_paragraph(live, acc)
+                            acc = ""
                         status = f"调用工具 {self._clip(event.content, 90)}"
                     elif event.kind == "approval":
+                        # 固化段落后再审批：审批面板停/启 Live 会整帧重绘，
+                        # 旧文本若留在帧里会在审批后再次出现。先固化清帧，
+                        # 审批后只显示新文本
+                        if acc.strip():
+                            self._freeze_paragraph(live, acc)
+                            acc = ""
                         # 通用就地审批：暂停 Live 提问，回答回填后恢复渲染
                         await self._handle_approval(event, live)
                     elif event.kind == "error":
@@ -654,13 +738,23 @@ class CLIChannel:
                         if u := (event.metadata or {}).get("token_usage"):
                             usage = u
                         done = True
+                        if (event.metadata or {}).get("cancelled"):
+                            cancelled = True
                     live.update(self._frame(acc, status))
+        except asyncio.CancelledError:
+            # 用户终止（流式中按 Ctrl+C）：请求核心真正停止生成（不是甩开
+            # UI 转后台），并展示已生成片段 + 「已终止」。标记 _bg_finalized
+            # 让收尾的 done 流事件与 MessageOut 走后台管线时被丢弃，避免
+            # 部分回复被当作「后台回答」二次渲染
+            cancelled = True
+            await self._request_stop(turn_id)
+            # 审批工作线程的收工信号已由 _handle_approval 的 finally 置位
+            # （本 except 晚于该 finally 执行，self._approval_abort 已清空）
+            self._bg_finalized.add(turn_id)
         finally:
             live.stop()
-            # 正常终结（done/error）的 turn：迟到的 MessageOut 由后台管线丢弃；
-            # 被 Ctrl+C 中断的 turn 不标记，剩余事件流入后台管线，
-            # 完成后作为「后台回答」自动渲染
-            if done:
+            # 正常终结（done/error）的 turn：迟到的 MessageOut 由后台管线丢弃
+            if done or cancelled:
                 self._bg_finalized.add(turn_id)
             if self._active_turn_id == turn_id:
                 self._active_turn_id = ""
@@ -671,6 +765,11 @@ class CLIChannel:
                     f"{usage.get('totalTokens', 0)} total[/dim]"
                 )
             self.console.print()
+        # 终止提示：已生成片段已在 Live 终帧展示，这里补一行状态
+        if cancelled:
+            self.console.print(
+                "[yellow]已终止[/yellow]" + (
+                    "（以上为已生成内容）" if acc else ""))
 
         # Drain the matching final MessageOut so queues stay in sync.
         try:
@@ -696,21 +795,32 @@ class CLIChannel:
                            event.content[:200])
             return
         live.stop()
+        abort = threading.Event()
+        self._approval_abort = abort
         try:
             # input() 是阻塞调用，放工作线程，事件循环保持可用
-            answer = await asyncio.to_thread(self._ask_approval_sync, req)
+            answer = await asyncio.to_thread(self._ask_approval_sync, req, abort)
         finally:
+            # 关键：abort 置位必须在引用被清掉之前。若等到外层 _render_turn
+            # 的 except（它晚于本 finally 执行），self._approval_abort 已被
+            # 清成 None，线程收不到信号，倒计时会继续孤儿运行到超时。这里
+            # 无论正常退出还是被取消，都通知工作线程收工（正常退出时线程
+            # 本就已结束，置位是空操作）。
+            abort.set()
+            self._approval_abort = None
             live.start()
         if not self.msg_bus.approvals.resolve(req.req_id, answer):
             logger.warning("approval %s resolve failed (expired?)", req.req_id)
 
-    def _ask_approval_sync(self, req: ApprovalRequest) -> str:
+    def _ask_approval_sync(self, req: ApprovalRequest,
+                           abort: threading.Event | None = None) -> str:
         """打印审批面板并读取单键答案。在 worker 线程中运行。
 
         倒计时与后端共用同一个 deadline（发起方写在事件 content 里的 unix
         时间戳），到时自动退出并打印超时拦截面板——不再无限悬挂在
         approval › 提示符上，渲染循环也不会被 input() 卡住导致后续
-        流式输出积压。
+        流式输出积压。abort 置位（用户 Ctrl+C 终止渲染）时立即退出，
+        避免孤儿线程继续倒计时并吞掉下一次输入的按键。
         """
         body = f"[bold]{escape(req.summary)}[/bold]"
         if req.detail:
@@ -722,7 +832,7 @@ class CLIChannel:
             f"[bold yellow]允许执行？[/bold yellow] [dim]{opts}[/dim]")
         deadline = req.deadline or (time.time() + 180)
         keys = "".join(o.key for o in req.options)
-        answer = self._read_key_until(deadline, keys)
+        answer = self._read_key_until(deadline, keys, abort)
         if answer:
             return answer
         hint = escape(req.timeout_hint) if req.timeout_hint else ""
@@ -732,7 +842,8 @@ class CLIChannel:
             title_align="left", border_style="red"))
         return ""
 
-    def _read_key_until(self, deadline: float, keys: str) -> str:
+    def _read_key_until(self, deadline: float, keys: str,
+                        abort: threading.Event | None = None) -> str:
         """在 deadline（unix 时间戳）前读取单键答案，到时返回 ""。
 
         在 worker 线程中运行。答案本来就是单字符，Windows 终端下用
@@ -741,7 +852,7 @@ class CLIChannel:
         无人值守，后端会超时 fail-closed）。
         """
         if sys.platform == "win32" and self._use_ptk:
-            return self._read_key_win32(deadline, keys)
+            return self._read_key_win32(deadline, keys, abort)
         while True:
             answer = input("approval › ").strip().lower()
             if answer in keys:
@@ -749,7 +860,8 @@ class CLIChannel:
             self.console.print(
                 f"[yellow]请输入 {' / '.join(keys)}[/yellow]")
 
-    def _read_key_win32(self, deadline: float, keys: str) -> str:
+    def _read_key_win32(self, deadline: float, keys: str,
+                        abort: threading.Event | None = None) -> str:
         """msvcrt 单键读取 + 同行倒计时刷新。在 worker 线程中运行。"""
         import msvcrt
         # 丢弃提问前用户预敲的残留按键，避免被误当作答案
@@ -757,6 +869,10 @@ class CLIChannel:
             msvcrt.getwch()
         last_shown = -1
         while True:
+            if abort is not None and abort.is_set():
+                # 渲染被 Ctrl+C 终止：立即退出，不再倒计时、不再吞按键
+                self._clear_countdown_line()
+                return ""
             remain = deadline - time.time()
             if remain <= 0:
                 self._clear_countdown_line()

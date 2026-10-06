@@ -126,7 +126,7 @@ class FakeProvider:
         self.chunks = chunks if chunks is not None else [
             ("content", "Goal: test\nProgress: nothing done")]
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         for kind, data in self.chunks:
             yield kind, data
 

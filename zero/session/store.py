@@ -31,7 +31,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from zero.models import Message, MessageBody, CompactRecord
+from zero.models import Message, MessageBody, MessageTool, CompactRecord
 from zero.session.models import SessionMeta, SessionSummary
 from zero.config import ZERO_ROOT
 
@@ -340,6 +340,81 @@ class SessionStore:
         tmp.replace(path)
 
     @staticmethod
+    def _placeholder_tool_msg(tool_call_id: str, session_id: str,
+                              channel: str) -> MessageTool:
+        """孤儿 tool_call 的占位 tool 结果。
+
+        加载时兜底修复无法得知原始原因（异常退出、进程被杀、旧版本
+        bug 皆有可能），文案必须中性——不能谎称「用户取消」，否则误导
+        LLM 后续行为与事后排查。具体修复动作记在日志 warning 里。
+        """
+        return MessageTool(
+            id=str(uuid4()),
+            session_id=session_id,
+            channel=channel,
+            sender="tool",
+            recipient="assistant",
+            body=MessageBody(
+                content='{"error": "missing tool result '
+                        '(auto-repaired at load)"}',
+                tool_call_id=tool_call_id,
+            ),
+        )
+
+    @staticmethod
+    def repair_orphan_tool_calls(messages: list[Message], channel: str,
+                                 session_id: str) -> list[Message]:
+        """检测并修复孤儿 tool_calls，返回修复后的消息列表。
+
+        孤儿 = assistant(tool_calls) 的某个 tool_call_id 没有后续配对的
+        tool 消息（序列在 tool 结果齐备前被 user/assistant 消息打断，
+        或文件直接结束）。残缺序列发给 LLM 会 400。
+
+        修复 = 在断裂点插入占位 tool 结果并重写 messages.jsonl。
+        无孤儿时零写盘。幂等：修复后的历史再跑一遍不会有新发现。
+        """
+        repaired: list[Message] = []
+        pending: dict[str, str] = {}   # tool_call_id -> tool_call_id
+        changed = False
+
+        def settle():
+            """结算当前 pending：每个未配对的 tool_call 补一条占位。"""
+            nonlocal pending, changed
+            for tc_id in pending.values():
+                repaired.append(SessionStore._placeholder_tool_msg(
+                    tc_id, session_id, channel))
+                changed = True
+            pending = {}
+
+        for m in messages:
+            tool_calls = m.body.tool_calls or []
+            if m.sender == "assistant" and tool_calls:
+                # 新的 tool_calls 轮次开始：上一轮若还有未配对的即孤儿
+                settle()
+                repaired.append(m)
+                pending = {tc.id: tc.id for tc in tool_calls}
+            elif m.sender == "tool" and m.body.tool_call_id:
+                pending.pop(m.body.tool_call_id, None)
+                repaired.append(m)
+            else:
+                # user / 普通 assistant / 其它：tool 结果序列至此必须闭合
+                settle()
+                repaired.append(m)
+        settle()  # 尾部孤儿
+
+        if changed:
+            path = SessionStore._session_file(channel, session_id)
+            tmp = path.with_suffix(".jsonl.tmp")
+            tmp.write_text(
+                "".join(m.model_dump_json() + "\n" for m in repaired),
+                encoding="utf-8")
+            tmp.replace(path)
+            logger.warning(
+                "session %s/%s: repaired orphan tool_calls "
+                "(placeholder tool results inserted)", channel, session_id)
+        return repaired
+
+    @staticmethod
     def load_history(
             session_id: str,
             channel: str,
@@ -366,6 +441,11 @@ class SessionStore:
                 if not line:
                     continue
                 messages.append(Message.model_validate_json(line))
+        # 兜底修复孤儿 tool_calls（含尾部孤儿）：任何来源的历史残缺
+        # （异常退出、进程被杀、旧版本 bug）在加载时一次治愈，避免
+        # 残缺序列发给 LLM 触发 400。无孤儿时零写盘。
+        messages = SessionStore.repair_orphan_tool_calls(
+            messages, channel, session_id)
         if not include_compact:
             return messages
         return apply_compact(

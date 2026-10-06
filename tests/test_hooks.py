@@ -58,7 +58,7 @@ class StubProvider:
     def __init__(self, script):
         self.script = [list(chunks) for chunks in script]
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         chunks = self.script.pop(0)
         for kind, data in chunks:
             yield kind, data

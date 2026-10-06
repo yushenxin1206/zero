@@ -179,7 +179,7 @@ class FakeProvider:
         self.error = error
         self.payloads = []
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         self.payloads.append(payload)
         if self.error:
             raise RuntimeError("mock failure")

@@ -12,7 +12,7 @@ class FakeProvider:
     def __init__(self, *a, **kw):
         pass
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         for chunk in ["你好", "，这是", "流式回复"]:
             yield "content", chunk
 

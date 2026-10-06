@@ -241,7 +241,7 @@ class StubProvider:
             [("content", "完毕")],
         ]
 
-    async def stream_chunks(self, payload):
+    async def stream_chunks(self, payload, **_kw):
         for kind, data in self.script.pop(0):
             yield kind, data
 
