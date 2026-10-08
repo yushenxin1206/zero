@@ -141,11 +141,13 @@ class Context:
     def _environment(self) -> str:
         # platform.machine() 在部分环境返回空串，只拼接非空部分
         os_info = " ".join(p for p in (platform.system(), platform.machine()) if p)
+        session_dir = SessionStore.session_dir(self.channel, self.session_id)
         return f"""\
 ## Environment
 - OS: {os_info}, Python {platform.python_version()}
 - Channel: {self.channel}
 - Session: {self.session_id}
+- Session dir: {session_dir} — this session's data directory (messages.jsonl / compact.json / summary.json live here). It is NOT the working directory; session-scoped files such as plan.md go here.
 - Date: {date.today().isoformat()}
 - Working directory: {get_cwd()}
 - Each shell call is a fresh subprocess: `cd` does not persist across calls. Use absolute paths or the `working_dir` parameter.{SHELL_NOTE}
