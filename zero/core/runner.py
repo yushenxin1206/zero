@@ -156,8 +156,11 @@ class AgentRunner:
                         content_parts.append(data)
                         yield StreamEvent(kind="delta", content=data)
                     elif kind == "reasoning":
-                        # 暂不处理reasoning
-                        continue
+                        # 透传思考过程供 channel 实时展示（CLI 用 dim 面板）。
+                        # 刻意不进 content_parts：reasoning 不参与最终回复、
+                        # 不落盘，仅作展示；终止安全点仍由上面的
+                        # _check_cancelled 保证（reasoner 思考期也逐 chunk 检查）
+                        yield StreamEvent(kind="reasoning", content=data)
                     elif kind == "tool_calls":
                         self._accumulate_tool_call(tool_call_acc, data)
                     elif kind == "usage":

@@ -68,9 +68,11 @@ def count_reads():
     orig_history = SessionStore.load_history
     orig_compact = SessionStore.load_compact
 
-    def counted_history(session_id, channel, include_compact=True):
+    def counted_history(session_id, channel, include_compact=True,
+                        persist_repair=False):
         counter["history"] += 1
-        return orig_history(session_id, channel, include_compact)
+        return orig_history(session_id, channel, include_compact,
+                            persist_repair)
 
     def counted_compact(channel, session_id):
         counter["compact"] += 1

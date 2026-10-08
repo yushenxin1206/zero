@@ -52,8 +52,21 @@ description: >
 实际搜索通过以下命令执行（Bing 网页搜索，无需 API key）：
 
 ```
-python scripts/search.py "QUERY" [结果数量]
+python <本 skill 目录>/scripts/search.py "QUERY" [结果数量]
 ```
+
+用**绝对路径**调用：`<本 skill 目录>` 取 `<available_skills>` 中本 skill 的
+`<location>` 所在目录，自行拼出 `scripts/search.py` 的绝对路径，不要写相对路径。
+
+> **为什么必须绝对路径**：shell_guard 的内置豁免（`builtin-skill-script`）只认
+> 「python 解释器 + 落在包内 `<skill>/scripts/` 下的 .py 绝对路径」。写成相对路径
+> `python scripts/search.py ...` 时豁免不生效，每次执行都会触发人工审批。
+
+> **裸调，不要加任何命令前缀**：不要写成 `set PYTHONIOENCODING=utf-8 && python ...`
+> 或 `call python ...`——豁免要求命令的**首 token 就是 python 解释器**，加了
+> `set` / `chcp` / `call` 等前缀后首 token 变成别的程序，豁免失效会触发人工审批。
+> 编码问题已在脚本内用 `setup_stdio()` 解决（强制 UTF-8 输出 + 控制台代码页
+> 65001），无需外部设置。
 
 脚本通过携带 `User-Agent` 请求头抓取 Bing 搜索结果页，解析标题、真实 URL 和摘要，并自动解码 Bing 的跳转链接。
 

@@ -342,6 +342,10 @@ class SessionStore:
         tmp.write_text(record.model_dump_json(), encoding="utf-8")
         tmp.replace(path)
 
+    # 加载期占位 tool 结果的固定文案：既是给 LLM 的中性说明，也是
+    # self-heal 识别「占位 vs 真实结果」的标记
+    _PLACEHOLDER_NOTE = "missing tool result (auto-repaired at load)"
+
     @staticmethod
     def _placeholder_tool_msg(tool_call_id: str, session_id: str,
                               channel: str) -> MessageTool:
@@ -352,29 +356,67 @@ class SessionStore:
         LLM 后续行为与事后排查。具体修复动作记在日志 warning 里。
         """
         return MessageTool(
-            id=str(uuid4()),
+            # 确定性 id：同一 tool_call 每次加载得到同一条占位，纯内存
+            # 修复才能稳定幂等（随机 id 会让每次加载的快照都不同）
+            id=f"repaired-{tool_call_id}",
             session_id=session_id,
             channel=channel,
             sender="tool",
             recipient="assistant",
             body=MessageBody(
-                content='{"error": "missing tool result '
-                        '(auto-repaired at load)"}',
+                content='{"error": "%s"}' % SessionStore._PLACEHOLDER_NOTE,
                 tool_call_id=tool_call_id,
             ),
         )
 
     @staticmethod
-    def repair_orphan_tool_calls(messages: list[Message], channel: str,
-                                 session_id: str) -> list[Message]:
-        """检测并修复孤儿 tool_calls，返回修复后的消息列表。
+    def _is_placeholder(msg: Message) -> bool:
+        """是否为加载期插入的占位 tool 结果。"""
+        return (msg.sender == "tool"
+                and SessionStore._PLACEHOLDER_NOTE in (msg.body.content or ""))
+
+    @staticmethod
+    def _drop_placeholder_duplicates(messages: list[Message]) -> list[Message]:
+        """丢弃「已有真实结果」的占位 tool 结果。
+
+        历史上曾因并发加载误插占位、随后真实结果才落盘，导致同一
+        tool_call_id 同时有占位和真实两条 tool 消息（发给 LLM 会 400）。
+        这里按 tool_call_id 去重：只要存在真实结果，占位一律剔除，
+        从而自愈已损坏的历史。
+        """
+        real_ids = {
+            m.body.tool_call_id for m in messages
+            if m.sender == "tool" and m.body.tool_call_id
+            and not SessionStore._is_placeholder(m)
+        }
+        if not real_ids:
+            return messages
+        return [
+            m for m in messages
+            if not (SessionStore._is_placeholder(m)
+                    and m.body.tool_call_id in real_ids)
+        ]
+
+    @staticmethod
+    def _repair_orphan_tool_calls(
+            messages: list[Message], channel: str,
+            session_id: str) -> tuple[list[Message], bool, bool]:
+        """检测并修复孤儿 tool_calls。
+
+        返回 (修复后列表, 是否有改动, 尾部是否未闭合)。
 
         孤儿 = assistant(tool_calls) 的某个 tool_call_id 没有后续配对的
         tool 消息（序列在 tool 结果齐备前被 user/assistant 消息打断，
-        或文件直接结束）。残缺序列发给 LLM 会 400。
+        或文件直接结束）。残缺序列发给 LLM 会 400。修复 = 在断裂点插入
+        占位 tool 结果。
 
-        修复 = 在断裂点插入占位 tool 结果并重写 messages.jsonl。
-        无孤儿时零写盘。幂等：修复后的历史再跑一遍不会有新发现。
+        **纯内存**：本方法不落盘（曾在这里直接重写 messages.jsonl，导致
+        并发读路径把飞行中的健康历史误判成孤儿、写入占位后真实结果再落盘
+        → 同一 tool_call_id 重复 → 400）。是否落盘由调用方在确定无飞行
+        轮次的边界决定（见 load_history 的 persist_repair）。
+
+        tail_open=True 表示文件以未闭合的 assistant(tool_calls) 结尾，
+        可能只是「一轮正在执行中」的正常瞬态；调用方据此绝不写盘。
         """
         repaired: list[Message] = []
         pending: dict[str, str] = {}   # tool_call_id -> tool_call_id
@@ -403,25 +445,27 @@ class SessionStore:
                 # user / 普通 assistant / 其它：tool 结果序列至此必须闭合
                 settle()
                 repaired.append(m)
+        tail_open = bool(pending)
         settle()  # 尾部孤儿
+        return repaired, changed, tail_open
 
-        if changed:
-            path = SessionStore._session_file(channel, session_id)
-            tmp = path.with_suffix(".jsonl.tmp")
-            tmp.write_text(
-                "".join(m.model_dump_json() + "\n" for m in repaired),
-                encoding="utf-8")
-            tmp.replace(path)
-            logger.warning(
-                "session %s/%s: repaired orphan tool_calls "
-                "(placeholder tool results inserted)", channel, session_id)
-        return repaired
+    @staticmethod
+    def _write_history(session_id: str, channel: str,
+                       messages: list[Message]) -> None:
+        """原子重写 messages.jsonl（tmp + replace）。"""
+        path = SessionStore._session_file(channel, session_id)
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text(
+            "".join(m.model_dump_json() + "\n" for m in messages),
+            encoding="utf-8")
+        tmp.replace(path)
 
     @staticmethod
     def load_history(
             session_id: str,
             channel: str,
             include_compact: bool = True,
+            persist_repair: bool = False,
     ) -> list[Message]:
         """Load all messages for a session in chronological order.
 
@@ -430,6 +474,18 @@ class SessionStore:
         (metadata.kind == "compact"), keeping the tail (messages after
         covered_upto) intact. Falls back to full history if the covered
         message id can't be located.
+
+        加载期在**内存**中一次治愈两类历史残缺，避免残缺序列发给 LLM
+        触发 400：(1) 孤儿 tool_calls（补占位 tool 结果）；(2) 旧并发 bug
+        遗留的「占位 + 真实结果」重复（剔除占位）。
+
+        persist_repair=True 时把治愈结果原子写回 messages.jsonl。**调用方
+        必须保证此刻该会话没有正在执行的轮次**：飞行中的正常瞬态
+        （assistant(tool_calls) 已落盘、工具尚未返回）与尾部孤儿形态完全
+        相同——并发读写的读路径若写盘，就会把健康历史误「治」，随后真实
+        结果落盘 → 同一 tool_call_id 重复 → 400。因此只有 turn owner
+        （Context 在轮次起点首次读历史）传 True；maintenance / CLI / 其它
+        只读方一律默认 False。尾部未闭合时即便 True 也不写盘（防御）。
         """
         try:
             path = SessionStore._session_file(channel, session_id)
@@ -444,11 +500,18 @@ class SessionStore:
                 if not line:
                     continue
                 messages.append(Message.model_validate_json(line))
-        # 兜底修复孤儿 tool_calls（含尾部孤儿）：任何来源的历史残缺
-        # （异常退出、进程被杀、旧版本 bug）在加载时一次治愈，避免
-        # 残缺序列发给 LLM 触发 400。无孤儿时零写盘。
-        messages = SessionStore.repair_orphan_tool_calls(
-            messages, channel, session_id)
+
+        raw = messages
+        deduped = SessionStore._drop_placeholder_duplicates(raw)
+        messages, inserted, tail_open = SessionStore._repair_orphan_tool_calls(
+            deduped, channel, session_id)
+        changed = inserted or len(deduped) != len(raw)
+        if persist_repair and not tail_open and changed:
+            SessionStore._write_history(session_id, channel, messages)
+            logger.warning(
+                "session %s/%s: healed history on disk "
+                "(orphan/duplicate tool results)", channel, session_id)
+
         if not include_compact:
             return messages
         return apply_compact(

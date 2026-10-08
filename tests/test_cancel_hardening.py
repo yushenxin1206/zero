@@ -14,7 +14,7 @@ from zero.bus.queue import MessageBus
 from zero.config import default_config
 from zero.core.context import Context
 from zero.core.runner import AgentRunner
-from zero.models import MessageBody, MessageOut, StopRequest
+from zero.models import MessageBody, MessageOut, MessageTool, StopRequest
 from zero.session import store as store_mod
 from zero.session.store import SessionStore
 
@@ -86,7 +86,7 @@ class TestLoadHistoryOrphanRepair(unittest.TestCase):
             "session_id": sid, "date": "2026-10-06"}}), encoding="utf-8")
         return root / "messages.jsonl"
 
-    def test_orphan_repaired_and_idempotent(self):
+    def test_orphan_repaired_in_memory_and_idempotent(self):
         sid = "11111111-1111-1111-1111-111111111111"
         with tempfile.TemporaryDirectory() as tmp:
             f = self._mk_session(Path(tmp), sid)
@@ -105,6 +105,7 @@ class TestLoadHistoryOrphanRepair(unittest.TestCase):
                 MessageOut(session_id=sid, channel="cli",
                            body=MessageBody(content="继续")),
             ])
+            # 只读路径：内存治愈，但**不写盘**（并发读绝不改写飞行中的历史）
             hist = SessionStore.load_history(sid, "cli")
             # [user, assistant(tool_calls), tool(占位), user]
             self.assertEqual(len(hist), 4)
@@ -113,11 +114,56 @@ class TestLoadHistoryOrphanRepair(unittest.TestCase):
             # 加载修复不知道原始原因，文案中性（不谎称用户取消）
             self.assertEqual(json.loads(hist[2].body.content)["error"],
                              "missing tool result (auto-repaired at load)")
-            # 修复已落盘；再次加载幂等（不重复补占位）
-            hist2 = SessionStore.load_history(sid, "cli")
+            self.assertEqual(len(f.read_text().strip().splitlines()), 3)
+
+            # turn owner（persist_repair=True）：落盘修复 + 幂等
+            hist2 = SessionStore.load_history(
+                sid, "cli", persist_repair=True)
             self.assertEqual(len(hist2), 4)
             raw = f.read_text(encoding="utf-8").strip().splitlines()
             self.assertEqual(len(raw), 4)
+            hist3 = SessionStore.load_history(
+                sid, "cli", persist_repair=True)
+            self.assertEqual(len(hist3), 4)
+            self.assertEqual(len(f.read_text().strip().splitlines()), 4)
+
+    def test_duplicate_placeholder_healed(self):
+        """并发误插占位 + 真实结果共存（同一 tool_call_id 两条 tool）会被
+        去重治愈：剔除占位、保留真实结果，避免发给 LLM 400。"""
+        sid = "33333333-3333-3333-3333-333333333333"
+        with tempfile.TemporaryDirectory() as tmp:
+            f = self._mk_session(Path(tmp), sid)
+            self._write_history(f, [
+                MessageOut(session_id=sid, channel="cli",
+                           body=MessageBody(content="问")),
+                MessageOut(session_id=sid, channel="cli",
+                           body=MessageBody(content="",
+                                            tool_calls=[{
+                                                "id": "call_dup",
+                                                "type": "function",
+                                                "function": {"name": "f",
+                                                             "arguments": "{}"},
+                                            }])),
+                # 误插的占位（靠前）
+                MessageTool(session_id=sid, channel="cli",
+                            body=MessageBody(
+                                content='{"error": "missing tool result '
+                                        '(auto-repaired at load)"}',
+                                tool_call_id="call_dup")),
+                # 真实结果（靠后）
+                MessageTool(session_id=sid, channel="cli",
+                            body=MessageBody(content="real result",
+                                             tool_call_id="call_dup")),
+            ])
+            hist = SessionStore.load_history(
+                sid, "cli", persist_repair=True)
+            tools = [m for m in hist if m.sender == "tool"]
+            self.assertEqual(len(tools), 1)
+            self.assertEqual(tools[0].body.content, "real result")
+            # 已落盘自愈：磁盘上不再有占位行
+            raw = f.read_text(encoding="utf-8")
+            self.assertNotIn("auto-repaired", raw)
+            self.assertEqual(len(raw.strip().splitlines()), 3)
 
     def test_clean_history_untouched(self):
         sid = "22222222-2222-2222-2222-222222222222"

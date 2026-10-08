@@ -178,6 +178,9 @@ class StreamEvent(Base):
 
     kind:
       - "delta":     a chunk of assistant text, appended to previous deltas
+      - "reasoning": a chunk of the model's reasoning/thinking text (reasoner
+                     models only). Display-only: it is never part of the final
+                     reply and never persisted to session history
       - "tool_call": a tool call started (content = "name(args)")
       - "done":      the reply for this turn is complete (content = full text)
       - "error":     the turn failed (content = error message)
@@ -419,3 +422,43 @@ class ToolContext(Base):
     channel_sender_id: str = ""  # 渠道侧原始发送者 id
     channel_session_id: str = ""  # 渠道侧会话标识，定时任务回投寻址用
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Plan models
+# ---------------------------------------------------------------------------
+
+PlanStatus = Literal[
+    "draft", "reviewing", "approved", "executing", "done", "aborted"]
+StepStatus = Literal["pending", "in_progress", "done", "blocked", "skipped"]
+
+
+class PlanStep(Base):
+    """计划中的单个步骤。index 从 1 起，note 存结果摘要或阻塞原因。"""
+    index: int
+    text: str
+    status: StepStatus = "pending"
+    note: str = ""
+
+
+class PlanChange(Base):
+    """变更记录条目（append-only）：谁/为什么改了什么。"""
+    at: datetime
+    note: str
+
+
+class PlanState(Base):
+    """一个会话的活跃计划状态——plan skill 的唯一事实源。
+
+    由 plan skill 的内置脚本（zero/skills/plan/scripts/plan.py）读写，
+    序列化为会话数据目录下的 plan.json（UI/消费方直接读该文件，不做
+    任何 Markdown 解析）；同目录的 plan.md 是它的人类可读视图，只由
+    本模型渲染生成，不接受手工编辑。
+    """
+    task: str = ""
+    status: PlanStatus = "draft"
+    goal: str = ""          # 目标 + 验收标准
+    findings: str = ""      # 调研结论：现状 / 约束 / 已排除方案
+    steps: list[PlanStep] = Field(default_factory=list)
+    changes: list[PlanChange] = Field(default_factory=list)
+    updated_at: datetime

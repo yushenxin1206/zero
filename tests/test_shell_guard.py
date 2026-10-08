@@ -84,6 +84,26 @@ def test_policy():
     print("policy ok")
 
 
+def test_builtin_skill_script():
+    root = policy._SKILLS_ROOT
+    script = str((root / "plan" / "scripts" / "plan.py").resolve())
+
+    # python + 包内 <skill>/scripts/*.py 绝对路径 → allow
+    assert policy.evaluate(f'python "{script}" init').tier == "allow"
+    assert policy.evaluate(f"python3 {script} --dir x").tier == "allow"
+    # 非 python 解释器 → 不放行（此处 node 非白名单，仍 ask）
+    assert policy.evaluate(f"node {script}").tier == "ask"
+    # 相对路径无法判定归属 → ask
+    assert policy.evaluate("python skills/plan/scripts/plan.py init").tier == "ask"
+    # 包外同名路径 → ask
+    assert policy.evaluate('python "C:/tmp/skills/plan/scripts/plan.py"').tier == "ask"
+    # 包内但不在 scripts/ 下 → ask
+    assert policy.evaluate(f"python {root / 'plan' / 'plan.py'}").tier == "ask"
+    # 非 .py → ask
+    assert policy.evaluate(f"python {root / 'plan' / 'scripts' / 'note.txt'}").tier == "ask"
+    print("builtin skill script ok")
+
+
 # ---------------------------------------------------------------------------
 # store：规则沉淀
 # ---------------------------------------------------------------------------
@@ -311,6 +331,7 @@ def test_manage():
 
 if __name__ == "__main__":
     test_policy()
+    test_builtin_skill_script()
     test_store()
     test_handler_passthrough_and_builtin()
     test_approval_flow()

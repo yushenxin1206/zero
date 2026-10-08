@@ -31,7 +31,6 @@ from rich.markdown import Markdown
 from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Prompt
-from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -61,6 +60,16 @@ BINDING_PATH = SESSIONS_ROOT / CHANNEL / ".cli_current.json"
 # 输入提示符样式（bold cyan），与历史消息中的 "you ›" 一致；
 # 只作用于 class:prompt 片段，不影响用户输入的文字
 _PROMPT_STYLE = Style.from_dict({"prompt": "bold ansicyan"})
+
+# 流式渲染的最小重绘间隔（秒）。Live 每次重绘都要「擦除整帧 + 重画整帧」，
+# 若每个 token 都触发（可达几十次/秒），终端上会持续闪烁；固定到这个帧率后
+# 重绘次数与 token 速率解耦，观感稳定。
+_RENDER_INTERVAL = 0.08
+
+# Live 帧允许占用的终端行数上限（含上下边框）：为状态行、输入提示符、光标行
+# 各留一格，避免帧顶到屏幕边界后 rich 触发 ellipsis 裁剪（见 _commit_overflow）。
+_FRAME_RESERVED_LINES = 3
+_FRAME_MIN_LINES = 6
 
 # alias -> canonical command (canonical names defined in cli_prompt.COMMANDS)
 _COMMAND_ALIASES = {
@@ -663,40 +672,163 @@ class CLIChannel:
     # Streaming render
     # ------------------------------------------------------------------
 
-    def _frame(self, acc: str, status: str):
-        # 与历史渲染共用 _assistant_panel，保证新消息与历史消息样式一致
-        body = self._assistant_panel(acc)
+    def _frame(self, acc: str, status: str, reasoning: str = ""):
+        """构造 Live 帧：状态行 / 思考面板 / 正文面板，按需出现。
+
+        与历史渲染共用 _assistant_panel，保证新消息与历史消息样式一致。
+        reasoning 为空时行为与旧版完全一致（仅状态行 + 正文）。
+        """
+        parts: list = []
         if status:
-            return Group(
-                Spinner("dots", text=status, style="green"),
-                body,
-            )
-        return body
+            # 用静态状态行替代动画 Spinner：帧内容在两次事件之间保持不变，
+            # 因此无需按帧高频重绘，从根上消除重绘擦除错位导致的重复显示
+            parts.append(Text(status, style="green"))
+        if reasoning:
+            # 思考面板只展示最新尾部（reasoning 是过渡信息、不落盘，无需回看
+            # 完整推理；限高避免思考很长时把帧顶出屏幕触发 ellipsis 裁剪）
+            cap = max(4, self._frame_budget() - 4)
+            parts.append(self._reasoning_panel(self._tail_fit(reasoning, cap)))
+        if acc:
+            parts.append(self._assistant_panel(acc))
+        elif not reasoning:
+            # 无正文也无思考时的占位（思考 chunk 到达前的空窗期）
+            parts.append(self._assistant_panel(""))
+        if len(parts) == 1:
+            return parts[0]
+        return Group(*parts)
+
+    def _reasoning_panel(self, text: str):
+        """思考过程面板：dim 边框 + dim 正文，视觉上降级于正式回答。"""
+        body = (Text(text, style="dim") if text
+                else Text("(thinking ...)", style="dim"))
+        return self._panel(
+            body, title="思考中", title_align="left", border_style="dim")
+
+    def _tail_fit(self, text: str, max_lines: int) -> str:
+        """截取 text 的尾部（前面补省略提示），使其渲染不超过 max_lines 行。"""
+        if max_lines <= 0:
+            return text
+        if self._measure(Text(text, style="dim")) <= max_lines:
+            return text
+        lo, hi, best = 0, len(text), len(text)
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self._measure(Text(text[mid:], style="dim")) <= max_lines:
+                best, hi = mid, mid - 1
+            else:
+                lo = mid + 1
+        tail = text[best:]
+        nl = tail.find("\n")
+        if 0 <= nl < len(tail) - 1:
+            tail = tail[nl + 1:]  # 对齐行首，避免从一行中间开始展示
+        return "…\n" + tail
+
+    def _collapse_reasoning(self, live: Live, reasoning: str) -> None:
+        """把已展示的思考过程折叠成一行摘要。
+
+        正文开始 / 工具调用 / 审批之前调用：思考过程是过渡性内容，收起后
+        避免占据并污染正式输出。与 _freeze_paragraph 同法——先清空 Live 帧，
+        再把摘要打印到 Live 区之上。
+        """
+        if not reasoning.strip():
+            return
+        live.update(self._frame("", ""), refresh=True)
+        self.console.print(
+            Text(f"💭 思考 {len(reasoning.strip())} 字（已折叠）", style="dim"))
+
+    def _frame_budget(self) -> int:
+        """Live 帧允许占用的最大行数（含上下边框）。"""
+        try:
+            height = self.console.height
+        except Exception:
+            height = 24
+        return max(_FRAME_MIN_LINES, height - _FRAME_RESERVED_LINES)
+
+    def _measure(self, renderable) -> int:
+        """把 renderable 渲染成行并返回行数（不裁剪，故可判断是否超屏）。"""
+        try:
+            return len(self.console.render_lines(renderable,
+                                                 self.console.options, pad=False))
+        except Exception:
+            return 0  # 测量失败一律视为「放得下」，退化为原 ellipsis 行为
+
+    def _fit_prefix(self, text: str, budget: int) -> int:
+        """返回能完整容纳于 budget 行的最长前缀长度（尽量切在换行处）。"""
+        lo, hi, best = 1, len(text), 0
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self._measure(self._frame(text[:mid], "")) <= budget:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        if best <= 0:
+            return 0
+        if best < len(text):
+            newline = text.rfind("\n", 0, best)
+            if newline > 0:
+                return newline + 1  # 对齐到行首，避免把一行从中间劈开
+        return best
+
+    def _commit_overflow(self, live: Live, acc: str) -> str:
+        """把超出终端高度的顶部文本固化到滚动区，返回保留在帧内的尾部。
+
+        Live 帧用 vertical_overflow="ellipsis"：帧一旦高于终端，rich 会把
+        内容裁剪为「前 N 行 + ...」（保留顶部、丢掉底部），于是最新流出的文本
+        看不见，屏幕看起来「卡住」，直到收尾 stop() 才整体刷出（观感为突然跳
+        变）。这里改成：帧行数超过终端高度时，把顶部整段打印到 Live 区之上
+        （终端随之向上滚动），帧内只保留最新尾部。这样输出连续下滚、最新文本
+        始终可见，且收尾时 stop() 只补印尾部、不会重复。
+        """
+        budget = self._frame_budget()
+        if not acc or self._measure(self._frame(acc, "")) <= budget:
+            return acc
+        committed: list[str] = []
+        while acc and self._measure(self._frame(acc, "")) > budget:
+            cut = self._fit_prefix(acc, budget)
+            if cut <= 0:
+                break  # 无法切分（极端超宽单行），交由 ellipsis 兜底
+            committed.append(acc[:cut])
+            acc = acc[cut:]
+        if committed:
+            # 先把帧收缩到剩余尾部，再把固化段打印到帧上方。顺序反了会让旧帧
+            # （仍含固化段）被 hook 重绘一次，出现重复。
+            live.update(self._frame(acc, ""), refresh=True)
+            self.console.print(self._assistant_panel("".join(committed)))
+        return acc
 
     def _freeze_paragraph(self, live: Live, acc: str) -> None:
         """把已累积的模型文本固化为静态段落（Live 帧之外），帧清零。
 
-        工具调用/审批等 Live 停启的间隙调用：已输出的文本只出现一次，
-        后续帧从空累积，避免旧文本被反复重绘造成「重复自述」的观感。
-        与历史共用 _assistant_panel，固化段落样式与历史消息一致。
+        工具调用/审批等间隙调用：已输出的文本只出现一次，后续帧从空累积，
+        避免旧文本被反复重绘造成「重复自述」的观感；与历史共用
+        _assistant_panel，固化段落样式与历史消息一致。
+
+        这里刻意不用 stop()/start()：stop() 会把 vertical_overflow 永久改成
+        "visible"（rich 为保证终帧完整渲染），使后续帧高度重新不受终端限制、
+        重绘时擦除行数与屏幕不符而产生重复；且 stop() 自身会打印当前帧，与
+        下面的显式打印叠加成两份。改为先清空 Live 帧，再把段落打印到 Live
+        区之上（rich 会自动把它插到 live 区上方）。
         """
-        live.stop()
+        live.update(self._frame("", ""), refresh=True)
         self.console.print(self._assistant_panel(acc))
-        # 先更新再启动：start 首帧即空帧，不闪旧内容
-        live.update(self._frame("", ""))
-        live.start()
 
     async def _render_turn(self, turn_id: str):
         """Render one interactive turn live, consuming events that the
         standing stream listener routed into this turn's private queue."""
         acc = ""
+        reason_acc = ""   # 本轮实时思考文本（仅展示，不参与最终回复、不落盘）
         status = ""
         usage: dict | None = None
+        last_render = 0.0  # 上次实际重绘的 monotonic 时刻（节流用）
+        # vertical_overflow="ellipsis"：帧高度裁剪到终端高度以内，保证重绘时
+        # 擦除的行数始终与屏幕一致（"visible" 下帧高于终端会擦除错位、叠出
+        # 重复帧）。auto_refresh=False：状态行是静态文本，改为事件到达时按需
+        # refresh，去掉后台高频重绘。
         live = Live(
             self._frame(acc, status),
             console=self.console,
-            refresh_per_second=12,
-            vertical_overflow="visible",
+            auto_refresh=False,
+            vertical_overflow="ellipsis",
         )
         done = False
         cancelled = False
@@ -704,15 +836,35 @@ class CLIChannel:
             # 持证渲染：定时任务结果等异步输出会等本轮 Live 结束后再打印，
             # 避免撕裂流式画面
             async with self._render_lock:
-                live.start()
+                # refresh=True：立即画出首帧（空正文 → "(thinking ...)" 占位），
+                # 否则 auto_refresh=False 下要等第一个内容 delta 才渲染，思考期
+                # 屏幕上会长时间空白（reasoning chunk 当前不透传，首个 delta 往往
+                # 在整个思考阶段之后才到）
+                live.start(refresh=True)
                 while not done:
                     event = await self._turn_events.get()
                     if event.turn_id != turn_id:
                         # 防御：listener 已按 active turn 路由，正常不会走到
                         continue
                     if event.kind == "delta":
+                        # 正文开始 → 收起思考面板（折叠成一行摘要），
+                        # 让正式回答独占画面
+                        if reason_acc.strip():
+                            self._collapse_reasoning(live, reason_acc)
+                            reason_acc = ""
                         acc += event.content
+                        # 工具已结束、模型继续输出：清除残留的工具状态行，
+                        # 否则它会留在每一帧乃至终帧里重复出现
+                        status = ""
+                    elif event.kind == "reasoning":
+                        # 思考 chunk：仅累积作实时展示（dim 面板），
+                        # 不进 acc，故不影响最终回复、不落盘
+                        reason_acc += event.content
                     elif event.kind == "tool_call":
+                        # 思考结束、转入工具调用：先收思考再固化正文
+                        if reason_acc.strip():
+                            self._collapse_reasoning(live, reason_acc)
+                            reason_acc = ""
                         # 固化已累积文本后清零帧：否则该段落会随后续帧反复
                         # 重绘，观感像模型在「重复自述」（实际只输出一次）
                         if acc.strip():
@@ -723,16 +875,23 @@ class CLIChannel:
                         # 固化段落后再审批：审批面板停/启 Live 会整帧重绘，
                         # 旧文本若留在帧里会在审批后再次出现。先固化清帧，
                         # 审批后只显示新文本
+                        if reason_acc.strip():
+                            self._collapse_reasoning(live, reason_acc)
+                            reason_acc = ""
                         if acc.strip():
                             self._freeze_paragraph(live, acc)
                             acc = ""
                         # 通用就地审批：暂停 Live 提问，回答回填后恢复渲染
                         await self._handle_approval(event, live)
                     elif event.kind == "error":
+                        status = ""
+                        reason_acc = ""
                         live.stop()
                         self.console.print(f"[red]出错:[/red] {event.content}")
                         done = True  # 视为终结，迟到的 MessageOut 不再重复渲染
                     elif event.kind == "done":
+                        status = ""
+                        reason_acc = ""
                         if event.content and not acc:
                             acc = event.content
                         if u := (event.metadata or {}).get("token_usage"):
@@ -740,7 +899,22 @@ class CLIChannel:
                         done = True
                         if (event.metadata or {}).get("cancelled"):
                             cancelled = True
-                    live.update(self._frame(acc, status))
+                    # 节流重绘：Live 每次重绘都要「擦除整帧 + 重画整帧」，若每个
+                    # token 都刷（可达几十次/秒）终端会持续闪烁。仅在：回合终结、
+                    # 队列已空（这一串事件的最后一个，保证尾帧不丢）、或距上次
+                    # 重绘超过 _RENDER_INTERVAL 时才真正重绘；否则只登记内容，
+                    # 交给下一次重绘一并画出。
+                    now = time.monotonic()
+                    if (done or self._turn_events.empty()
+                            or now - last_render >= _RENDER_INTERVAL):
+                        # 先把超出终端高度的顶部固化到滚动区，保证帧内始终是
+                        # 最新文本、终端随输出连续下滚（而非被 ellipsis 裁掉底部）
+                        acc = self._commit_overflow(live, acc)
+                        live.update(
+                            self._frame(acc, status, reason_acc), refresh=True)
+                        last_render = now
+                    else:
+                        live.update(self._frame(acc, status, reason_acc))
         except asyncio.CancelledError:
             # 用户终止（流式中按 Ctrl+C）：请求核心真正停止生成（不是甩开
             # UI 转后台），并展示已生成片段 + 「已终止」。标记 _bg_finalized
@@ -808,6 +982,8 @@ class CLIChannel:
             # 本就已结束，置位是空操作）。
             abort.set()
             self._approval_abort = None
+            # stop() 已把 overflow 改成 "visible"，恢复裁剪再重启渲染
+            live.vertical_overflow = "ellipsis"
             live.start()
         if not self.msg_bus.approvals.resolve(req.req_id, answer):
             logger.warning("approval %s resolve failed (expired?)", req.req_id)
@@ -952,6 +1128,10 @@ class CLIChannel:
             acc["text"] += event.content
             if self._bg_stream_enabled:
                 self._bg_stream_push(acc, event.content)
+        elif event.kind == "reasoning":
+            # 后台 turn（定时任务、已转后台的轮次）的思考过程默认忽略，
+            # 避免噪音；正文仍照常累积与渲染
+            return
         elif event.kind == "tool_call":
             if self._bg_stream_enabled:
                 self._bg_stream_push(acc, f"\n[调用工具 {event.content}]\n")

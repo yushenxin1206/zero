@@ -89,7 +89,11 @@ class Context:
         if self._history_loaded:
             return
         self._raw_history = SessionStore.load_history(
-            self.session_id, self.channel, include_compact=False)
+            self.session_id, self.channel,
+            include_compact=False,
+            # turn owner：Context 在轮次起点首次读历史，此刻串行 loop 中没有
+            # 任何正在执行的轮次，是唯一安全的落盘修复点（详见 store.load_history）
+            persist_repair=True)
         self._compact_record = SessionStore.load_compact(
             self.channel, self.session_id)
         self._history_loaded = True
