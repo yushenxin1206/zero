@@ -120,27 +120,30 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _session_dir(channel: str, session_id: str) -> Path:
+    def session_dir(channel: str, session_id: str) -> Path:
+        """会话数据目录（messages.jsonl / compact.json / summary.json 所在处）。
+
+        会话创建日期由 index 反查；不在 index 中（如创建时 source_id 为空、
+        或 subagent 等内存会话）时退化为按今天拼路径。
+        """
         entry = SessionStore._find_entry_by_session_id(channel, session_id)
         if entry is not None:
             date = entry.date
         else:
-            # Session not in index (e.g. source_id was empty at creation
-            # time). Fall back to today's date.
             date = datetime.now().strftime("%Y-%m-%d")
         return SESSIONS_ROOT / channel / date / session_id
 
     @staticmethod
     def _session_file(channel: str, session_id: str) -> Path:
-        return SessionStore._session_dir(channel, session_id) / "messages.jsonl"
+        return SessionStore.session_dir(channel, session_id) / "messages.jsonl"
 
     @staticmethod
     def _compact_file(channel: str, session_id: str) -> Path:
-        return SessionStore._session_dir(channel, session_id) / "compact.json"
+        return SessionStore.session_dir(channel, session_id) / "compact.json"
 
     @staticmethod
     def _summary_file(channel: str, session_id: str) -> Path:
-        return SessionStore._session_dir(channel, session_id) / "summary.json"
+        return SessionStore.session_dir(channel, session_id) / "summary.json"
 
     # ------------------------------------------------------------------
     # Public API
