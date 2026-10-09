@@ -251,7 +251,14 @@ def test_error_raises():
 
 def test_compression_gate():
     spy = install_compactor_spy()
-    install_provider([[("content", "ok")]])
+    # 每次构造 AgentRunner 会消耗两份脚本：self.provider + compactor.provider
+    # （见 AgentRunner.__init__）。故子 agent 与随后的会话 runner 各需两份。
+    install_provider(
+        [[("content", "ok")]],           # 子 agent self.provider
+        [[("content", "")]],             # 子 agent compactor.provider（未使用）
+        [[("content", "会话答复")]],      # 会话 self.provider
+        [[("content", "")]],             # 会话 compactor.provider（未使用）
+    )
     asyncio.run(run_subagent(
         "任务",
         config=stub_config(),
@@ -345,6 +352,27 @@ def test_hooks_apply_to_subagent():
     print("7. hooks apply to subagent ok")
 
 
+# ---------------------------------------------------------------------------
+# 8. 空正文/截断不再静默返回：run_subagent 应抛 RuntimeError
+# ---------------------------------------------------------------------------
+
+def test_empty_reply_raises():
+    # 仅 reasoning、无正文（reasoning 典型吃满预算后被截空的形态）：
+    # runner 现在产出 error 事件，run_subagent 据此抛 RuntimeError，
+    # 而不是把一个空字符串当成有效结果回投。
+    install_provider(
+        [[("reasoning", "只有思考")]],   # 子 agent self.provider：空正文
+        [[("content", "")]],             # compactor.provider（未使用）
+    )
+    try:
+        asyncio.run(run_subagent("写一篇作文", config=stub_config()))
+        raise AssertionError("空正文应抛 RuntimeError")
+    except RuntimeError as e:
+        assert "空正文" in str(e) or "截断" in str(e), \
+            f"错误信息应说明空正文/截断，实际：{e}"
+    print("8. empty reply raises RuntimeError ok")
+
+
 if __name__ == "__main__":
     test_single_shot_with_tools()
     test_isolation_from_session_store()
@@ -353,4 +381,5 @@ if __name__ == "__main__":
     test_compression_gate()
     test_tool_context_inherited()
     test_hooks_apply_to_subagent()
+    test_empty_reply_raises()
     print("all subagent tests passed")

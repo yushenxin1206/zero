@@ -1116,6 +1116,10 @@ class CLIChannel:
     # ------------------------------------------------------------------
 
     def _handle_bg_stream_event(self, event: StreamEvent):
+        if event.kind == "subagent_result":
+            # 子 agent 结果原文：不走 turn 累积，直接进异步渲染管线独立展示
+            self._notify_subagent_result(event)
+            return
         acc = self._bg_turns.setdefault(event.turn_id, {
             "text": "",
             "session_id": event.session_id,
@@ -1169,6 +1173,19 @@ class CLIChannel:
             "source": "",
             "task_id": "",
             "kind": "approval_blocked",
+        })
+
+    def _notify_subagent_result(self, event: StreamEvent):
+        """子 agent 结果原文：直接送入异步结果管线，独立面板原样展示。"""
+        self._async_results.put_nowait({
+            "turn_id": event.turn_id,
+            "session_id": event.session_id,
+            "text": event.content,
+            "error": False,
+            "streamed": False,
+            "source": "subagent",
+            "task_id": event.origin.task_id or event.turn_id,
+            "kind": "subagent_result",
         })
 
     def _print_above_prompt(self, renderable, *, end: str = "\n"):
@@ -1251,6 +1268,8 @@ class CLIChannel:
                 toast("zero · 定时任务完成", rec["text"])
             elif rec.get("kind") == "approval_blocked":
                 toast("zero · 审批未受理", rec["text"])
+            elif rec.get("kind") == "subagent_result":
+                toast("zero · 子任务完成", rec["text"])
 
     def _render_async_record(self, rec: dict):
         subtitle_parts = []
@@ -1264,13 +1283,23 @@ class CLIChannel:
                 subtitle_parts.append(escape(self._clip(instruction, 40)))
         subtitle = " · ".join(subtitle_parts) or None
 
-        if rec.get("kind") == "approval_blocked":
+        if rec.get("kind") == "subagent_result":
+            self._print_above_prompt(self._panel(
+                Markdown(rec["text"]), title=f"zero · 子任务 {rec['task_id']}",
+                title_align="left", border_style="magenta", subtitle=subtitle))
+        elif rec.get("kind") == "approval_blocked":
             self._print_above_prompt(self._panel(
                 Markdown(rec["text"]), title="zero · 审批未受理",
                 title_align="left", border_style="red", subtitle=subtitle))
         elif rec["error"]:
+            # 出错标题按来源区分：此前写死「定时任务出错」，导致子任务回投轮
+            # 或用户后台轮出错时被错标成定时任务
+            error_title = {
+                "scheduler": "zero · 定时任务出错",
+                "subagent": "zero · 子任务出错",
+            }.get(rec["source"], "zero · 后台回答出错")
             self._print_above_prompt(self._panel(
-                escape(rec["text"]), title="zero · 定时任务出错",
+                escape(rec["text"]), title=error_title,
                 title_align="left", border_style="red", subtitle=subtitle))
         elif rec["source"] == "scheduler":
             if rec["streamed"]:

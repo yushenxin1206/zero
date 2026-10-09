@@ -1,6 +1,7 @@
 """
 Build context for agent
 """
+import json
 import os
 import platform
 
@@ -42,8 +43,12 @@ You are Zero, a professional and efficient assistant. Help users accomplish thei
 - After write / delete / install operations, verify the result before reporting success.
 - No irreversible or destructive actions (deleting files, modifying critical configs) without explicit user confirmation.
 - Never fabricate information. If you don't know, say so and offer alternatives.
+- When a task contains several independent, self-contained pieces of work, delegate them in parallel with the `subagent` tool (if available) instead of doing them serially; keep dependent steps in the main conversation.
 - Respect privacy and security — never expose sensitive data.\
 """
+
+# 子 agent 内存上下文超预算时，旧 tool 结果被替换成的占位符（见 SubAgentContext）
+SUBAGENT_TOOL_PLACEHOLDER = "[较早的工具结果已省略以控制上下文长度]"
 
 
 def get_cwd() -> Path:
@@ -267,6 +272,9 @@ class SubAgentContext(Context):
     - tool_context 建议传父轮实例：channel/turn_id 等路由字段被继承，
       hooks（如审批交互）才能把事件挂回触发它的那一轮；未传时用独立
       标识（channel=subagent），仅供消息头与环境块展示，不落盘
+    - token_budget 为 payload 估算预算（由 run_subagent 按子 agent 运行时
+      窗口结算）：内存上下文无会话历史可压（compressible=False），一旦超窗
+      下次 payload 会直接触发 API 报错，故用 _shrink_oversized 兜底
     """
 
     compressible = False  # 单次任务生命周期短，且无会话历史可压
@@ -278,6 +286,7 @@ class SubAgentContext(Context):
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
             system_prompt: str | None = None,
+            token_budget: int | None = None,
     ):
         tc = tool_context or ToolContext(
             channel="subagent", session_id=str(uuid4()))
@@ -288,6 +297,7 @@ class SubAgentContext(Context):
             tool_context=tc,
         )
         self._custom_system_prompt = system_prompt
+        self._token_budget = token_budget
         self._messages: list[Message] = [
             Message(
                 session_id=self.session_id,
@@ -304,8 +314,42 @@ class SubAgentContext(Context):
             return self._custom_system_prompt
         return super().system_prompt
 
+    def _shrink_oversized(self) -> None:
+        """内存上下文兜底：估算超预算时把最旧的 tool 结果换成占位符。
+
+        子 agent 上下文 compressible=False，不参与会话压缩；工具结果
+        （尤其是整文件读取）累积超窗会让下一次 payload 直接触发 API 报错，
+        表现为任务莫名其妙失败。这里从最旧的 tool 消息开始截断，只动 tool
+        结果、不动 user/assistant 正文与 tool_calls——保持 assistant
+        tool_calls 与其 tool 结果配对完整（缺配对会被 API 判 400）。
+        软上限：极端情况下（如单条超长 assistant 正文）不保证压到预算内。
+        """
+        if self._token_budget is None:
+            return
+        # 延迟导入：core.compactor 模块级 import 了 Context，顶层导入成环
+        from zero.core.compactor import estimate_message, estimate_tokens
+
+        overhead = estimate_tokens(self.system_prompt)
+        tools = self.tools
+        if tools:
+            overhead += estimate_tokens(json.dumps(tools, ensure_ascii=False))
+        total = overhead + sum(estimate_message(m) for m in self._messages)
+        if total <= self._token_budget:
+            return
+        for m in self._messages:
+            if m.sender != "tool" or not m.body.content:
+                continue
+            if m.body.content == SUBAGENT_TOOL_PLACEHOLDER:
+                continue
+            total -= estimate_message(m)
+            m.body.content = SUBAGENT_TOOL_PLACEHOLDER
+            total += estimate_tokens(SUBAGENT_TOOL_PLACEHOLDER)
+            if total <= self._token_budget:
+                break
+
     @property
     def messages(self) -> list[dict[str, Any]]:
+        self._shrink_oversized()
         msgs: list[dict[str, Any]] = [
             {"content": self.system_prompt, "role": "system"}
         ]

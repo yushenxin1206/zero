@@ -85,8 +85,10 @@ class MessageBody(Base):
 
 class Origin(Base):
     """消息来源：谁触发了这一轮。"""
-    kind: Literal["user", "scheduler"] = "user"
-    task_id: str | None = None  # kind == "scheduler" 时为 ScheduleTask.id
+    kind: Literal["user", "scheduler", "subagent"] = "user"
+    # kind == "scheduler" 时为 ScheduleTask.id；kind == "subagent" 时
+    # 为 SubagentManager 分配的子任务 id（回投消息据此标识来源）
+    task_id: str | None = None
 
 
 class Message(Base):
@@ -187,6 +189,9 @@ class StreamEvent(Base):
       - "approval":  in-place approval request (content = JSON 序列化的
                      ApprovalRequest), emitted by the requesting component
                      itself with routing fields stamped
+      - "subagent_result": 子 agent 完成后的结果原文（content = 结果文本）。
+                     由 SubagentManager 直接发出，供 channel 原样展示，
+                     不经主对话转述（回投另有独立消息，让主对话据结果继续）
 
     origin 由 AgentLoop 从触发消息的 origin 复制，让 channel 端能识别
     后台 turn 的来源（如定时任务结果）。
@@ -318,8 +323,9 @@ class AgentRuntimeSpecs(Base):
     """agentRuntimes 的容器（config.json "agentRuntimes" 的值）。
 
     只收录已知任务名：default 主对话 / compact 上下文压缩 /
-    session_summary 会话复盘 / memory 记忆沉淀。extra='forbid' 让未知
-    任务名在加载时立即报错，而不是被静默忽略后悄悄回退。
+    session_summary 会话复盘 / memory 记忆沉淀 / subagent 子 agent 单次
+    任务。extra='forbid' 让未知任务名在加载时立即报错，而不是被静默忽略
+    后悄悄回退。
     """
     model_config = ConfigDict(
         alias_generator=to_camel, populate_by_name=True, extra='forbid')
@@ -328,6 +334,8 @@ class AgentRuntimeSpecs(Base):
     compact: AgentRuntimeSpec | None = None
     session_summary: AgentRuntimeSpec | None = None
     memory: AgentRuntimeSpec | None = None
+    # 子 agent 单次任务：可绑定与主对话不同的模型（如更便宜的模型跑并行子任务）
+    subagent: AgentRuntimeSpec | None = None
 
     def get(self, name: str) -> AgentRuntimeSpec | None:
         """按任务名取配置；未知任务名返回 None（视为未绑定）。"""

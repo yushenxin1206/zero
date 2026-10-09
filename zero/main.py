@@ -10,15 +10,26 @@ from zero.channels.cli import CLIChannel
 from zero.channels.feishu import FeishuChannel
 from zero.maintenance import MaintenanceEngine
 from zero.scheduler import Scheduler
+from zero.subagent import SubagentManager
 from zero.tools.registry import ToolRegistry
 from zero.tools.read import Read
 from zero.tools.write import Write
 from zero.tools.edit import Edit
 from zero.tools.shell import Shell
 from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
+from zero.tools.subagent import SubagentTool
 from zero.config import ZERO_ROOT, default_config
 
 log = logging.getLogger(__name__)
+
+# 子 agent 不应持有的工具：shell（不可审批的后台执行）、递归 subagent
+# （避免无限委派）、定时任务（子任务不应自行调度）
+SUBAGENT_EXCLUDED_TOOLS = frozenset({
+    "shell",
+    "subagent",
+    "create_scheduled_task",
+    "cancel_scheduled_task",
+})
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -53,12 +64,13 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
 
 
 def build_agent_loop(msg_bus: MessageBus,
-                     tool_registry: ToolRegistry | None = None) -> AgentLoop:
+                     tool_registry: ToolRegistry,
+                     hooks: Hooks) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=default_config,
-        tool_registry=tool_registry or build_tool_registry(),
-        hooks=build_hooks(msg_bus),
+        tool_registry=tool_registry,
+        hooks=hooks,
     )
 
 
@@ -73,7 +85,16 @@ async def run(cli_only: bool = False):
     """
     msg_bus = MessageBus()
     registry = build_tool_registry()
-    agent_loop = build_agent_loop(msg_bus, tool_registry=registry)
+    hooks = build_hooks(msg_bus)
+    # 子 agent 管理器：工具集从主对话全量裁剪（无 shell / 无递归 subagent /
+    # 无定时任务），再把 subagent 工具注册回主对话注册表
+    subagent_manager = SubagentManager(
+        msg_bus=msg_bus,
+        config=default_config,
+        tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
+    )
+    registry.register(SubagentTool(subagent_manager))
+    agent_loop = build_agent_loop(msg_bus, tool_registry=registry, hooks=hooks)
     scheduler = Scheduler(msg_bus=msg_bus)
 
     maintenance_engine = build_maintenance_engine()
@@ -108,11 +129,13 @@ async def run(cli_only: bool = False):
     core = asyncio.create_task(agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
 
-    # CLI 退出（/quit）或核心 loop 结束时，取消所有后台任务
+    # CLI 退出（/quit）或核心 loop 结束时，取消所有后台任务，
+    # 并取消在途子 agent（其回投消息已无会话可送达）
     done, pending = await asyncio.wait(
         {core, cli_task}, return_when=asyncio.FIRST_COMPLETED)
     for t in background:
         t.cancel()
+    await subagent_manager.shutdown()
     task_names = {core: "agent-loop", cli_task: "cli-channel"}
     for t in done:
         if not t.cancelled() and (exc := t.exception()) is not None:

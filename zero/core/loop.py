@@ -156,13 +156,17 @@ class AgentLoop:
 
                     content = reply_text
 
-                    # 出错且未产出任何内容时，不落盘空 assistant（否则每次
-                    # LLM 400 都会往历史追加一条无意义空消息，反复污染）。
-                    if saw_error is not None and not content.strip():
+                    # 出错时把原因以 [error] 标签接在正文后一并落盘。空正文
+                    # 不再直接丢弃：否则历史里只剩一条悬空的用户消息，下一
+                    # 轮模型无从得知为何没有回复；部分截断也借此标明"这半句
+                    # 被剪断了"，避免被当成完整答复。
+                    if saw_error is not None:
+                        note = f"[error] {saw_error}"
+                        content = (
+                            f"{content}\n\n{note}" if content.strip() else note)
                         logger.warning(
-                            "Turn %s failed (%s); skipping empty persist",
+                            "Turn %s failed (%s); persisted with error tag",
                             msg_in.id, saw_error)
-                        continue
 
                     msg_out = MessageOut(
                         session_id=msg_in.session_id,

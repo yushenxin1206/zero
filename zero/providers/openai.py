@@ -58,7 +58,9 @@ class OpenAI(Provider):
                     j = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                delta = j.get("choices", [{}])[0].get("delta", {})
+                choices = j.get("choices") or []
+                choice = choices[0] if choices else {}
+                delta = choice.get("delta", {})
                 content = delta.get("content")
                 if content:
                     yield "content", content
@@ -67,6 +69,12 @@ class OpenAI(Provider):
                     yield "reasoning", reasoning
                 for tc in delta.get("tool_calls") or []:
                     yield "tool_calls", tc
+                # finish_reason 出现在本轮收尾 chunk（"stop" / "length" /
+                # "tool_calls" 等）。透出给 runner 判断是否被 max_tokens 截断，
+                # 避免"思考吃满预算、正文被截空"被静默当正常终稿。
+                finish_reason = choice.get("finish_reason")
+                if finish_reason:
+                    yield "finish", finish_reason
                 # usage 出现在最后一个 chunk（choices 为空）
                 if usage := j.get("usage"):
                     yield "usage", usage

@@ -102,11 +102,47 @@ assert "想" not in done_events[0].content, "reasoning 混入了 done 正文"
 assert reply_of(events) == "这是最终答案。", "最终回复被 reasoning 污染（会落盘）"
 print("A/B. runner 透传 + 隔离 ok:", kinds)
 
-# 仅 reasoning、无正文的轮次：done 的 content 必须为空
+# 仅 reasoning、无正文的轮次：不再静默放行空正文，转为报错
 only_reasoning = collect(make_runner([("reasoning", "只在思考")]))
-assert [e.kind for e in only_reasoning] == ["reasoning", "done"]
-assert only_reasoning[-1].content == "", "无正文时 done 不应带上 reasoning"
-print("A/B. 仅 reasoning 轮次 ok")
+assert [e.kind for e in only_reasoning] == ["reasoning", "error"], \
+    f"仅 reasoning（空正文）应报错，实际 {[e.kind for e in only_reasoning]}"
+assert "只在思考" not in only_reasoning[-1].content, "空正文报错不应带上 reasoning"
+print("A/B. 仅 reasoning 轮次 → 报错 ok")
+
+
+# ---------------------------------------------------------------------------
+# A/B2. finish_reason 校验：截断/空正文一律报错，不再静默放行
+# ---------------------------------------------------------------------------
+# finish_reason=length（思考吃满预算、正文为空）→ error，不产出 done
+truncated = collect(make_runner([
+    ("reasoning", "很长的思考" * 5),
+    ("finish", "length"),
+]))
+assert [e.kind for e in truncated] == ["reasoning", "error"], \
+    f"length 应报错而非 done，实际 {[e.kind for e in truncated]}"
+assert "max_tokens" in truncated[-1].content, "报错应说明截断原因"
+print("A/B2. finish_reason=length（空正文）→ error ok")
+
+# finish_reason=length 且有部分正文：严格模式同样不放行残缺正文
+partial = collect(make_runner([
+    ("content", "这是被截断的半句"),
+    ("finish", "length"),
+]))
+assert [e.kind for e in partial] == ["delta", "error"], \
+    f"length 有部分正文也应报错，实际 {[e.kind for e in partial]}"
+assert not [e for e in partial if e.kind == "done"], "截断不应产出 done"
+print("A/B2. finish_reason=length（部分正文）→ error ok")
+
+# finish_reason=stop + 正文 → 正常 done（回归）
+normal = collect(make_runner([
+    ("content", "完整的答复"),
+    ("finish", "stop"),
+    ("usage", {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}),
+]))
+assert [e.kind for e in normal] == ["delta", "done"], \
+    f"正常收尾不应报错，实际 {[e.kind for e in normal]}"
+assert normal[-1].content == "完整的答复", "正常轮次的 done 正文不正确"
+print("A/B2. finish_reason=stop → done ok")
 
 
 # ---------------------------------------------------------------------------

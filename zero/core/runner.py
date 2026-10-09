@@ -129,6 +129,7 @@ class AgentRunner:
             content_parts: list[str] = []
             tool_call_acc: dict[int, dict] = {}
             usage: TokenUsage | None = None
+            finish_reason: str | None = None
 
             # 每次构建 payload 之前检查是否触发上下文压缩（第 0 次迭代即
             # turn 起点；压缩后 context.messages 自动合成 [摘要消息] + 尾部）。
@@ -165,6 +166,10 @@ class AgentRunner:
                         self._accumulate_tool_call(tool_call_acc, data)
                     elif kind == "usage":
                         usage = TokenUsage.from_openai(data)
+                    elif kind == "finish":
+                        # provider 透出的收尾原因（"stop"/"length"/...），
+                        # 用于识别 max_tokens 截断
+                        finish_reason = data
             finally:
                 # 提前退出（取消/异常）时关闭生成器释放底层 HTTP 连接，
                 # 避免半途放弃的流占用连接；正常结束的 aclose 是空操作
@@ -179,6 +184,27 @@ class AgentRunner:
 
             # No tool calls: final text reply
             if not tool_calls_raw:
+                # finish_reason=length：模型被 max_tokens 截断。reasoning 与
+                # 正文共享 completion 预算，思考吃满时正文会被截断为空——
+                # 此前被静默当正常终稿放行（现象：空回复无任何提示）。改为走
+                # error 通道明确报错，不产出残缺正文（子 agent 侧 run_subagent
+                # 收到 error 即抛 RuntimeError，不会被当成有效结果回投）。
+                if finish_reason == "length":
+                    yield StreamEvent(
+                        kind="error",
+                        content=(
+                            "模型输出达到 max_tokens 被截断"
+                            "（finish_reason=length）：reasoning 与正文共享 "
+                            "completion 预算，正文可能不完整或为空"),
+                    )
+                    return
+                if not content.strip():
+                    # 无 tool_calls 且正文为空：模型未产出任何可交付内容
+                    yield StreamEvent(
+                        kind="error",
+                        content=f"模型返回空正文（finish_reason={finish_reason}）",
+                    )
+                    return
                 yield StreamEvent(
                     kind="done",
                     content=content,
@@ -373,12 +399,24 @@ async def run_subagent(
       被继承，hooks（如 shell_guard 审批）才能把交互事件挂回触发轮
     - hooks 透传父级链：子 agent 的工具调用受同一套护栏约束
     - 失败抛 RuntimeError（error 事件的错误文本），不返回残缺回复
+
+    内存上下文无会话历史可压（compressible=False），故按该任务运行时的
+    窗口结算一个 payload 预算传给 SubAgentContext，由其在超预算时截断旧
+    工具结果兜底（否则超窗会直接表现为 API 报错 → RuntimeError）。
     """
+    runtime = config.resolve_runtime(task)
+    window = runtime.llm_runtime.context_window_tokens
+    token_budget = int(min(
+        window * config.compact.trigger_ratio,
+        window - runtime.llm_call_options.max_tokens
+        - runtime.reasoning_token_headroom,
+    ))
     context = SubAgentContext(
         prompt,
         tool_registry=tool_registry,
         tool_context=tool_context,
         system_prompt=system_prompt,
+        token_budget=token_budget,
     )
     runner = AgentRunner(
         config=config,

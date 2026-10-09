@@ -28,6 +28,13 @@ _SCHEDULER_REASON = (
     "shell_guard: 定时任务无人值守，命令需预置规则"
     "（zero-guard add allow \"<pattern>\"）后才会放行"
 )
+# 子 agent 结果回投触发的后台 turn：与定时任务同样无人值守。若不在此短路，
+# 会走到 approval.request 后在后台等审批超时（默认数分钟）才 fail-closed，
+# 期间用户看到的只是「审批未受理」且 turn 被长时间挂住。
+_SUBAGENT_REASON = (
+    "shell_guard: 子任务回投的后台 turn 无人值守，命令需预置规则"
+    "（zero-guard add allow \"<pattern>\"）后才会放行"
+)
 
 
 class ShellGuard:
@@ -84,6 +91,8 @@ class ShellGuard:
         origin = ctx.tool_context.origin if ctx.tool_context else None
         if origin is not None and origin.kind == "scheduler":
             return ToolCallDecision(proceed=False, reason=_SCHEDULER_REASON)
+        if origin is not None and origin.kind == "subagent":
+            return ToolCallDecision(proceed=False, reason=_SUBAGENT_REASON)
         if ctx.channel != "cli" or self.msg_bus is None:
             return ToolCallDecision(proceed=False, reason=_UNATTENDED_REASON)
 
