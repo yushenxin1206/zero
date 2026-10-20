@@ -34,6 +34,7 @@ from zero.core.hooks import HookContext
 from zero.models import ApprovalRequest, Origin, ToolContext
 from zero.sandbox_guard import SandboxGuard
 from zero.tools.shell import Shell
+from zero.tools.write import Write
 
 
 def make_ctx(channel: str = "cli", kind: str = "user") -> HookContext:
@@ -350,6 +351,92 @@ def test_launchd_mutation_blocked():
     print("8. launchd 变更面被挡住（读允许/写拒绝）ok")
 
 
+# ---------------------------------------------------------------------------
+# 9. 阶段 B：进程内工具越界改走审批门（第 1 层）
+# ---------------------------------------------------------------------------
+
+def test_file_tools_use_approval_gate():
+    """read/write/edit 越界不再只是 fail-closed，而是走审批门。
+
+    读方向是减法（全开减不可授予），所以只有 D 档、永不进面板；
+    写方向才有 G 档，审批通过后落会话扩权表，同会话内后续同路径免审批。
+    """
+    async def main():
+        bus = MessageBus()
+        guard = SandboxGuard(bus)
+
+        # read 到凭证目录：D 档拒绝，不进面板
+        ctx = make_ctx()
+        worker = answer_next(bus, "s")
+        d = await guard("read",
+                        {"file_path": str(sandbox.HOME / ".ssh" / "id_rsa")}, ctx)
+        assert d is not None and d.proceed is False, d
+        assert "不可授予" in d.reason, d.reason
+        await asyncio.sleep(0.05)
+        assert not worker.done(), "读方向 D 档不应进面板"
+        worker.cancel()
+
+        # read 包络内：放行，不弹面板
+        worker = answer_next(bus, "s")
+        assert await guard("read", {"file_path": "zero/sandbox.py"},
+                           make_ctx()) is None
+        await asyncio.sleep(0.05)
+        assert not worker.done(), "包络内不应进面板"
+        worker.cancel()
+
+        # write 到系统路径：D 档拒绝，不进面板
+        ctx = make_ctx()
+        worker = answer_next(bus, "s")
+        d = await guard("write", {"file_path": "/etc/zero-stage-b-test",
+                                  "content": "x"}, ctx)
+        assert d is not None and d.proceed is False, d
+        assert "不可授予" in d.reason, d.reason
+        await asyncio.sleep(0.05)
+        assert not worker.done(), "写方向 D 档不应进面板"
+        worker.cancel()
+
+        # write 越界 + 无人值守：fail-closed
+        d = await guard("write", {"file_path": outside("zero-stageB-unattended.txt"),
+                                  "content": "x"}, make_ctx(kind="scheduler"))
+        assert d is not None and d.proceed is False, d
+        assert "无人值守" in d.reason, d.reason
+
+        # write 包络内：放行，不弹面板
+        worker = answer_next(bus, "s")
+        assert await guard("write", {"file_path": "zero-stageB-inside.txt",
+                                     "content": "x"}, make_ctx()) is None
+        await asyncio.sleep(0.05)
+        assert not worker.done(), "包络内不应进面板"
+        worker.cancel()
+
+        # write 越界 + 「本会话允许」→ 放行 + 落表 + 工具端到端真能写出去
+        target = Path(outside("zero-stageB-granted.txt"))
+        target.unlink(missing_ok=True)
+        ctx = make_ctx()
+        worker = answer_next(bus, "s")
+        d = await guard("write", {"file_path": str(target), "content": "ok"}, ctx)
+        await worker
+        assert d is None, d
+        assert sandbox.check_writable(str(target), ctx).ok, "授权后该路径应可写"
+        result = await Write().run(context=ctx.tool_context,
+                                   file_path=str(target), content="ok")
+        assert result.get("success") is True, result
+        assert target.read_text(encoding="utf-8") == "ok"
+        target.unlink(missing_ok=True)
+
+        # write 越界 + 拒绝 → 拒绝，且不改状态
+        ctx = make_ctx()
+        target2 = outside("zero-stageB-rejected.txt")
+        worker = answer_next(bus, "n")
+        d = await guard("write", {"file_path": target2, "content": "x"}, ctx)
+        await worker
+        assert d is not None and d.proceed is False, d
+        assert not sandbox.check_writable(target2, ctx).ok
+
+    asyncio.run(main())
+    print("9. 进程内工具走审批门（read D 档 / write G 档授权 / 无人值守）ok")
+
+
 if __name__ == "__main__":
     test_render()
     test_scope()
@@ -360,4 +447,5 @@ if __name__ == "__main__":
     test_guard_tiers()
     test_shell_denied_roundtrip()
     test_launchd_mutation_blocked()
+    test_file_tools_use_approval_gate()
     print("all sandbox tests passed")

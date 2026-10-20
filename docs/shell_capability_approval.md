@@ -8,12 +8,13 @@
 > 结论先行：**审批的对象从「命令」变成「能力」**——
 > 一条能力 = （资源类别 × 目标 × 时效）。命令文本不参与授权判定。
 
-> **实现状态（阶段 A 已落地）**：`zero/sandbox.py` + `zero/sandbox_guard.py`
+> **实现状态（阶段 A + B 均已落地）**：`zero/sandbox.py` + `zero/sandbox_guard.py`
 > 已实现包络、profile 渲染、`wrap`、双向探针、`check_readable`/`check_writable`
 > 与 P/G/D 裁定；`plugins/` 整目录已删除；CLI 为 `zero-sandbox`。
-> 审批面板收敛为 4 键（`y` 本次 / `s` 本会话 / `a` 总是 / `n` 拒绝）——
-> 本文第 3 节的 6 选项面板与 §13 的六模块改造清单作废，实际改动见
-> `docs/sandbox.md` 顶部的 v3 说明。
+> `read`/`write`/`edit` 越界也已接入同一审批门（阶段 B），不再只是 fail-closed。
+> 审批面板：扩权 3 键（`s` 本会话 / `a` 总是 / `n` 拒绝），脱离沙箱与无沙箱降级
+> 2 键（`y` 允许一次 / `n` 拒绝）——本文第 3 节的 6 选项面板与 §13 的六模块改造
+> 清单作废，实际改动见 `docs/sandbox.md` 顶部的 v3 说明。
 
 ## 0. 决策记录
 

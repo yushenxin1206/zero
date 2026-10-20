@@ -53,8 +53,8 @@ _UNATTENDED_UNSANDBOX = (
     "如需长期放行请用户执行 zero-sandbox add-unsandbox 后重试"
 )
 _UNATTENDED_EXPAND = (
-    "sandbox: 该命令申请写入包络外路径，但当前渠道无人值守，命令未执行。"
-    "请用户执行 zero-sandbox add-root <path> 后重试"
+    "sandbox: 该操作申请写入包络外路径（{paths}），但当前渠道无人值守，"
+    "操作未执行。请用户执行 zero-sandbox add-root <path> 后重试"
 )
 
 
@@ -127,12 +127,97 @@ class SandboxGuard:
             return False
         return True
 
+    # ------------------------------------------------------------------
+    # 分发
+    # ------------------------------------------------------------------
+
     async def __call__(
             self, tool_name: str, kwargs: dict, ctx: HookContext,
     ) -> ToolCallDecision | None:
-        if tool_name != "shell":
-            return None
+        if tool_name == "shell":
+            return await self._shell(kwargs, ctx)
+        if tool_name not in ("read", "write", "edit"):
+            return None                     # 本守卫只管文件类工具与 shell
 
+        path = kwargs.get("file_path", "")
+        if not path:
+            return None                     # 参数缺失交给工具自己报错
+        if tool_name in ("read", "edit"):
+            # edit 既读又写；读方向只有 D 档，没有可授予档
+            denied = self._check_read(path, ctx)
+            if denied is not None:
+                return denied
+        if tool_name == "read":
+            return None
+        return await self._request_expand(
+            [path], ctx, title="写入包络外路径审批")
+
+    # ------------------------------------------------------------------
+    # 进程内工具：读方向只有 D 档——读是「全开减不可授予」，没有可授予档
+    # ------------------------------------------------------------------
+
+    def _check_read(self, path: str, ctx: HookContext) -> ToolCallDecision | None:
+        verdict = sandbox.check_readable(path, ctx)
+        if verdict.ok:
+            return None
+        return ToolCallDecision(
+            proceed=False,
+            reason=f"sandbox: 拒绝（不可授予）。{verdict.reason}"
+                   f"（needed: {verdict.needed}）")
+
+    # ------------------------------------------------------------------
+    # 写方向扩权：D 档直接拒（不进面板）/ G 档审批 / 授权落表
+    # ------------------------------------------------------------------
+
+    async def _request_expand(
+            self, paths: list[str], ctx: HookContext, *, title: str,
+    ) -> ToolCallDecision | None:
+        """返回 None = 放行；返回 decision(proceed=False) = 拒绝。"""
+        refused: list[str] = []
+        pending: list[str] = []
+        for raw in paths:
+            verdict = sandbox.check_writable(raw, ctx)
+            if verdict.ok:
+                continue                          # 已在包络内，无需申请
+            if verdict.tier == sandbox.D:
+                refused.append(verdict.reason)
+            else:
+                pending.append(str(raw))
+        if refused:
+            return ToolCallDecision(
+                proceed=False,
+                reason="sandbox: 拒绝（不可授予）。" + "；".join(refused))
+        if not pending:
+            return None
+        if not self._attended(ctx):
+            return ToolCallDecision(
+                proceed=False,
+                reason=_UNATTENDED_EXPAND.format(paths="、".join(pending)))
+        answer = await request(
+            self.msg_bus, ctx,
+            title=title,
+            summary="、".join(pending),
+            detail="批准后该路径进入可写集合",
+            options=_EXPAND,
+        )
+        if answer == "s":
+            for p in pending:
+                sandbox.grant_write_root(p, ctx, "session")
+        elif answer == "a":
+            for p in pending:
+                sandbox.grant_write_root(p, ctx, "always")
+        else:
+            return ToolCallDecision(
+                proceed=False,
+                reason="sandbox: 用户拒绝扩权，操作未执行。"
+                       "改用包络内路径重试")
+        return None
+
+    # ------------------------------------------------------------------
+    # shell：内核沙箱平面
+    # ------------------------------------------------------------------
+
+    async def _shell(self, kwargs: dict, ctx: HookContext) -> ToolCallDecision | None:
         command = kwargs.get("command", "")
         argv = shlex.split(command) if command else []
 
@@ -172,42 +257,8 @@ class SandboxGuard:
         # ---- write_paths 扩权申请：D 档直接拒，G 档走审批 ----
         write_paths = kwargs.get("write_paths") or []
         if write_paths:
-            refused: list[str] = []
-            pending: list[str] = []
-            for raw in write_paths:
-                verdict = sandbox.check_writable(raw, ctx)
-                if verdict.ok:
-                    continue                     # 已在包络内，无需申请
-                if verdict.tier == sandbox.D:
-                    refused.append(verdict.reason)
-                else:
-                    pending.append(str(raw))
-            if refused:
-                return ToolCallDecision(
-                    proceed=False,
-                    reason="sandbox: 拒绝（不可授予）。" + "；".join(refused))
-            if pending:
-                if not self._attended(ctx):
-                    return ToolCallDecision(
-                        proceed=False, reason=_UNATTENDED_EXPAND)
-                answer = await request(
-                    self.msg_bus, ctx,
-                    title="写入包络外路径审批",
-                    summary="、".join(pending),
-                    detail="批准后该路径进入可写集合",
-                    options=_EXPAND,
-                )
-                if answer == "s":
-                    for p in pending:
-                        sandbox.grant_write_root(p, ctx, "session")
-                elif answer == "a":
-                    for p in pending:
-                        sandbox.grant_write_root(p, ctx, "always")
-                else:
-                    return ToolCallDecision(
-                        proceed=False,
-                        reason="sandbox: 用户拒绝扩权，命令未执行。"
-                               "改用包络内路径重试")
+            return await self._request_expand(
+                list(write_paths), ctx, title="写入包络外路径审批")
 
         # ---- P 档：包络内，放行（shell.py 负责包进内核沙箱）----
         return None
