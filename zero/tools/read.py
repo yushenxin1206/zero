@@ -4,7 +4,6 @@ Tool for reading file content
 import os
 from typing import Any
 
-from zero import sandbox
 from zero.tools.base import Tool
 
 
@@ -58,16 +57,6 @@ class Read(Tool):
         end_line: int | None = kwargs.get("end_line")
 
         file_path = os.path.expanduser(file_path)
-
-        # 硬边界：先判包络再看是否存在——避免把"文件存在与否"当读取 oracle
-        verdict = sandbox.check_readable(file_path, context)
-        if not verdict.ok:
-            return {
-                "success": False,
-                "content": "",
-                "error": verdict.reason,
-                "needed": verdict.needed,
-            }
 
         if not os.path.exists(file_path):
             return {

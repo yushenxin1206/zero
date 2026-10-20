@@ -5,7 +5,6 @@ import os
 import difflib
 from typing import Any
 
-from zero import sandbox
 from zero.tools.base import Tool
 
 
@@ -63,17 +62,6 @@ class Edit(Tool):
         replace_all = kwargs.get("replace_all", False)
 
         file_path = os.path.expanduser(file_path)
-
-        # 硬边界：edit 既读又写，两侧都要过
-        for verdict in (sandbox.check_readable(file_path, context),
-                        sandbox.check_writable(file_path, context)):
-            if not verdict.ok:
-                return {
-                    "success": False,
-                    "error": verdict.reason,
-                    "needed": verdict.needed,
-                    "file_path": os.path.abspath(file_path),
-                }
 
         if not os.path.exists(file_path):
             return {

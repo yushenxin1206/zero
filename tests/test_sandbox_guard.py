@@ -32,7 +32,7 @@ sandbox.PROFILES_DIR = Path(_tmp.name) / "run"
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookContext
 from zero.models import ApprovalRequest, Origin, ToolContext
-from zero.sandbox_guard import SandboxGuard
+from zero.sandbox_guard import HANDLED_TOOLS, SandboxGuard
 from zero.tools.shell import Shell
 from zero.tools.write import Write
 
@@ -437,6 +437,56 @@ def test_file_tools_use_approval_gate():
     print("9. 进程内工具走审批门（read D 档 / write G 档授权 / 无人值守）ok")
 
 
+# ---------------------------------------------------------------------------
+# 10 / 11. 覆盖与失败语义
+# ---------------------------------------------------------------------------
+
+def test_guard_covers_all_file_tools():
+    """漏接检测：注册表里任何带 *_path 参数的工具都必须在 HANDLED_TOOLS 里。
+
+    守卫按工具名分发，所以"新增一个文件类工具却忘了登记"不会报错，只会**静默
+    失去检查**。这条测试就是那道报警线。
+    """
+    from zero.main import build_tool_registry
+
+    registry = build_tool_registry()
+    covered = 0
+    missing: list[str] = []
+    for schema in registry.schemas():
+        fn = schema.get("function", schema)
+        name = fn.get("name", "")
+        props = (fn.get("parameters") or {}).get("properties") or {}
+        if name and any(k.endswith("_path") for k in props):
+            covered += 1
+            if name not in HANDLED_TOOLS:
+                missing.append(name)
+    assert not missing, (
+        f"这些工具带 *_path 参数却没被守卫处理：{missing}——"
+        f"请登记进 sandbox_guard.HANDLED_TOOLS，或说明为何无需检查")
+    assert covered >= 3, f"只找到 {covered} 个带路径参数的工具，测试可能已失效"
+    print(f"10. 守卫覆盖全部 {covered} 个带路径参数的工具 ok")
+
+
+def test_guard_fail_closed_on_internal_error():
+    """守卫内部异常必须变成拒绝，不能被 hook 的 fail-open 吞成放行。"""
+    original = sandbox.check_readable
+
+    def boom(*_a, **_kw):
+        raise RuntimeError("injected guard bug")
+
+    sandbox.check_readable = boom
+    try:
+        guard = SandboxGuard(MessageBus())
+        decision = asyncio.run(
+            guard("read", {"file_path": "zero/sandbox.py"}, make_ctx()))
+    finally:
+        sandbox.check_readable = original
+
+    assert decision is not None and decision.proceed is False, decision
+    assert "fail-closed" in decision.reason, decision.reason
+    print("11. 守卫内部异常 → 拒绝（fail-closed）ok")
+
+
 if __name__ == "__main__":
     test_render()
     test_scope()
@@ -448,4 +498,6 @@ if __name__ == "__main__":
     test_shell_denied_roundtrip()
     test_launchd_mutation_blocked()
     test_file_tools_use_approval_gate()
+    test_guard_covers_all_file_tools()
+    test_guard_fail_closed_on_internal_error()
     print("all sandbox tests passed")

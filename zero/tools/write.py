@@ -4,7 +4,6 @@ Tool for writing file content
 import os
 from typing import Any
 
-from zero import sandbox
 from zero.tools.base import Tool
 
 
@@ -57,16 +56,6 @@ class Write(Tool):
         mode = kwargs.get("mode", "overwrite")
 
         file_path = os.path.expanduser(file_path)
-
-        # 硬边界：写方向是加法白名单。阶段 A 为 fail-closed，不弹审批
-        verdict = sandbox.check_writable(file_path, context)
-        if not verdict.ok:
-            return {
-                "success": False,
-                "error": verdict.reason,
-                "needed": verdict.needed,
-                "file_path": os.path.abspath(file_path),
-            }
 
         if mode not in ("overwrite", "append"):
             return {

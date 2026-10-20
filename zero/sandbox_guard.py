@@ -42,6 +42,10 @@ _EXPAND = (
     ApprovalOption(key="n", label="拒绝"),
 )
 
+# 守卫处理哪些工具。新增任何会碰文件/命令的工具时都必须登记这里——
+# tests/test_sandbox_guard.py::test_guard_covers_all_file_tools 会因此变红。
+HANDLED_TOOLS = ("shell", "read", "write", "edit")
+
 _TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-sandbox add-root <path>"
 
 _DEGRADED_UNATTENDED = (
@@ -134,9 +138,31 @@ class SandboxGuard:
     async def __call__(
             self, tool_name: str, kwargs: dict, ctx: HookContext,
     ) -> ToolCallDecision | None:
+        """fail-closed 包装。
+
+        hook 契约本身是 fail-open（handler 异常只记日志、视为不干预），但权限
+        守卫不能接受那个语义——守卫自身的 bug 若被吞成"放行"，就等于边界不存在。
+        所以这里自理 fail-closed：任何未预期异常都转成明确的拒绝决策，这也正是
+        hooks 文档给 fail-closed 守卫指定的做法（在正常返回路径里返回否决）。
+
+        TurnCancelled 除外：它是终止信号，必须透传。
+        """
+        try:
+            return await self._dispatch(tool_name, kwargs, ctx)
+        except TurnCancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 - 守卫内部异常必须变成拒绝
+            logger.exception("sandbox guard 内部异常，按拒绝处理")
+            return ToolCallDecision(
+                proceed=False,
+                reason=f"sandbox: 守卫内部异常，已按拒绝处理（fail-closed）：{e}")
+
+    async def _dispatch(
+            self, tool_name: str, kwargs: dict, ctx: HookContext,
+    ) -> ToolCallDecision | None:
         if tool_name == "shell":
             return await self._shell(kwargs, ctx)
-        if tool_name not in ("read", "write", "edit"):
+        if tool_name not in HANDLED_TOOLS:
             return None                     # 本守卫只管文件类工具与 shell
 
         path = kwargs.get("file_path", "")

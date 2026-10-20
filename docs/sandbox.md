@@ -23,14 +23,24 @@
 >   脱离沙箱与「沙箱不可用」降级 = `y` 允许一次 / `n` 拒绝（2 键）。
 >   （原 6 键的「本轮」「总是拒绝」已删除——它们正是 TTL / 轮次状态机的来源。
 >   扩权不给「本次」：只批一次必然引入调用级槽位，等于把那套状态机再请回来。）
-> - **阶段 A + B 均已实现**：
->   - 阶段 A：`read`/`write`/`edit` 入口 `check_readable`/`check_writable`，
->     越界 fail-closed + `needed` hint（不弹审批）。
->   - 阶段 B：越界改走**第 1 层审批门**——`sandbox_guard` 在工具执行前裁定。
+> - **检查已收敛为单源：`zero/sandbox_guard.py`**：
+>   - `read`/`write`/`edit` 越界走审批门，由守卫在**工具执行前**裁定。
 >     读方向是减法（全开减不可授予）→ **只有 D 档，永不进面板**；写方向 →
 >     D 档拒绝 / G 档审批（`s`/`a`/`n`），授权落会话扩权表。
->   - 两层是**纵深而非替代**：工具入口的 check 保留，作为守卫缺席时的硬边界。
+>   - **工具入口不再有 check**（早期版本曾加过，现已移除）。原因：它调用的是
+>     **同一个谓词、同样的入参、在同一个进程里**——守卫放行则 check 必过，
+>     守卫拒绝则工具不跑，**不构成独立的第二道墙**，只是把同一判断做两遍；
+>     而重复实现同一策略已经实测漂移过一次（探针标记：read 工具允许 / shell 拒绝）。
+>   - **fail-closed 由守卫自理**：hook 契约本身是 **fail-open**（handler 异常只
+>     记日志、视为不干预），所以守卫在 `__call__` 里包一层 try/except，异常时
+>     返回**明确拒绝**——否则守卫自身的 bug 就等于"静默放行"。
+>   - **覆盖由 `HANDLED_TOOLS` + 回归测试锁住**：新增带 `*_path` 参数的工具若
+>     没登记，`tests/test_sandbox_guard.py::test_guard_covers_all_file_tools`
+>     会变红。
 >   - 无人值守渠道下，文件类工具的 G 档与 shell 一样 fail-closed。
+>   - **仍存在的依赖**：边界现在依赖"守卫被装上"。`core/loop.py` 与
+>     `core/runner.py` 都是 `hooks or Hooks()`——不传 hooks 得到的是空基类而非
+>     `HookChain`，守卫不在链上。生产路径（`main.py::build_hooks`）一定会装。
 > - mach 面：**不裸放 `mach-lookup`**，并显式 deny `com.apple.SecurityServer` /
 >   `com.apple.securityd`。实测（本机 macOS）：裸放会让沙箱内进程连上 securityd，
 >   一旦如此，"deny 的钥匙串文件（`~/Library/Keychains`）"形同虚设——只挡文件、
