@@ -29,11 +29,15 @@ _tmp = tempfile.TemporaryDirectory()
 _tmp_root = Path(_tmp.name)
 store_mod.SESSIONS_ROOT = _tmp_root / "sessions"
 ctx_mod.MEMORY_PATH = _tmp_root / "memory.md"
+ctx_mod.current_project_memory_path = (
+    lambda: _tmp_root / ".zero" / "memory" / "memory.md")
 
+from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
-from zero.core.hooks import HookChain, ToolCallDecision
+from zero.core.hooks import HookChain, HookContext, ToolCallDecision
+from zero.subagent.manager import SubagentManager
 from zero.core.runner import AgentRunner, run_subagent
 from zero.models import (
     MessageBody,
@@ -318,6 +322,10 @@ def test_tool_context_inherited():
     ))
     assert tool.contexts[0].turn_id == "turn-42"
     assert tool.contexts[0].channel == CHANNEL
+    # run_subagent 原样透传父轮 tool_context（含 origin）。把 origin 盖章为
+    # subagent（以便 sandbox_guard 对需审批命令 fail-closed）是派发方
+    # SubagentManager 的职责，见测试 10；执行层不改写调用方给的路由字段。
+    assert tool.contexts[0].origin.kind == "user"
     assert seen["turn_id"] == "turn-42" and seen["channel"] == CHANNEL
     print("6. tool_context inherited ok")
 
@@ -373,6 +381,75 @@ def test_empty_reply_raises():
     print("8. empty reply raises RuntimeError ok")
 
 
+# ---------------------------------------------------------------------------
+# 9. subagent 来源的 shell 需审批命令 → fail-closed（不发审批、不挂起）
+# ---------------------------------------------------------------------------
+
+def test_subagent_shell_fail_closed():
+    from zero.sandbox_guard import SandboxGuard
+    from zero.models import Origin
+
+    guard = SandboxGuard(msg_bus=object())   # 有总线，但无人值守来源应短路
+    ctx = HookContext(
+        channel="cli", session_id="sid", turn_id="sub-1",
+        tool_context=ToolContext(
+            channel="cli", session_id="sid", turn_id="sub-1",
+            origin=Origin(kind="subagent", task_id="sub-1")),
+        stop_event=None,
+    )
+    # 需要扩权（G 档）的命令在无人值守来源下须立即拒绝，不得等待审批
+    target = str(Path.home() / "zero-subagent-selftest")
+    decision = asyncio.run(guard("shell", {
+        "command": "echo x", "write_paths": [target]}, ctx))
+    assert decision is not None and not decision.proceed, \
+        "subagent 的需审批命令应 fail-closed"
+    assert "无人值守" in decision.reason, f"拒绝原因应说明无人值守：{decision.reason}"
+    # 非 shell 工具不受影响
+    assert asyncio.run(guard("read", {"path": "x"}, ctx)) is None
+    print("9. subagent 需扩权 → fail-closed ok")
+
+
+# ---------------------------------------------------------------------------
+# 10. manager 派发：工具上下文 origin 盖章 subagent，回投/结果事件同源
+# ---------------------------------------------------------------------------
+
+def test_manager_stamps_subagent_origin():
+    tool = EchoTool()
+    bus = MessageBus()
+    install_provider([
+        [("tool_calls", TOOL_CALL_CHUNK)],
+        [("content", "子任务完成")],
+    ])
+    manager = SubagentManager(
+        msg_bus=bus,
+        config=stub_config(),
+        tool_registry=make_registry(tool),
+        hooks=HookChain(),
+    )
+    # 父轮是 cli 且带总线：若 origin 未被盖章为 subagent，sandbox_guard 会走
+    # 就地审批并在后台挂起——正是本次要修的现象
+    parent_tc = ToolContext(
+        channel="cli", session_id="sid-cli", turn_id="turn-9")
+
+    async def drive() -> str:
+        launched = manager.launch(
+            [{"prompt": "做点事", "description": "d"}], tool_context=parent_tc)
+        sid = launched[0]["id"]
+        await manager._tasks[sid]        # 等待子任务跑完并完成回投
+        return sid
+
+    sid = asyncio.run(drive())
+    # 工具在子 agent 内执行时收到的 origin 已被盖章为 subagent（含任务 id）
+    assert tool.contexts[0].origin.kind == "subagent"
+    assert tool.contexts[0].origin.task_id == sid
+    # 回投消息与结果事件都带 subagent origin，channel 端据此区分后台来源
+    msg = bus.in_queue.queue.get_nowait()
+    assert msg.origin.kind == "subagent" and msg.origin.task_id == sid
+    event = bus.stream_queue.queue.get_nowait()
+    assert event.kind == "subagent_result" and event.origin.kind == "subagent"
+    print("10. manager stamps subagent origin ok")
+
+
 if __name__ == "__main__":
     test_single_shot_with_tools()
     test_isolation_from_session_store()
@@ -382,4 +459,6 @@ if __name__ == "__main__":
     test_tool_context_inherited()
     test_hooks_apply_to_subagent()
     test_empty_reply_raises()
+    test_subagent_shell_fail_closed()
+    test_manager_stamps_subagent_origin()
     print("all subagent tests passed")

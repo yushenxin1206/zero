@@ -3,8 +3,9 @@
 
 主对话通过 subagent 工具提交一批相互独立的任务，manager 为每个任务起一个
 asyncio task（信号量限制并发），在隔离的 SubAgentContext 中单次执行：不落
-任何会话历史、不审批（hooks=None）、工具集为裁剪后的子集（无 shell / 无递归
-subagent / 无定时任务）。
+任何会话历史；工具集与主对话同源，仅剔除"派生新子 agent"（禁止递归）；hooks
+也共用同一链——shell 等需人工审批的操作在后台无人值守，由 shell_guard 对
+subagent 来源直接 fail-closed（预置 allow 规则可放行），不会挂起等审批超时。
 
 每个子任务完成后，把「任务指令 + 结果」作为一条新的 MessageIn 回投到
 bus.in_queue——AgentLoop 按普通消息处理，走一次常规 turn 并把最终 MessageOut
@@ -16,6 +17,7 @@ import logging
 
 from zero.bus.queue import MessageBus
 from zero.config import Config
+from zero.core.hooks import Hooks
 from zero.core.runner import run_subagent
 from zero.models import (
     MessageBody, MessageIn, Origin, StreamEvent, ToolContext)
@@ -35,12 +37,15 @@ class SubagentManager:
             msg_bus: MessageBus,
             config: Config,
             tool_registry: ToolRegistry,
+            hooks: Hooks | None = None,
             max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     ):
         self.msg_bus = msg_bus
         self.config = config
-        # 裁剪后的子 agent 工具集（调用方用 ToolRegistry.subset 构造）
+        # 子 agent 工具集（主对话全量剔除 subagent 后的子集）
         self.tool_registry = tool_registry
+        # 与主对话共用的 hook 链（shell_guard 等护栏；None 则无护栏）
+        self.hooks = hooks
         self._sem = asyncio.Semaphore(max_concurrency)
         # 在途子任务：id -> asyncio.Task，shutdown 时据此取消
         self._tasks: dict[str, asyncio.Task] = {}
@@ -68,6 +73,12 @@ class SubagentManager:
             tool_context: ToolContext) -> None:
         """执行单个子任务并回投结果。task 名固定为 subagent，走独立运行时
         （可在 agentRuntimes.subagent 绑定与主对话不同的模型）。"""
+        # 子 agent 的工具调用沿用父轮的路由字段（channel/turn_id 等），但
+        # origin 标记为 subagent：shell_guard 据此识别"后台无人值守"，对需
+        # 审批的命令直接 fail-closed，而不是发审批请求后干等超时。回投与
+        # 结果事件仍用父轮 tool_context 路由。
+        sub_tool_context = tool_context.model_copy(update={
+            "origin": Origin(kind="subagent", task_id=sid)})
         try:
             async with self._sem:
                 result = await run_subagent(
@@ -75,8 +86,8 @@ class SubagentManager:
                     config=self.config,
                     task="subagent",
                     tool_registry=self.tool_registry,
-                    hooks=None,  # 子 agent 行为不需要审批
-                    tool_context=tool_context,
+                    hooks=self.hooks,  # 与主对话共用护栏（shell_guard 等）
+                    tool_context=sub_tool_context,
                 )
         except asyncio.CancelledError:
             # 进程退出/显式取消：不回投（会话可能已收摊）

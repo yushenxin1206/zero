@@ -5,7 +5,13 @@ import unittest
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookChain, HookContext
-from zero.plugins.shell_guard import approval
+from zero.models import ApprovalOption
+from zero.sandbox_guard import request
+
+_OPTIONS = (
+    ApprovalOption(key="y", label="允许一次"),
+    ApprovalOption(key="n", label="拒绝"),
+)
 
 
 class TestApprovalStop(unittest.TestCase):
@@ -16,11 +22,11 @@ class TestApprovalStop(unittest.TestCase):
         stop = asyncio.Event()
 
         async def main():
+            ctx = HookContext(channel="cli", session_id="s", turn_id="t",
+                              stop_event=stop)
             req_task = asyncio.create_task(
-                approval.request(
-                    bus, channel="cli", session_id="s", turn_id="t",
-                    command="echo hi", reason="test",
-                    stop_event=stop))
+                request(bus, ctx, title="shell 命令审批", summary="echo hi",
+                        detail="test", options=_OPTIONS))
             await asyncio.sleep(0)  # 让 request 注册并进入等待
             stop.set()               # 模拟用户终止
             with self.assertRaises(TurnCancelled):

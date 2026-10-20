@@ -6,6 +6,16 @@
 >
 > 现状：`core/hooks.py` 是一个无参无返回、从未被调用的 `Hooks` 桩类，
 > 方法名还有拼写错误（`before_interation`）。本方案整体重写该文件。
+>
+> **现状（已实现，取代本文的分期计划）**：hook 面已收缩为**单点位**
+> `before_tool_call`。其余五个点位（`before_turn` / `before_iteration` /
+> `after_llm_response` / `before_tool_result` / `before_msg_out`）及其
+> Decision 类已删除——全仓库零消费者（唯一真实调用点是 `core/runner.py`
+> 的 `hooks.before_tool_call`）。需要时再加，成本是"一个方法 + 一个
+> Decision 类"。
+>
+> 权限守卫见 `zero/sandbox_guard.py`，判定与内核沙箱见 `zero/sandbox.py`；
+> 本文第 5 节的插件目录 `plugins/shell_guard/` 已整体删除。
 
 ## 1. 设计目标与原则
 

@@ -24,6 +24,20 @@ ZERO_ROOT = HOME / '.zero'
 CONFIG_PATH = ZERO_ROOT / 'config.json'
 MEMORY_PATH = ZERO_ROOT / "memory.md"
 
+# 项目级记忆的存放目录名（相对运行目录）。项目级记忆由模型用 write/edit
+# 工具维护，代码侧只读不写。
+PROJECT_ZERO_DIRNAME = ".zero"
+
+
+def project_memory_path(cwd: Path) -> Path:
+    """项目级记忆文件路径：<cwd>/.zero/memory/memory.md。
+
+    与用户级 MEMORY_PATH（~/.zero/memory.md）区分：后者是跨项目的用户偏好
+    与背景，前者是当前项目的持久事实与约定。cwd 由调用方传入（通常
+    core/context.get_cwd()），避免本模块反向依赖 core。
+    """
+    return cwd / PROJECT_ZERO_DIRNAME / "memory" / "memory.md"
+
 # 工具结果截断阈值（字符）。core/runner.py 执行截断、core/context.py
 # 提示词说明共用同一值，只在此定义一次，防止两处漂移。
 TOOL_RESULT_MAX_CHARS = 10000

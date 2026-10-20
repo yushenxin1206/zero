@@ -1,7 +1,6 @@
 import argparse
 import asyncio
 import logging
-from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookChain, Hooks
@@ -22,14 +21,10 @@ from zero.config import ZERO_ROOT, default_config
 
 log = logging.getLogger(__name__)
 
-# 子 agent 不应持有的工具：shell（不可审批的后台执行）、递归 subagent
-# （避免无限委派）、定时任务（子任务不应自行调度）
-SUBAGENT_EXCLUDED_TOOLS = frozenset({
-    "shell",
-    "subagent",
-    "create_scheduled_task",
-    "cancel_scheduled_task",
-})
+# 子 agent 拿到的能力与主对话同源，仅剔除递归 subagent（避免无限委派）。
+# shell 等需人工审批的操作在后台无人值守，由 sandbox_guard 对 subagent 来源
+# 直接 fail-closed（预置 zero-sandbox add-root 可长期放行），不会挂起等审批超时。
+SUBAGENT_EXCLUDED_TOOLS = frozenset({"subagent"})
 
 
 def build_tool_registry() -> ToolRegistry:
@@ -44,22 +39,11 @@ def build_tool_registry() -> ToolRegistry:
 
 
 def build_hooks(msg_bus: MessageBus) -> Hooks:
-    """组合根：构建 hook 链并注册插件。无插件时是纯 no-op 链，
+    """组合根：构建 hook 链并挂上权限守卫。无守卫时是纯 no-op 链，
     运行时行为与无 hooks 逐字节一致。"""
     chain = HookChain()
-    try:
-        from zero.plugins.shell_guard import install
-    except ModuleNotFoundError as e:
-        # 插件目录不存在属正常；插件自身的依赖缺失则要暴露出来
-        if e.name not in ("zero.plugins", "zero.plugins.shell_guard"):
-            raise
-        # 目录在却导入失败 → 多半是包安装异常。护栏静默失效很危险，必须 loudly 提醒。
-        if (Path(__file__).parent / "plugins").exists():
-            log.warning(
-                "plugins 目录存在但 %r 导入失败：shell_guard 未生效！"
-                "请检查 zero 包安装并重启", e.name)
-    else:
-        install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
+    from zero.sandbox_guard import install
+    install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
     return chain
 
 
@@ -86,12 +70,13 @@ async def run(cli_only: bool = False):
     msg_bus = MessageBus()
     registry = build_tool_registry()
     hooks = build_hooks(msg_bus)
-    # 子 agent 管理器：工具集从主对话全量裁剪（无 shell / 无递归 subagent /
-    # 无定时任务），再把 subagent 工具注册回主对话注册表
+    # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
+    # 同一条链——sandbox_guard 对子 agent 的需审批命令直接 fail-closed
     subagent_manager = SubagentManager(
         msg_bus=msg_bus,
         config=default_config,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
+        hooks=hooks,
     )
     registry.register(SubagentTool(subagent_manager))
     agent_loop = build_agent_loop(msg_bus, tool_registry=registry, hooks=hooks)
