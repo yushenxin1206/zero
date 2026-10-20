@@ -10,7 +10,7 @@
 （用户资产）。没有 TTL、没有轮次表：要长期放行就落 profile.json，
 其余随会话消失。
 
-无人值守渠道（scheduler / subagent / 非 CLI）一律 fail-closed：
+无人值守渠道（scheduler / subagent / 非交互渠道）一律 fail-closed：
 只放行 P 档，G 档拒绝并引导用户预置 ``zero-permission add-root``。
 """
 import asyncio
@@ -47,6 +47,10 @@ _EXPAND = (
 HANDLED_TOOLS = ("shell", "read", "write", "edit")
 
 _TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-permission add-root <path>"
+
+# 有人值守、可以就地弹审批面板作答的渠道。新增交互渠道（如 web 桌面窗口）
+# 时在此登记；飞书等异步渠道与 scheduler/subagent 来源仍然 fail-closed。
+ATTENDED_CHANNELS = frozenset({"cli", "web"})
 
 _DEGRADED_UNATTENDED = (
     "permission: 本机内核沙箱不可用（探针未通过），且当前渠道无人值守，"
@@ -123,8 +127,8 @@ class PermissionGuard:
         self.msg_bus = msg_bus
 
     def _attended(self, ctx: HookContext) -> bool:
-        """有人能回答审批吗？非 CLI 渠道与后台来源都算无人值守。"""
-        if self.msg_bus is None or ctx.channel != "cli":
+        """有人能回答审批吗？非交互渠道与后台来源都算无人值守。"""
+        if self.msg_bus is None or ctx.channel not in ATTENDED_CHANNELS:
             return False
         origin = ctx.tool_context.origin if ctx.tool_context else None
         if origin is not None and origin.kind in ("scheduler", "subagent"):

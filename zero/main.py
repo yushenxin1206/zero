@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookChain, Hooks
@@ -62,11 +63,19 @@ def build_maintenance_engine() -> MaintenanceEngine:
     return MaintenanceEngine(config=default_config)
 
 
-async def run(cli_only: bool = False):
-    """
-    启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
-    共享同一个 MessageBus / AgentLoop / Scheduler。
-    """
+@dataclass
+class CoreRuntime:
+    """一个进程内的核心组件组合；CLI / web 两种启动方式共用。"""
+    msg_bus: MessageBus
+    tool_registry: ToolRegistry
+    hooks: Hooks
+    subagent_manager: SubagentManager
+    agent_loop: AgentLoop
+    scheduler: Scheduler
+    maintenance: MaintenanceEngine
+
+
+def build_core() -> CoreRuntime:
     msg_bus = MessageBus()
     registry = build_tool_registry()
     hooks = build_hooks(msg_bus)
@@ -80,51 +89,143 @@ async def run(cli_only: bool = False):
     )
     registry.register(SubagentTool(subagent_manager))
     agent_loop = build_agent_loop(msg_bus, tool_registry=registry, hooks=hooks)
-    scheduler = Scheduler(msg_bus=msg_bus)
+    return CoreRuntime(
+        msg_bus=msg_bus,
+        tool_registry=registry,
+        hooks=hooks,
+        subagent_manager=subagent_manager,
+        agent_loop=agent_loop,
+        scheduler=Scheduler(msg_bus=msg_bus),
+        maintenance=build_maintenance_engine(),
+    )
 
-    maintenance_engine = build_maintenance_engine()
 
-    async def guard(coro, name: str):
-        """运行后台协程；单个 channel 崩溃只记日志，不拖垮整体。"""
-        try:
-            await coro
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            log.exception("%s crashed", name)
+async def _guard(coro, name: str):
+    """运行后台协程；单个 channel 崩溃只记日志，不拖垮整体。"""
+    try:
+        await coro
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.exception("%s crashed", name)
 
-    background: list[asyncio.Task] = [
-        asyncio.create_task(guard(scheduler.run(), "scheduler")),
-        asyncio.create_task(guard(maintenance_engine.run(), "maintenance")),
-        asyncio.create_task(guard(msg_bus.run_out_dispatcher(), "out-dispatcher")),
-        asyncio.create_task(guard(msg_bus.run_stream_dispatcher(), "stream-dispatcher")),
+
+def start_background(core: CoreRuntime) -> list[asyncio.Task]:
+    return [
+        asyncio.create_task(_guard(core.scheduler.run(), "scheduler")),
+        asyncio.create_task(_guard(core.maintenance.run(), "maintenance")),
+        asyncio.create_task(_guard(
+            core.msg_bus.run_out_dispatcher(), "out-dispatcher")),
+        asyncio.create_task(_guard(
+            core.msg_bus.run_stream_dispatcher(), "stream-dispatcher")),
     ]
 
+
+def start_feishu(msg_bus: MessageBus) -> asyncio.Task | None:
+    feishu_cfg = default_config.channels.feishu
+    if not feishu_cfg.app_id:
+        log.warning("未配置飞书 app_id，跳过 feishu channel")
+        return None
+    channel = FeishuChannel(config=feishu_cfg, msg_bus=msg_bus)
+    # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
+    return asyncio.create_task(_guard(channel.start(), "feishu"))
+
+
+async def run(cli_only: bool = False):
+    """
+    启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
+    共享同一个 MessageBus / AgentLoop / Scheduler。
+    """
+    core = build_core()
+    background = start_background(core)
     if not cli_only:
-        feishu_cfg = default_config.channels.feishu
-        if feishu_cfg.app_id:
-            channel = FeishuChannel(config=feishu_cfg, msg_bus=msg_bus)
-            # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
-            background.append(asyncio.create_task(guard(channel.start(), "feishu")))
-        else:
-            log.warning("未配置飞书 app_id，跳过 feishu channel")
+        if (feishu := start_feishu(core.msg_bus)) is not None:
+            background.append(feishu)
 
     cli_channel = CLIChannel(
-        msg_bus=msg_bus, config=default_config, tool_registry=registry)
-    core = asyncio.create_task(agent_loop.run())
+        msg_bus=core.msg_bus, config=default_config,
+        tool_registry=core.tool_registry)
+    core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
 
     # CLI 退出（/quit）或核心 loop 结束时，取消所有后台任务，
     # 并取消在途子 agent（其回投消息已无会话可送达）
     done, pending = await asyncio.wait(
-        {core, cli_task}, return_when=asyncio.FIRST_COMPLETED)
+        {core_task, cli_task}, return_when=asyncio.FIRST_COMPLETED)
     for t in background:
         t.cancel()
-    await subagent_manager.shutdown()
-    task_names = {core: "agent-loop", cli_task: "cli-channel"}
+    await core.subagent_manager.shutdown()
+    task_names = {core_task: "agent-loop", cli_task: "cli-channel"}
     for t in done:
         if not t.cancelled() and (exc := t.exception()) is not None:
             log.error("%s task failed", task_names.get(t, "unknown"), exc_info=exc)
+
+
+def run_web_desktop():
+    """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。"""
+    from zero.channels.web.shell import run_desktop
+
+    web_cfg = default_config.channels.web
+
+    async def backend(holder: dict):
+        from zero.channels.web.server import WebChannel
+
+        core = build_core()
+        background = start_background(core)
+        if (feishu := start_feishu(core.msg_bus)) is not None:
+            background.append(feishu)
+
+        channel = WebChannel(msg_bus=core.msg_bus, config=default_config)
+        holder["stop"] = channel.stop_event
+        if holder.get("closed"):
+            channel.stop_event.set()
+
+        core_task = asyncio.create_task(core.agent_loop.run())
+        serve_task = asyncio.create_task(channel.serve())
+        try:
+            try:
+                await channel.wait_ready()
+            except Exception as exc:
+                log.exception("web channel failed to start")
+                holder["error"] = f"web 服务启动失败：{exc}"
+                return
+            holder.update(
+                ready=True, wsUrl=channel.ws_url, token=channel.token)
+
+            done, _ = await asyncio.wait(
+                {core_task, serve_task}, return_when=asyncio.FIRST_COMPLETED)
+            names = {core_task: "agent-loop", serve_task: "web-channel"}
+            for t in done:
+                if not t.cancelled() and (exc := t.exception()) is not None:
+                    log.error("%s task failed", names.get(t, "unknown"),
+                              exc_info=exc)
+        finally:
+            # 窗口关闭后必须等所有任务真正收尾再关闭事件循环，
+            # 否则会留下 "Task was destroyed but it is pending" 告警
+            pending = background + [core_task, serve_task]
+            for t in pending:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            await core.subagent_manager.shutdown()
+
+            # 兜底：core 内部还有临时任务（如 agent-loop 的 stop 信号消费者、
+            # channel 的 worker），它们被各自 finally 取消但未必等到收敛。
+            # 事件循环即将关闭，必须全部收尾，否则 GC 时会报
+            # "Task was destroyed but it is pending!"
+            current = asyncio.current_task()
+            leftover = [t for t in asyncio.all_tasks() if t is not current]
+            if leftover:
+                for t in leftover:
+                    t.cancel()
+                await asyncio.gather(*leftover, return_exceptions=True)
+
+    run_desktop(
+        backend,
+        title="zero",
+        width=web_cfg.width,
+        height=web_cfg.height,
+    )
 
 
 def parse_args():
@@ -132,6 +233,10 @@ def parse_args():
     parser.add_argument(
         "--cli", action="store_true",
         help="只运行 CLI 通道，不连接飞书（默认两个 channel 同时启动）",
+    )
+    parser.add_argument(
+        "--web", action="store_true",
+        help="以 pywebview 桌面窗口运行 web 通道（需安装 .[web] 可选依赖）",
     )
     return parser.parse_args()
 
@@ -160,7 +265,10 @@ def main():
     quiet_third_party_loggers()
 
     try:
-        asyncio.run(run(cli_only=args.cli))
+        if args.web:
+            run_web_desktop()
+        else:
+            asyncio.run(run(cli_only=args.cli))
     except KeyboardInterrupt:
         pass
 

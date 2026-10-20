@@ -376,9 +376,22 @@ class FeishuConfig(Base):
     app_secret: str = ''
 
 
+class WebConfig(Base):
+    """Web 通道配置：本地 WebSocket 服务 + pywebview 桌面窗口。
+
+    port=0 表示由系统分配空闲端口，窗口通过 js_api 的 bootstrap()
+    取得实际地址，避免固定端口被占用时整体启动失败。
+    """
+    host: str = '127.0.0.1'
+    port: int = 0
+    width: int = 1120
+    height: int = 760
+
+
 class ChannelConfigs(Base):
     """Channel configurations container for extensible channel support."""
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+    web: WebConfig = Field(default_factory=WebConfig)
 
 
 class CompactConfig(Base):

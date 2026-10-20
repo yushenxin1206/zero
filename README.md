@@ -1,6 +1,6 @@
 # Zero
 
-一个专业高效的命令行 AI 助手，支持 CLI 与飞书双通道，共享同一个消息总线与 Agent 循环。
+一个专业高效的 AI 助手，支持 CLI、飞书与 pywebview 桌面窗口三种通道，共享同一个消息总线与 Agent 循环。
 
 ## 环境要求
 
@@ -30,6 +30,10 @@ zero
 
 # 只运行 CLI 通道
 zero --cli
+
+# 以 pywebview 桌面窗口运行 web 通道（先安装可选依赖）
+uv pip install -e ".[web]"
+zero --web
 ```
 
 激活虚拟环境后，`zero` 可在任意目录下运行；system prompt 中的工作目录会实时跟随命令实际运行时所在的目录。
