@@ -22,8 +22,8 @@ from zero.config import ZERO_ROOT, default_config
 log = logging.getLogger(__name__)
 
 # 子 agent 拿到的能力与主对话同源，仅剔除递归 subagent（避免无限委派）。
-# shell 等需人工审批的操作在后台无人值守，由 sandbox_guard 对 subagent 来源
-# 直接 fail-closed（预置 zero-sandbox add-root 可长期放行），不会挂起等审批超时。
+# shell 等需人工审批的操作在后台无人值守，由 permission.guard 对 subagent 来源
+# 直接 fail-closed（预置 zero-permission add-root 可长期放行），不会挂起等审批超时。
 SUBAGENT_EXCLUDED_TOOLS = frozenset({"subagent"})
 
 
@@ -42,7 +42,7 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
     """组合根：构建 hook 链并挂上权限守卫。无守卫时是纯 no-op 链，
     运行时行为与无 hooks 逐字节一致。"""
     chain = HookChain()
-    from zero.sandbox_guard import install
+    from zero.permission.guard import install
     install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
     return chain
 
@@ -71,7 +71,7 @@ async def run(cli_only: bool = False):
     registry = build_tool_registry()
     hooks = build_hooks(msg_bus)
     # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
-    # 同一条链——sandbox_guard 对子 agent 的需审批命令直接 fail-closed
+    # 同一条链——permission.guard 对子 agent 的需审批命令直接 fail-closed
     subagent_manager = SubagentManager(
         msg_bus=msg_bus,
         config=default_config,

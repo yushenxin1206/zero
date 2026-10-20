@@ -14,7 +14,7 @@
 > 的 `hooks.before_tool_call`）。需要时再加，成本是"一个方法 + 一个
 > Decision 类"。
 >
-> 权限守卫见 `zero/sandbox_guard.py`，判定与内核沙箱见 `zero/sandbox.py`；
+> 权限守卫见 `zero/permission/guard.py`，包络判定与 macOS 后端见 `zero/permission/`；
 > 本文第 5 节的插件目录 `plugins/shell_guard/` 已整体删除。
 
 ## 1. 设计目标与原则

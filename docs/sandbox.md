@@ -12,18 +12,21 @@
 > - 判定**看资源不看命令文本**：glob 规则引擎、内置 deny/allow 规则表、
 >   `is_builtin_skill_script` 启发式全部删除。shell 命令默认落在 P 档；
 >   D 档只在"能力申请携带了不可授予资源"时判定。
-> - 实现形态：`zero/sandbox.py`（包络 / profile 渲染 / `wrap` / 双向探针 /
->   `check_readable` / `check_writable` / CLI）+ `zero/sandbox_guard.py`
->   （`before_tool_call` handler + 审批分发）。`plugins/` 整目录已删除。
+> - 实现形态：**`zero/permission/` 包**——`envelope.py`（包络 / P·G·D / 扩权表 /
+>   `profile.json` / CLI）、`seatbelt.py`（macOS 后端：SBPL 渲染 / `wrap` / 双向探针）、
+>   `guard.py`（`before_tool_call` handler + 审批分发）。`plugins/` 整目录已删除。
+>   依赖方向单向：`guard → envelope → seatbelt`。
+>   **§3 起的正文是 v2 设计原文**（当时规划为单文件 `zero/sandbox.py`、五档模型），
+>   实现形态与档位以本节为准，下文仅作决策留档。
 > - 配置文件：`~/.zero/profile.json`（键 `extraRoots` / `unsandbox`）。
 >   `shell_guard.json` 弃用；**现有 glob 规则无法自动迁移**，需手工
->   `zero-sandbox add-root <path>` 重建。
-> - CLI：`zero-sandbox check | list | add-root | add-unsandbox`（原 `zero-guard` 改名）。
+>   `zero-permission add-root <path>` 重建。
+> - CLI：`zero-permission check | list | add-root | add-unsandbox`（原 `zero-guard` 改名）。
 > - 审批面板按键：扩权 = `s` 本会话允许 / `a` 总是允许 / `n` 拒绝（3 键）；
 >   脱离沙箱与「沙箱不可用」降级 = `y` 允许一次 / `n` 拒绝（2 键）。
 >   （原 6 键的「本轮」「总是拒绝」已删除——它们正是 TTL / 轮次状态机的来源。
 >   扩权不给「本次」：只批一次必然引入调用级槽位，等于把那套状态机再请回来。）
-> - **检查已收敛为单源：`zero/sandbox_guard.py`**：
+> - **检查已收敛为单源：`zero/permission/guard.py`**：
 >   - `read`/`write`/`edit` 越界走审批门，由守卫在**工具执行前**裁定。
 >     读方向是减法（全开减不可授予）→ **只有 D 档，永不进面板**；写方向 →
 >     D 档拒绝 / G 档审批（`s`/`a`/`n`），授权落会话扩权表。
@@ -35,7 +38,7 @@
 >     记日志、视为不干预），所以守卫在 `__call__` 里包一层 try/except，异常时
 >     返回**明确拒绝**——否则守卫自身的 bug 就等于"静默放行"。
 >   - **覆盖由 `HANDLED_TOOLS` + 回归测试锁住**：新增带 `*_path` 参数的工具若
->     没登记，`tests/test_sandbox_guard.py::test_guard_covers_all_file_tools`
+>     没登记，`tests/test_permission.py::test_guard_covers_all_file_tools`
 >     会变红。
 >   - 无人值守渠道下，文件类工具的 G 档与 shell 一样 fail-closed。
 >   - **仍存在的依赖**：边界现在依赖"守卫被装上"。`core/loop.py` 与
@@ -59,7 +62,7 @@
 >     `global-name-prefix` 两种写法**均无效**（print 照样 rc=0），因为它不经
 >     `mach-lookup` 可达。同一个 deny 对具名服务是有效的（securityd ✓、cfprefsd ✓），
 >     所以别再试 deny launchd。
->   - 报警线：`tests/test_sandbox_guard.py::test_launchd_mutation_blocked` 锁住
+>   - 报警线：`tests/test_permission.py::test_launchd_mutation_blocked` 锁住
 >     "读允许 / 写拒绝"。macOS 若翻转该语义，测试立刻变红——否则我们会静默失去
 >     这道墙。
 > - **已知残留②：`(import "system.sb")` 基线比威胁模型宽**（launchd 可达即证据）。

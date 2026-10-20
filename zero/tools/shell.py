@@ -6,7 +6,7 @@ import os
 import shlex
 from typing import Any
 
-from zero import sandbox
+from zero.permission import envelope, seatbelt
 from zero.tools.base import Tool
 
 # 内核沙箱拒绝的 stderr 特征（macOS：Operation not permitted）
@@ -78,15 +78,15 @@ class Shell(Tool):
         is_windows = os.name == "nt"
 
         # 内核沙箱：脱离白名单命中或本机不可用时退化为裸执行——两种情况都
-        # 已在 sandbox_guard 里审批过，这里不重复判定。
+        # 已在 permission.guard 里审批过，这里不重复判定。
         profile_path = None
         argv: list[str] = []
         if not is_windows:
             argv = shlex.split(command)
-            if sandbox.available() and not sandbox.matches_unsandbox(argv):
-                profile = sandbox.render_profile(
-                    sandbox.current_envelope(context))
-                argv, profile_path = sandbox.wrap(argv, profile)
+            if envelope.available() and not envelope.matches_unsandbox(argv):
+                profile = seatbelt.render_profile(
+                    envelope.current_envelope(context))
+                argv, profile_path = seatbelt.wrap(argv, profile)
 
         try:
             if is_windows:

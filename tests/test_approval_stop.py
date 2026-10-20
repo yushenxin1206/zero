@@ -6,7 +6,7 @@ from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookChain, HookContext
 from zero.models import ApprovalOption
-from zero.sandbox_guard import request
+from zero.permission.guard import request
 
 _OPTIONS = (
     ApprovalOption(key="y", label="允许一次"),

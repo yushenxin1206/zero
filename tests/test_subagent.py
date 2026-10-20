@@ -323,7 +323,7 @@ def test_tool_context_inherited():
     assert tool.contexts[0].turn_id == "turn-42"
     assert tool.contexts[0].channel == CHANNEL
     # run_subagent 原样透传父轮 tool_context（含 origin）。把 origin 盖章为
-    # subagent（以便 sandbox_guard 对需审批命令 fail-closed）是派发方
+    # subagent（以便 permission.guard 对需审批命令 fail-closed）是派发方
     # SubagentManager 的职责，见测试 10；执行层不改写调用方给的路由字段。
     assert tool.contexts[0].origin.kind == "user"
     assert seen["turn_id"] == "turn-42" and seen["channel"] == CHANNEL
@@ -386,10 +386,10 @@ def test_empty_reply_raises():
 # ---------------------------------------------------------------------------
 
 def test_subagent_shell_fail_closed():
-    from zero.sandbox_guard import SandboxGuard
+    from zero.permission.guard import PermissionGuard
     from zero.models import Origin
 
-    guard = SandboxGuard(msg_bus=object())   # 有总线，但无人值守来源应短路
+    guard = PermissionGuard(msg_bus=object())   # 有总线，但无人值守来源应短路
     ctx = HookContext(
         channel="cli", session_id="sid", turn_id="sub-1",
         tool_context=ToolContext(
@@ -426,7 +426,7 @@ def test_manager_stamps_subagent_origin():
         tool_registry=make_registry(tool),
         hooks=HookChain(),
     )
-    # 父轮是 cli 且带总线：若 origin 未被盖章为 subagent，sandbox_guard 会走
+    # 父轮是 cli 且带总线：若 origin 未被盖章为 subagent，permission.guard 会走
     # 就地审批并在后台挂起——正是本次要修的现象
     parent_tc = ToolContext(
         channel="cli", session_id="sid-cli", turn_id="turn-9")

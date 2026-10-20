@@ -2,6 +2,10 @@
 
 > 状态：已落地（2026-09-17，全部测试通过）
 > 范围：`models.py`、`core/`、`channels/`、`scheduler/`、`plugins/shell_guard/`、`tools/scheduler_task.py`
+>
+> **路径已过期**：文中 `plugins/shell_guard/` 现已删除，等价消费方迁到
+> `zero/permission/`。正文保留原样——它记录的是当时的文件与行号，改写会变形
+> 成"描述一次从未发生过的迁移"。
 
 ## 1. 背景
 

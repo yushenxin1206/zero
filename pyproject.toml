@@ -18,10 +18,10 @@ dependencies = [
     "prompt-toolkit>=3.0.0",
 ]
 
-# 控制台命令：pip install -e . 后生成 zero.exe / zero-sandbox.exe，任意目录可用
+# 控制台命令：pip install -e . 后生成 zero.exe / zero-permission.exe，任意目录可用
 [project.scripts]
 zero = "zero.main:main"
-zero-sandbox = "zero.sandbox:main"
+zero-permission = "zero.permission.envelope:main"
 
 # 单一 stable 顶层包 zero/，内部子模块随包自动发现，
 # 结构性改动（增删/重命名子模块）不再需要重装，避免 editable MAPPING 过期。
@@ -32,6 +32,7 @@ packages = [
     "zero.channels",
     "zero.core",
     "zero.maintenance",
+    "zero.permission",
     "zero.providers",
     "zero.scheduler",
     "zero.session",

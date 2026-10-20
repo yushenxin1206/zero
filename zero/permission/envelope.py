@@ -1,19 +1,17 @@
 """
-能力包络与内核沙箱。
+能力包络与判定（跨平台）。
 
-本模块是唯一持有包络的地方：判定、profile 渲染、包裹、探测都在这里。
-策略文件 ``~/.zero/profile.json`` 是用户资产，模型不可写（写它属于 D 档）。
+持有包络本身：读/写集合、P/G/D 判定、会话扩权表，以及策略文件
+``~/.zero/profile.json``（用户资产，模型不可写；写它属于 D 档）。
 
 三个执行档位——判定看**资源**，不看命令文本：
-    P  包络内    → 沙箱内直接跑，免审批
-    G  可授予    → 需审批（面板：本次 / 本会话 / 总是 / 拒绝）
+    P  包络内    → 免审批
+    G  可授予    → 需审批（面板：本会话 / 总是 / 拒绝）
     D  不可授予  → 永不进面板，结构化拒绝
 
-两个执行平面：
-    子进程平面（shell）：内核 Seatbelt 强制，``wrap()`` 把 argv 包进 sandbox-exec
-    进程内平面（read/write/edit）：应用层护栏，``check_readable`` / ``check_writable``
-
-``available()`` 不通过时**不许自称"沙箱内免审批"**，降级为每次审批。
+平台相关的部分（SBPL 渲染、sandbox-exec 包裹、自检执行）在 ``seatbelt``
+后端里；本模块通过 ``available()`` 向它提问。非 macOS 上这里的逻辑照常成立，
+只是 ``available()`` 为 False，于是没有「包络内免审批」。
 """
 
 from __future__ import annotations
@@ -21,13 +19,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import subprocess
 import sys
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 from zero.config import HOME, ZERO_ROOT
+from zero.permission import seatbelt
 from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -44,12 +41,9 @@ D = "D"  # 不可授予：拒绝，无面板
 # 常量
 # ---------------------------------------------------------------------------
 
-SANDBOX_EXEC = Path("/usr/bin/sandbox-exec")
 PROFILE_FILE = ZERO_ROOT / "profile.json"
-PROFILES_DIR = ZERO_ROOT / "run"
-PROBE_MARK = ".sandbox-probe"   # 探针标记文件，落在 PROFILES_DIR 内（不污染用户仓库）
 
-# 不可授予：凭证与策略文件。读方向是减法，这份名单恒定渲染进 profile。
+# 不可授予：凭证与策略文件。读方向是减法，这份名单就是唯一的读禁止集合。
 UNGRANTABLE_READ: tuple[Path, ...] = (
     HOME / ".ssh",
     HOME / ".aws",
@@ -75,10 +69,6 @@ UNGRANTABLE_WRITE: tuple[Path, ...] = (
     ZERO_ROOT / "config.json",
     ZERO_ROOT / "scheduler",
 )
-
-
-class SandboxError(Exception):
-    """包络渲染/包裹失败。一律 fail-closed，不允许静默降级。"""
 
 
 # ---------------------------------------------------------------------------
@@ -136,93 +126,23 @@ class Envelope:
                 roots.append(r)
         return roots
 
-
-def _quote(path: Path) -> str:
-    s = str(path)
-    if any(c in s for c in ('"', "\\", "\n")):
-        raise SandboxError(f"路径含无法安全写入 profile 的字符：{s!r}")
-    return f'"{s}"'
-
-
-def render_profile(env: Envelope) -> str:
-    """包络 → SBPL 文本。字面量插值，cat 出来即最终语义，可直接审计。"""
-    out = [
-        "(version 1)",
-        "(deny default)",
-        "",
-        "; 基线：dyld / 系统 mach 服务。import 不可用时探针会失败 → 降级。",
-        '(import "system.sb")',
-        "",
-        "(allow process-fork)",
-        "(allow process-exec)",
-        "(allow signal (target self))",
-        "(allow sysctl-read)",
-        "; 凭证服务必须显式 deny：mach 可达 = 钥匙串服务可达，",
-        "; 光 deny 钥匙串文件（~/Library/Keychains）挡不住服务层请求。",
-        "; 这里不裸放 mach-lookup：实测 system.sb 的基线名单",
-        "; 已足够跑 git / curl / clang / make / python，裸放只会白开 securityd。",
-        "(deny mach-lookup",
-        '  (global-name "com.apple.SecurityServer")',
-        '  (global-name "com.apple.securityd")',
-        ")",
-        "(allow file-write-data",
-        '  (literal "/dev/null")',
-        '  (literal "/dev/dtracehelper")',
-        ")",
-        "",
-        "; ---- 读：全开，再抠掉凭证与策略文件 ----",
-        "(allow file-read*)",
-        "(deny file-read*",
-    ]
-    for p in UNGRANTABLE_READ:
-        out.append(f"  (subpath {_quote(_real(p))})")
-    out.append(f"  (subpath {_quote(_real(PROFILES_DIR / PROBE_MARK))})")
-    out.append(")")
-    out.append("")
-
-    roots = env.write_roots()
-    if roots:
-        out.append("; ---- 写：纯加法白名单，其余由 deny default 兜底 ----")
-        out.append("(allow file-write*")
-        for r in roots:
-            out.append(f"  (subpath {_quote(r)})")
-        out.append(")")
-        out.append("")
-
-    if env.network:
-        out.append("(allow network*)")
-    return "\n".join(out) + "\n"
-
-
-def wrap(argv: list[str], profile_text: str) -> tuple[list[str], Path]:
-    """把 argv 包进 sandbox-exec。返回 (新 argv, profile 路径)，调用方负责 unlink。
-
-    profiles 目录 0700 且不在写集合内 → 沙箱内进程改不了它（deny default 兜底）。
-    不加 /bin/sh -c，保持"无 shell 语义"不变。
-    """
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    try:
-        os.chmod(PROFILES_DIR, 0o700)
-    except OSError:  # noqa: BLE001 - 权限收紧失败不应阻断执行
-        logger.warning("无法收紧 %s 权限", PROFILES_DIR)
-    fd, name = tempfile.mkstemp(suffix=".sb", dir=str(PROFILES_DIR))
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(profile_text)
-    return [str(SANDBOX_EXEC), "-f", name, *argv], Path(name)
+    def deny_read(self) -> tuple[Path, ...]:
+        """读禁止项（已 realpath）。读方向是减法：全开减去这些。"""
+        return tuple(_real(p) for p in UNGRANTABLE_READ)
 
 
 # ---------------------------------------------------------------------------
-# 能力探测（fail-closed 闸门）
+# 能力探测（fail-closed 闸门）—— 向 seatbelt 后端确认"内核强制真的在跑"
 # ---------------------------------------------------------------------------
 
 _probe_cache: dict[str, bool] = {}
 
 
 def unavailable_reason(root: Path | None = None) -> str:
-    if sys.platform != "darwin":
+    if not seatbelt.supported_platform():
         return "非 macOS，无 Seatbelt"
-    if not SANDBOX_EXEC.exists():
-        return f"{SANDBOX_EXEC} 不存在"
+    if not seatbelt.executable_present():
+        return f"{seatbelt.SEATBELT_EXEC} 不存在"
     return "自检探针未通过（基线或 deny 任一侧失败）"
 
 
@@ -231,49 +151,37 @@ def available(root: Path | None = None) -> bool:
 
     不通过就不许自称"沙箱内免审批"，降级为每次审批。
     """
-    if sys.platform != "darwin" or not SANDBOX_EXEC.exists():
+    if not seatbelt.supported_platform() or not seatbelt.executable_present():
         return False
     root = _real(root or project_root())
     key = str(root)
     if key not in _probe_cache:
         ok = _probe(root)
         _probe_cache[key] = ok
-        logger.info("sandbox 探针 %s：%s", root, "通过" if ok else "未通过")
+        logger.info("内核沙箱探针 %s：%s", root, "通过" if ok else "未通过")
     return _probe_cache[key]
 
 
 def _probe(root: Path) -> bool:
     """双向探针：既确认 deny 真的生效，也确认基线没把正常命令误杀。"""
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
-    mark = PROFILES_DIR / PROBE_MARK
+    seatbelt.PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    mark = seatbelt.PROFILES_DIR / seatbelt.PROBE_MARK
     try:
         mark.write_text("probe", encoding="utf-8")
     except OSError as e:  # noqa: BLE001
         logger.warning("探针标记不可写 %s：%s", mark, e)
         return False
     try:
-        text = render_profile(Envelope(project_root=root, session_dir=root))
-    except SandboxError as e:
+        text = seatbelt.render_profile(
+            Envelope(project_root=root, session_dir=root))
+    except seatbelt.SeatbeltError as e:
         logger.warning("探针 profile 渲染失败：%s", e)
         return False
-    if _run_probe(text, ["/bin/echo", "ok"]).returncode != 0:
+    if seatbelt.run_isolated(text, ["/bin/echo", "ok"]).returncode != 0:
         return False  # 基线或 import 不可用
-    if _run_probe(text, ["/bin/cat", str(mark)]).returncode == 0:
+    if seatbelt.run_isolated(text, ["/bin/cat", str(mark)]).returncode == 0:
         return False  # deny 未生效
     return True
-
-
-def _run_probe(profile_text: str, argv: list[str]) -> subprocess.CompletedProcess:
-    path: Path | None = None
-    try:
-        wrapped, path = wrap(argv, profile_text)
-        return subprocess.run(wrapped, capture_output=True, timeout=15)
-    except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
-        logger.warning("探针执行失败 %s：%s", argv, e)
-        return subprocess.CompletedProcess(argv, 1, b"", str(e).encode())
-    finally:
-        if path is not None:
-            path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -421,7 +329,7 @@ def check_writable(path, ctx=None) -> Verdict:
 
 
 # ---------------------------------------------------------------------------
-# CLI：zero-sandbox
+# CLI：zero-permission
 # ---------------------------------------------------------------------------
 
 def main(argv: list[str] | None = None) -> int:
@@ -459,10 +367,10 @@ def main(argv: list[str] | None = None) -> int:
 
     print(__doc__.split("三个执行档位")[0].strip())
     print("\n用法：\n"
-          "  zero-sandbox check                 探针结论与降级原因\n"
-          "  zero-sandbox list                  当前写集合、网络、扩权集\n"
-          "  zero-sandbox add-root <path>       追加长期可写根\n"
-          "  zero-sandbox add-unsandbox <name>  追加脱离沙箱白名单（强制审批）")
+          "  zero-permission check                 探针结论与降级原因\n"
+          "  zero-permission list                  当前写集合、网络、扩权集\n"
+          "  zero-permission add-root <path>       追加长期可写根\n"
+          "  zero-permission add-unsandbox <name>  追加脱离沙箱白名单（强制审批）")
     return 2
 
 if __name__ == "__main__":

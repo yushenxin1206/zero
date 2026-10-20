@@ -1,17 +1,17 @@
 """
-沙箱守卫：把 shell 工具的能力申请裁定成档位并分发审批。
+权限守卫：把文件类工具与 shell 的能力申请裁定成档位并分发审批。
 
 判定看**资源**，不看命令文本。三档：
-    P  包络内（默认）→ 放行，由内核沙箱执行
+    P  包络内（默认）→ 放行（shell 由内核沙箱执行）
     G  可授予       → 审批面板
     D  不可授予     → 结构化拒绝，**永不进面板**
 
-审批状态只有两处——会话级扩权表（sandbox）与 ``~/.zero/profile.json``
+审批状态只有两处——会话级扩权表（``envelope``）与 ``~/.zero/profile.json``
 （用户资产）。没有 TTL、没有轮次表：要长期放行就落 profile.json，
 其余随会话消失。
 
 无人值守渠道（scheduler / subagent / 非 CLI）一律 fail-closed：
-只放行 P 档，G 档拒绝并引导用户预置 ``zero-sandbox add-root``。
+只放行 P 档，G 档拒绝并引导用户预置 ``zero-permission add-root``。
 """
 import asyncio
 import logging
@@ -19,11 +19,11 @@ import shlex
 import time
 from uuid import uuid4
 
-from zero import sandbox
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import ApprovalOption, ApprovalRequest, StreamEvent
+from zero.permission import envelope
 
 logger = logging.getLogger(__name__)
 
@@ -43,22 +43,22 @@ _EXPAND = (
 )
 
 # 守卫处理哪些工具。新增任何会碰文件/命令的工具时都必须登记这里——
-# tests/test_sandbox_guard.py::test_guard_covers_all_file_tools 会因此变红。
+# tests/test_permission.py::test_guard_covers_all_file_tools 会因此变红。
 HANDLED_TOOLS = ("shell", "read", "write", "edit")
 
-_TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-sandbox add-root <path>"
+_TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-permission add-root <path>"
 
 _DEGRADED_UNATTENDED = (
-    "sandbox: 本机内核沙箱不可用（探针未通过），且当前渠道无人值守，"
+    "permission: 本机内核沙箱不可用（探针未通过），且当前渠道无人值守，"
     "命令未执行。这类环境下没有「包络内免审批」，一律 fail-closed"
 )
 _UNATTENDED_UNSANDBOX = (
-    "sandbox: 该命令命中脱离沙箱白名单，但当前渠道无人值守，命令未执行。"
-    "如需长期放行请用户执行 zero-sandbox add-unsandbox 后重试"
+    "permission: 该命令命中脱离沙箱白名单，但当前渠道无人值守，命令未执行。"
+    "如需长期放行请用户执行 zero-permission add-unsandbox 后重试"
 )
 _UNATTENDED_EXPAND = (
-    "sandbox: 该操作申请写入包络外路径（{paths}），但当前渠道无人值守，"
-    "操作未执行。请用户执行 zero-sandbox add-root <path> 后重试"
+    "permission: 该操作申请写入包络外路径（{paths}），但当前渠道无人值守，"
+    "操作未执行。请用户执行 zero-permission add-root <path> 后重试"
 )
 
 
@@ -110,13 +110,13 @@ async def request(
             if stop_task is not None:
                 stop_task.cancel()
     except (asyncio.TimeoutError, TimeoutError):
-        logger.info("sandbox approval %s 超时", req_id)
+        logger.info("permission approval %s 超时", req_id)
         return None
     finally:
         bus.approvals.discard(req_id)
 
 
-class SandboxGuard:
+class PermissionGuard:
     """before_tool_call handler（签名与 hook 契约一致）。"""
 
     def __init__(self, msg_bus: MessageBus | None = None):
@@ -152,10 +152,10 @@ class SandboxGuard:
         except TurnCancelled:
             raise
         except Exception as e:  # noqa: BLE001 - 守卫内部异常必须变成拒绝
-            logger.exception("sandbox guard 内部异常，按拒绝处理")
+            logger.exception("permission guard 内部异常，按拒绝处理")
             return ToolCallDecision(
                 proceed=False,
-                reason=f"sandbox: 守卫内部异常，已按拒绝处理（fail-closed）：{e}")
+                reason=f"permission: 守卫内部异常，已按拒绝处理（fail-closed）：{e}")
 
     async def _dispatch(
             self, tool_name: str, kwargs: dict, ctx: HookContext,
@@ -183,12 +183,12 @@ class SandboxGuard:
     # ------------------------------------------------------------------
 
     def _check_read(self, path: str, ctx: HookContext) -> ToolCallDecision | None:
-        verdict = sandbox.check_readable(path, ctx)
+        verdict = envelope.check_readable(path, ctx)
         if verdict.ok:
             return None
         return ToolCallDecision(
             proceed=False,
-            reason=f"sandbox: 拒绝（不可授予）。{verdict.reason}"
+            reason=f"permission: 拒绝（不可授予）。{verdict.reason}"
                    f"（needed: {verdict.needed}）")
 
     # ------------------------------------------------------------------
@@ -202,17 +202,17 @@ class SandboxGuard:
         refused: list[str] = []
         pending: list[str] = []
         for raw in paths:
-            verdict = sandbox.check_writable(raw, ctx)
+            verdict = envelope.check_writable(raw, ctx)
             if verdict.ok:
                 continue                          # 已在包络内，无需申请
-            if verdict.tier == sandbox.D:
+            if verdict.tier == envelope.D:
                 refused.append(verdict.reason)
             else:
                 pending.append(str(raw))
         if refused:
             return ToolCallDecision(
                 proceed=False,
-                reason="sandbox: 拒绝（不可授予）。" + "；".join(refused))
+                reason="permission: 拒绝（不可授予）。" + "；".join(refused))
         if not pending:
             return None
         if not self._attended(ctx):
@@ -228,14 +228,14 @@ class SandboxGuard:
         )
         if answer == "s":
             for p in pending:
-                sandbox.grant_write_root(p, ctx, "session")
+                envelope.grant_write_root(p, ctx, "session")
         elif answer == "a":
             for p in pending:
-                sandbox.grant_write_root(p, ctx, "always")
+                envelope.grant_write_root(p, ctx, "always")
         else:
             return ToolCallDecision(
                 proceed=False,
-                reason="sandbox: 用户拒绝扩权，操作未执行。"
+                reason="permission: 用户拒绝扩权，操作未执行。"
                        "改用包络内路径重试")
         return None
 
@@ -248,23 +248,23 @@ class SandboxGuard:
         argv = shlex.split(command) if command else []
 
         # ---- 沙箱不可用：没有「包络内免审批」，每次都要问（fail-closed）----
-        if not sandbox.available():
+        if not envelope.available():
             if not self._attended(ctx):
                 return ToolCallDecision(proceed=False, reason=_DEGRADED_UNATTENDED)
             answer = await request(
                 self.msg_bus, ctx,
                 title="shell 命令审批（内核沙箱不可用）",
                 summary=command,
-                detail=sandbox.unavailable_reason(),
+                detail=envelope.unavailable_reason(),
                 options=_YN,
             )
             if answer == "y":
                 return None
             return ToolCallDecision(
-                proceed=False, reason="sandbox: 用户拒绝（内核沙箱不可用）")
+                proceed=False, reason="permission: 用户拒绝（内核沙箱不可用）")
 
         # ---- 脱离沙箱白名单：强制审批，不给「总是」----
-        if sandbox.matches_unsandbox(argv):
+        if envelope.matches_unsandbox(argv):
             if not self._attended(ctx):
                 return ToolCallDecision(
                     proceed=False, reason=_UNATTENDED_UNSANDBOX)
@@ -278,7 +278,7 @@ class SandboxGuard:
             if answer == "y":
                 return None
             return ToolCallDecision(
-                proceed=False, reason="sandbox: 用户拒绝脱离沙箱执行")
+                proceed=False, reason="permission: 用户拒绝脱离沙箱执行")
 
         # ---- write_paths 扩权申请：D 档直接拒，G 档走审批 ----
         write_paths = kwargs.get("write_paths") or []
@@ -290,8 +290,8 @@ class SandboxGuard:
         return None
 
 
-def install(hooks, msg_bus: MessageBus | None = None) -> SandboxGuard:
+def install(hooks, msg_bus: MessageBus | None = None) -> PermissionGuard:
     """组合根入口。msg_bus 不传则所有审批一律 fail-closed。"""
-    guard = SandboxGuard(msg_bus)
+    guard = PermissionGuard(msg_bus)
     hooks.on_before_tool_call(guard)
     return guard

@@ -8,9 +8,10 @@
 > 结论先行：**审批的对象从「命令」变成「能力」**——
 > 一条能力 = （资源类别 × 目标 × 时效）。命令文本不参与授权判定。
 
-> **实现状态（阶段 A + B 均已落地）**：`zero/sandbox.py` + `zero/sandbox_guard.py`
-> 已实现包络、profile 渲染、`wrap`、双向探针、`check_readable`/`check_writable`
-> 与 P/G/D 裁定；`plugins/` 整目录已删除；CLI 为 `zero-sandbox`。
+> **实现状态（阶段 A + B 均已落地）**：`zero/permission/` 包——`envelope`（包络与
+> 判定）、`seatbelt`（macOS 后端）、`guard`（守卫）——已实现 profile 渲染、`wrap`、
+> 双向探针、`check_readable`/`check_writable` 与 P/G/D 裁定；`plugins/` 整目录已删除；
+> CLI 为 `zero-permission`。
 > `read`/`write`/`edit` 越界也已接入同一审批门（阶段 B），不再只是 fail-closed。
 > 审批面板：扩权 3 键（`s` 本会话 / `a` 总是 / `n` 拒绝），脱离沙箱与无沙箱降级
 > 2 键（`y` 允许一次 / `n` 拒绝）——本文第 3 节的 6 选项面板与 §13 的六模块改造
@@ -278,7 +279,7 @@ handler 收敛到约 30 行，且**只依赖包络**。
 
 **阶段 A（macOS 主体）**
 
-1. `zero/sandbox.py`：包络 schema + profile 渲染 + `sandbox-exec` 包裹 +
+1. `zero/permission/`：包络 schema + profile 渲染 + `sandbox-exec` 包裹 +
    能力探测（平台 / 二进制 / 自检探针）。
 2. `zero/tools/shell.py`：包络内包裹执行 + 越界结构化错误（携带 `needed`）+
    `write_paths` / `network` 申请参数。
