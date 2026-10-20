@@ -127,6 +127,7 @@ class ToolCallDecision:        # ④（沿用 v4）
     proceed: bool = True
     reason: str = ""           # 否决时作为工具错误返回给 LLM
     result: dict | None = None # 替换工具结果（mock/缓存短路）
+    note: str = ""             # 附注：proceed=True 时并入工具结果，随 tool 消息进上下文
 
 @dataclass
 class ToolResultDecision:      # ⑤

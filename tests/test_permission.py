@@ -216,7 +216,8 @@ def test_guard_tiers():
         d = await guard("shell", {"command": "echo x",
                                   "write_paths": [target]}, ctx)
         await worker
-        assert d is None, d
+        assert d is not None and d.proceed, d
+        assert "本会话" in d.note, d.note
         assert envelope.session_roots(ctx), "「本会话允许」应写入会话扩权表"
         assert envelope.check_writable(target, ctx).ok, "扩权后该路径应可写"
         envelope.reset_session(ctx)
@@ -420,7 +421,8 @@ def test_file_tools_use_approval_gate():
         worker = answer_next(bus, "s")
         d = await guard("write", {"file_path": str(target), "content": "ok"}, ctx)
         await worker
-        assert d is None, d
+        assert d is not None and d.proceed, d
+        assert str(target) in d.note, d.note
         assert envelope.check_writable(str(target), ctx).ok, "授权后该路径应可写"
         result = await Write().run(context=ctx.tool_context,
                                    file_path=str(target), content="ok")

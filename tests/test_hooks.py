@@ -4,6 +4,7 @@
   1. 回归：无插件（默认 Hooks / 空 HookChain）行为与现状一致
   2. 否决短路：首个 handler 否决后后续不再调用，tool.run 不执行，
      MessageTool 内容为 {"error": reason}；result 替换同理短路
+  3. 仅附注（note）：不拦截，附注并入 tool 消息进入上下文
   4. 异常隔离：handler 抛异常不影响 loop 正常完成
   5. 截断不变量：hook 替换的超长结果仍被截到 10000 字符
 
@@ -204,6 +205,29 @@ def test_result_replacement():
     print("2b. result replacement ok")
 
 
+def test_decision_note_into_context():
+    """仅附注（proceed=True, result=None）不拦截，附注并入 tool 消息进上下文。"""
+    chain = HookChain()
+
+    async def annotate_first(tool_name, kwargs, ctx):
+        return ToolCallDecision(note="用户已批准扩权：/tmp/x")
+
+    async def annotate_second(tool_name, kwargs, ctx):
+        return ToolCallDecision(note="第二次审批已通过")
+
+    chain.on_before_tool_call(annotate_first)
+    chain.on_before_tool_call(annotate_second)
+    tool = EchoTool()
+    sid = new_session()
+    asyncio.run(run_turn(make_runner(chain, tool, sid)))
+
+    assert tool.ran, "仅附注不应阻止工具执行"
+    payload = json.loads(history_summary(sid)[1][1])
+    assert payload["echo"] == {"x": 1}, payload
+    assert payload["permission"] == "用户已批准扩权：/tmp/x\n第二次审批已通过", payload
+    print("2c. decision note persisted into tool message ok")
+
+
 # ---------------------------------------------------------------------------
 # 4. 异常隔离：handler 抛异常不影响 loop
 # ---------------------------------------------------------------------------
@@ -251,6 +275,7 @@ if __name__ == "__main__":
     test_regression_noop()
     test_veto_short_circuit()
     test_result_replacement()
+    test_decision_note_into_context()
     test_exception_isolation()
     test_truncation_after_hook()
     print("all hooks tests passed")

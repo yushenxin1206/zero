@@ -198,7 +198,11 @@ class PermissionGuard:
     async def _request_expand(
             self, paths: list[str], ctx: HookContext, *, title: str,
     ) -> ToolCallDecision | None:
-        """返回 None = 放行；返回 decision(proceed=False) = 拒绝。"""
+        """返回 None/note 决策 = 放行；返回 decision(proceed=False) = 拒绝。
+
+        批准时用 ``ToolCallDecision(note=...)`` 放行，附注由 runner 并入
+        工具结果，让 LLM 知道这次操作经过了审批以及授予的档位。
+        """
         refused: list[str] = []
         pending: list[str] = []
         for raw in paths:
@@ -229,15 +233,17 @@ class PermissionGuard:
         if answer == "s":
             for p in pending:
                 envelope.grant_write_root(p, ctx, "session")
-        elif answer == "a":
+            return ToolCallDecision(
+                note=f"用户已批准扩权（本会话）：{'、'.join(pending)}")
+        if answer == "a":
             for p in pending:
                 envelope.grant_write_root(p, ctx, "always")
-        else:
             return ToolCallDecision(
-                proceed=False,
-                reason="permission: 用户拒绝扩权，操作未执行。"
-                       "改用包络内路径重试")
-        return None
+                note=f"用户已批准扩权（总是）：{'、'.join(pending)}")
+        return ToolCallDecision(
+            proceed=False,
+            reason="permission: 用户拒绝扩权，操作未执行。"
+                   "改用包络内路径重试")
 
     # ------------------------------------------------------------------
     # shell：内核沙箱平面
@@ -259,7 +265,8 @@ class PermissionGuard:
                 options=_YN,
             )
             if answer == "y":
-                return None
+                return ToolCallDecision(
+                    note="用户已批准（内核沙箱不可用，单次允许）")
             return ToolCallDecision(
                 proceed=False, reason="permission: 用户拒绝（内核沙箱不可用）")
 
@@ -276,7 +283,8 @@ class PermissionGuard:
                 options=_YN,
             )
             if answer == "y":
-                return None
+                return ToolCallDecision(
+                    note="用户已批准脱离沙箱执行（单次允许）")
             return ToolCallDecision(
                 proceed=False, reason="permission: 用户拒绝脱离沙箱执行")
 

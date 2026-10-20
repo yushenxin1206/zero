@@ -341,6 +341,18 @@ class AgentRunner:
                             **kwargs,
                         )
                         content = json.dumps(result, ensure_ascii=False)
+                    # 审批附注并入工具结果：随 role=tool 消息进入会话历史，
+                    # 让 LLM 知道本次操作经过了什么审批（放行/授予档位）
+                    if decision is not None and decision.proceed and decision.note:
+                        try:
+                            payload = json.loads(content)
+                        except ValueError:
+                            payload = None
+                        if isinstance(payload, dict):
+                            payload["permission"] = decision.note
+                            content = json.dumps(payload, ensure_ascii=False)
+                        else:
+                            content = f"{content}\n\n[permission] {decision.note}"
                     # 截断是核心安全不变量，永远在 hook 之后执行
                     if len(content) > TOOL_RESULT_MAX_CHARS:
                         content = content[:TOOL_RESULT_MAX_CHARS] + "...truncated"

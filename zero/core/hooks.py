@@ -19,7 +19,7 @@ TurnCancelled 是终止信号（非业务异常），必须透传，不允许被
 import asyncio
 import logging
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from zero.core.cancellation import TurnCancelled
@@ -54,6 +54,8 @@ class ToolCallDecision:
     proceed: bool = True
     reason: str = ""                        # 否决时作为工具错误返回给 LLM
     result: dict | None = None              # 替换工具结果（mock/缓存短路）
+    note: str = ""                          # 附注：proceed=True 时并入工具结果，
+                                            # 随 role=tool 消息进入上下文
 
 
 # ---------------------------------------------------------------------------
@@ -130,10 +132,15 @@ class HookChain(Hooks):
     async def before_tool_call(
             self, tool_name: str, kwargs: dict, ctx: HookContext,
     ) -> ToolCallDecision | None:
+        notes: list[str] = []
         for fn in self._handlers["before_tool_call"]:
             d = await self._safe(fn, tool_name, kwargs, ctx)
             if d is None:
                 continue
+            if d.note:
+                notes.append(d.note)
             if not d.proceed or d.result is not None:
-                return d                            # 首个否决/替换胜出，短路
-        return None
+                # 首个否决/替换胜出，短路；此前累积的附注一并带上
+                return replace(d, note="\n".join(notes))
+        # 仅附注：不拦截也不替换，放行后由 runner 并入工具结果
+        return ToolCallDecision(note="\n".join(notes)) if notes else None
