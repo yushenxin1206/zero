@@ -7,7 +7,7 @@ name = "zero"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.14.5"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.15.0",
@@ -24,6 +24,15 @@ dependencies = [
 [project.optional-dependencies]
 web = ["pywebview>=6.2.1"]
 
+# 开发护栏：pytest 跑全量测试，ruff 做静态检查。
+# uv sync --dev 即可获得两者。
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "pytest-timeout>=2.3",
+    "ruff>=0.9",
+]
+
 # 控制台命令：pip install -e . 后生成 zero.exe / zero-permission.exe，任意目录可用
 [project.scripts]
 zero = "zero.main:main"
@@ -36,6 +45,8 @@ packages = [
     "zero",
     "zero.bus",
     "zero.channels",
+    "zero.channels.cli",
+    "zero.channels.feishu",
     "zero.channels.web",
     "zero.core",
     "zero.maintenance",
@@ -50,3 +61,26 @@ packages = [
 # web 通道的前端资源随包分发（editable 安装直接读源码目录）
 [tool.setuptools.package-data]
 "zero.channels.web" = ["static/*.html"]
+
+# ---------------------------------------------------------------------------
+# 测试与静态检查
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 测试以项目根为 import 起点，无需各文件重复 sys.path.insert
+pythonpath = ["."]
+addopts = "-ra"
+# 测试全部用 asyncio.run 驱动，不依赖 pytest-asyncio
+# 单例超时：终止/审批类用例含真实等待，挂死时必须红而不是无限卡住
+timeout = 120
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = [".venv"]
+
+[tool.ruff.lint]
+# 默认规则集（pycodestyle 的语法错误类 + pyflakes）：抓未定义名、未使用
+# 导入、f-string 错误等确定性缺陷；不引入风格类规则制造无意义 diff。
+select = ["E4", "E7", "E9", "F"]

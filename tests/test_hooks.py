@@ -7,26 +7,10 @@
   3. 仅附注（note）：不拦截，附注并入 tool 消息进入上下文
   4. 异常隔离：handler 抛异常不影响 loop 正常完成
   5. 截断不变量：hook 替换的超长结果仍被截到 10000 字符
-
-Run: python tests/test_hooks.py
 """
 import asyncio
 import json
-import sys
-import tempfile
-from pathlib import Path
 from uuid import uuid4
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import zero.core.context as ctx_mod
-import zero.session.store as store_mod
-
-# 隔离存储与记忆文件：全部重定向到临时目录
-_tmp = tempfile.TemporaryDirectory()
-_tmp_root = Path(_tmp.name)
-store_mod.SESSIONS_ROOT = _tmp_root / "sessions"
-ctx_mod.ZERO_ROOT = _tmp_root
 
 from zero.config import Config
 from zero.core.context import Context
@@ -145,7 +129,6 @@ def test_regression_noop():
         assert events[-1].content == "最终回复"
         assert tool.ran
         assert history_summary(sid) == EXPECTED_HISTORY
-    print("1. regression (default Hooks / empty HookChain) ok")
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +166,6 @@ def test_veto_short_circuit():
     history = history_summary(sid)
     assert history[1] == (
         "tool", json.dumps({"error": "blocked: test"}, ensure_ascii=False), [])
-    print("2a. veto short-circuit ok")
 
 
 def test_result_replacement():
@@ -202,7 +184,6 @@ def test_result_replacement():
     history = history_summary(sid)
     assert history[1] == (
         "tool", json.dumps({"mock": True}, ensure_ascii=False), [])
-    print("2b. result replacement ok")
 
 
 def test_decision_note_into_context():
@@ -225,7 +206,6 @@ def test_decision_note_into_context():
     payload = json.loads(history_summary(sid)[1][1])
     assert payload["echo"] == {"x": 1}, payload
     assert payload["permission"] == "用户已批准扩权：/tmp/x\n第二次审批已通过", payload
-    print("2c. decision note persisted into tool message ok")
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +227,6 @@ def test_exception_isolation():
     assert events[-1].content == "最终回复"
     assert tool.ran, "handler 异常应视为 no-op，工具照常执行"
     assert history_summary(sid) == EXPECTED_HISTORY
-    print("4. exception isolation ok")
 
 
 # ---------------------------------------------------------------------------
@@ -268,14 +247,4 @@ def test_truncation_after_hook():
     content = history_summary(sid)[1][1]
     assert content.endswith(TRUNC_SUFFIX)
     assert len(content) == 10000 + len(TRUNC_SUFFIX)
-    print("5. truncation invariant ok")
 
-
-if __name__ == "__main__":
-    test_regression_noop()
-    test_veto_short_circuit()
-    test_result_replacement()
-    test_decision_note_into_context()
-    test_exception_isolation()
-    test_truncation_after_hook()
-    print("all hooks tests passed")

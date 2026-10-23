@@ -181,7 +181,7 @@ def run_web_desktop():
             channel.stop_event.set()
 
         core_task = asyncio.create_task(core.agent_loop.run())
-        serve_task = asyncio.create_task(channel.serve())
+        serve_task = asyncio.create_task(channel.start())
         try:
             try:
                 await channel.wait_ready()

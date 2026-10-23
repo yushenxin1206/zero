@@ -1,12 +1,19 @@
-"""审批 UI 倒计时线程的 abort 行为回归验证。"""
+"""审批 UI 倒计时线程的 abort 行为回归验证（Windows msvcrt 专用）。"""
+import sys
 import threading
 import time
 import unittest
 
+import pytest
+
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CLIChannel
 
+windows_only = pytest.mark.skipif(
+    sys.platform != "win32", reason="msvcrt 单键读取仅在 Windows 存在")
 
+
+@windows_only
 class TestApprovalUiAbort(unittest.TestCase):
 
     def test_read_key_win32_exits_immediately_on_abort(self):
@@ -16,7 +23,7 @@ class TestApprovalUiAbort(unittest.TestCase):
         abort.set()
         start = time.time()
         # deadline 还很远（180s），若 abort 失效会跑满倒计时
-        result = ch._read_key_win32(time.time() + 180, "yna", abort)
+        result = ch.approval._read_key_win32(time.time() + 180, "yna", abort)
         self.assertEqual(result, "")
         self.assertLess(time.time() - start, 1.0)
 
@@ -25,7 +32,7 @@ class TestApprovalUiAbort(unittest.TestCase):
         ch = CLIChannel(MessageBus())
         deadline = time.time() + 0.2
         start = time.time()
-        result = ch._read_key_win32(deadline, "yna")
+        result = ch.approval._read_key_win32(deadline, "yna")
         self.assertEqual(result, "")
         self.assertGreaterEqual(time.time() - start, 0.15)
 

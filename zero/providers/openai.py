@@ -5,10 +5,9 @@ import json
 import asyncio
 import logging
 import threading
-from typing import Any, Iterator
+from typing import Any
 
 from zero.providers.base import Provider, LLMPayload
-from zero.models import ProviderConfig
 
 logger = logging.getLogger(__name__)
 

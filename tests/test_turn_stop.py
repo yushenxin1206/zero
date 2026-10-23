@@ -1,18 +1,15 @@
 """AgentLoop + AgentRunner 用户终止（旁路停止信号）端到端验证。"""
 import asyncio
 import json
-import tempfile
 import threading
 import time
 import unittest
-from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from zero.config import default_config
 from zero.core.cancellation import TurnCancelled
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
-from zero.session import store as store_mod
 from zero.session.store import SessionStore
 
 
@@ -28,11 +25,10 @@ class FakeProvider:
         yield "content", "更多内容"
 
 
-async def main(tmp: Path) -> dict:
+async def main() -> dict:
     bus = MessageBus()
     cfg = default_config
     loop = AgentLoop(msg_bus=bus, config=cfg)
-    store_mod.SESSIONS_ROOT = tmp / "sessions"
 
     from zero.core.runner import AgentRunner
 
@@ -106,19 +102,18 @@ async def main(tmp: Path) -> dict:
 class TestTurnStop(unittest.TestCase):
 
     def test_stop_signal_cancels_turn(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            result = asyncio.run(main(Path(tmp)))
-            self.assertEqual(result["first_delta"], "部分回复-")
-            # 收尾 done：带 cancelled 标记 + 已生成的部分回复
-            self.assertEqual(result["done_ev"].kind, "done")
-            self.assertTrue(result["done_ev"].metadata.get("cancelled"))
-            self.assertTrue(result["done_ev"].content.startswith("部分回复-"))
-            # 流内安全点：取消在下一 chunk 边界即生效，未产出的 "更多内容"
-            # 不再被消费——最终 MessageOut = 已产出的部分回复
-            self.assertEqual(result["msg_out"].body.content, "部分回复-")
-            # 会话历史不落盘部分回复（只有用户 MessageIn）
-            self.assertEqual(len(result["history"]), 1)
-            self.assertEqual(result["history"][0].body.content, "hi")
+        result = asyncio.run(main())
+        self.assertEqual(result["first_delta"], "部分回复-")
+        # 收尾 done：带 cancelled 标记 + 已生成的部分回复
+        self.assertEqual(result["done_ev"].kind, "done")
+        self.assertTrue(result["done_ev"].metadata.get("cancelled"))
+        self.assertTrue(result["done_ev"].content.startswith("部分回复-"))
+        # 流内安全点：取消在下一 chunk 边界即生效，未产出的 "更多内容"
+        # 不再被消费——最终 MessageOut = 已产出的部分回复
+        self.assertEqual(result["msg_out"].body.content, "部分回复-")
+        # 会话历史不落盘部分回复（只有用户 MessageIn）
+        self.assertEqual(len(result["history"]), 1)
+        self.assertEqual(result["history"][0].body.content, "hi")
 
     def test_cancel_after_assistant_tools_repairs_history(self):
         """取消落在『已持久化 assistant(tool_calls)』后：未执行的工具补齐
@@ -138,8 +133,7 @@ class TestTurnStop(unittest.TestCase):
                     "index": 1, "id": "call_b", "type": "function",
                     "function": {"name": "bar", "arguments": "{}"}}
 
-        async def main_repair(tmp: Path) -> list:
-            store_mod.SESSIONS_ROOT = tmp / "sessions"
+        async def main_repair() -> list:
             cfg = default_config
             context = Context(session_id="s-repair", channel="cli")
             stop_event = asyncio.Event()
@@ -170,24 +164,23 @@ class TestTurnStop(unittest.TestCase):
                 runner._execute_and_persist = orig_exec
             return SessionStore.load_history("s-repair", "cli")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            hist = asyncio.run(main_repair(Path(tmp)))
-            # [assistant(tool_calls a,b), tool(a), tool(b 占位)]
-            self.assertEqual(len(hist), 3)
-            asst = hist[0]
-            self.assertEqual(asst.sender, "assistant")
-            self.assertEqual(len(asst.body.tool_calls), 2)
-            ids = [tc.id for tc in asst.body.tool_calls]
-            self.assertEqual(ids, ["call_a", "call_b"])
-            # 每个 tool_call_id 都有对应 tool 消息（协议合法）
-            tool_ids = [m.body.tool_call_id for m in hist[1:] if m.sender == "tool"]
-            self.assertEqual(tool_ids, ["call_a", "call_b"])
-            # 未执行的 call_b 是占位结果
-            placeholders = [m for m in hist if m.sender == "tool"
-                            and m.body.tool_call_id == "call_b"]
-            self.assertEqual(len(placeholders), 1)
-            body = json.loads(placeholders[0].body.content)
-            self.assertEqual(body["error"], "turn cancelled by user")
+        hist = asyncio.run(main_repair())
+        # [assistant(tool_calls a,b), tool(a), tool(b 占位)]
+        self.assertEqual(len(hist), 3)
+        asst = hist[0]
+        self.assertEqual(asst.sender, "assistant")
+        self.assertEqual(len(asst.body.tool_calls), 2)
+        ids = [tc.id for tc in asst.body.tool_calls]
+        self.assertEqual(ids, ["call_a", "call_b"])
+        # 每个 tool_call_id 都有对应 tool 消息（协议合法）
+        tool_ids = [m.body.tool_call_id for m in hist[1:] if m.sender == "tool"]
+        self.assertEqual(tool_ids, ["call_a", "call_b"])
+        # 未执行的 call_b 是占位结果
+        placeholders = [m for m in hist if m.sender == "tool"
+                        and m.body.tool_call_id == "call_b"]
+        self.assertEqual(len(placeholders), 1)
+        body = json.loads(placeholders[0].body.content)
+        self.assertEqual(body["error"], "turn cancelled by user")
 
 
 class TestStopDuringSilentThinking(unittest.TestCase):
@@ -224,10 +217,9 @@ class TestStopDuringSilentThinking(unittest.TestCase):
             def close(self):
                 self._closed.set()
 
-        async def scenario(tmp: Path) -> dict:
+        async def scenario() -> dict:
             bus = MessageBus()
             loop = AgentLoop(msg_bus=bus, config=default_config)
-            store_mod.SESSIONS_ROOT = tmp / "sessions"
 
             prov = OpenAI(ProviderConfig(api_base="http://stub", api_key="k"))
             # turn1 思考期 3s（终止应打断它）；turn2 立即完整输出
@@ -287,8 +279,7 @@ class TestStopDuringSilentThinking(unittest.TestCase):
             finally:
                 AgentRunner.__init__ = orig_init
 
-        with tempfile.TemporaryDirectory() as tmp:
-            r = asyncio.run(scenario(Path(tmp)))
+        r = asyncio.run(scenario())
         # 终止打断挂起的思考期（3s 静默），不等流自然结束
         self.assertLess(r["stop_elapsed"], 1.5,
                         f"stop 未打断思考期: {r['stop_elapsed']:.2f}s")

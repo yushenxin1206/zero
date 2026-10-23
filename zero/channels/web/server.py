@@ -3,7 +3,9 @@ Web channel — local WebSocket server for the pywebview desktop UI.
 
 The channel is deliberately transport-only: it translates between the
 MessageBus and JSON frames on WebSocket connections. All agent behavior
-(turns, tools, approvals, scheduled tasks) stays in the core.
+(turns, tools, approvals, scheduled tasks) stays in the core, and all
+session/model/task rules come from ``ChannelService`` — this module only
+serializes them into frames.
 
 Protocol (JSON text frames):
 
@@ -34,34 +36,31 @@ import logging
 import secrets
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
-from uuid import uuid4
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
 from zero.bus.queue import MessageBus
+from zero.channels.base import BusChannel
+from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.core.model_switch import session_model, switch_model
-from zero.models import MessageBody, MessageIn, StopRequest
-from zero.scheduler.store import SchedulerStore
-from zero.session.store import SESSIONS_ROOT, SessionStore
+from zero.models import MessageOut, StreamEvent
 
 logger = logging.getLogger(__name__)
 
 CHANNEL = "web"
-BINDING_PATH = SESSIONS_ROOT / CHANNEL / ".web_current.json"
 
 
-class WebChannel:
+class WebChannel(BusChannel):
     """Serve one local WebSocket endpoint and bridge it to the message bus."""
 
+    name = CHANNEL
+
     def __init__(self, msg_bus: MessageBus, config: Config | None = None):
-        self.msg_bus = msg_bus
-        self.config = config
+        super().__init__(msg_bus)
+        self.service = ChannelService(CHANNEL, msg_bus=msg_bus, config=config)
         self.web_config = config.channels.web if config is not None else None
 
-        self._out_queue = msg_bus.subscribe_out(CHANNEL)
-        self._stream_queue = msg_bus.subscribe_stream(CHANNEL)
         self._clients: set[ServerConnection] = set()
 
         # 一次性 token：本机其它网页无法凭 ws://127.0.0.1 猜中即可连接
@@ -71,12 +70,10 @@ class WebChannel:
 
         self.stop_event = asyncio.Event()
         self._ready = asyncio.Event()
-        self._workers: list[asyncio.Task] = []
         self._loop: asyncio.AbstractEventLoop | None = None
 
-        self._source_id = ""
-        self.session_id = ""
-        self._load_binding()
+        if not self.service.restore_binding():
+            self.service.new_session()
 
     # ------------------------------------------------------------------
     # Bootstrap / lifecycle
@@ -101,13 +98,10 @@ class WebChannel:
     async def wait_ready(self, timeout: float = 10.0) -> None:
         await asyncio.wait_for(self._ready.wait(), timeout)
 
-    async def serve(self) -> None:
+    async def start(self) -> None:
         """Run the server and bus consumers until stop_event is set."""
         self._loop = asyncio.get_running_loop()
-        self._workers = [
-            asyncio.create_task(self._out_loop()),
-            asyncio.create_task(self._stream_loop()),
-        ]
+        self.start_consumers()
         try:
             async with serve(
                 self._handle,
@@ -121,18 +115,15 @@ class WebChannel:
                 logger.info("web channel listening on %s", self.ws_url)
                 await self.stop_event.wait()
         finally:
-            for task in self._workers:
-                task.cancel()
-            self._workers.clear()
-            if self._clients:
-                for ws in list(self._clients):
-                    try:
-                        await ws.close(code=1001, reason="server shutdown")
-                    except Exception:
-                        pass
-                self._clients.clear()
+            await self.stop_consumers()
+            for ws in list(self._clients):
+                try:
+                    await ws.close(code=1001, reason="server shutdown")
+                except Exception:
+                    pass
+            self._clients.clear()
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         """Stop the server. Safe to call from the GUI thread."""
         if self._loop is None or self._loop.is_closed():
             self.stop_event.set()
@@ -143,106 +134,58 @@ class WebChannel:
             pass
 
     # ------------------------------------------------------------------
-    # Session binding (mirrors CLI: one source_id per session)
+    # Bus consumers
     # ------------------------------------------------------------------
 
-    def _load_binding(self) -> None:
-        if BINDING_PATH.exists():
-            try:
-                data = json.loads(BINDING_PATH.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError):
-                data = None
-            if isinstance(data, dict) and data.get("source_id") and data.get("session_id"):
-                self._source_id = data["source_id"]
-                self.session_id = data["session_id"]
-                return
-        self._new_session()
+    async def deliver(self, message: MessageOut) -> None:
+        await self._broadcast({
+            "type": "out",
+            "message": message.model_dump(mode="json", by_alias=True),
+        })
+        # 会话标题在首条用户消息后由 core 自动生成，回合结束时刷新列表
+        await self._broadcast({"type": "sessions", "sessions": self._sessions()})
 
-    def _save_binding(self) -> None:
-        BINDING_PATH.parent.mkdir(parents=True, exist_ok=True)
-        BINDING_PATH.write_text(json.dumps({
-            "source_id": self._source_id,
-            "session_id": self.session_id,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-
-    def _bind(self, source_id: str, session_id: str) -> None:
-        self._source_id = source_id
-        self.session_id = session_id
-        self._save_binding()
-
-    def _new_session(self) -> None:
-        source_id = f"web-{uuid4().hex[:8]}"
-        session_id = SessionStore.create_session(CHANNEL, source_id)
-        self._bind(source_id, session_id)
+    async def deliver_stream(self, event: StreamEvent) -> None:
+        await self._broadcast({
+            "type": "stream",
+            "event": event.model_dump(mode="json", by_alias=True),
+        })
 
     # ------------------------------------------------------------------
-    # Snapshot helpers
+    # Snapshots
     # ------------------------------------------------------------------
-
-    def _title(self) -> str:
-        return SessionStore.get_title(CHANNEL, self.session_id)
-
-    def _model(self) -> str:
-        if self.config is None:
-            return ""
-        try:
-            return session_model(self.config, CHANNEL, self.session_id)
-        except ValueError:
-            return "?"
 
     def _sessions(self) -> list[dict[str, Any]]:
-        result = []
-        for entry in SessionStore.list_sessions(CHANNEL):
-            if not SessionStore.has_messages(CHANNEL, entry.session_id):
-                continue
-            title = entry.title or SessionStore.make_title(
-                SessionStore.first_user_message(CHANNEL, entry.session_id))
-            result.append({
-                "id": entry.session_id,
-                "sourceId": entry.source_id,
-                "title": title,
-                "date": entry.date,
-                "updatedAt": entry.last_updated_at.strftime("%Y-%m-%d %H:%M"),
-            })
-        return result
+        return [{
+            "id": entry.session_id,
+            "sourceId": entry.source_id,
+            "title": entry.title,
+            "date": entry.date,
+            "updatedAt": entry.last_updated_at.strftime("%Y-%m-%d %H:%M"),
+        } for entry in self.service.sessions()]
 
     def _history(self, session_id: str) -> list[dict[str, Any]]:
-        messages = []
-        for msg in SessionStore.load_history(session_id, CHANNEL):
-            if msg.sender not in ("user", "assistant"):
-                continue
-            content = msg.body.content or ""
-            if not content:
-                continue
-            messages.append({
-                "id": msg.id,
-                "role": msg.sender,
-                "content": content,
-                "compact": (msg.metadata or {}).get("kind") == "compact",
-            })
-        return messages
+        return [{
+            "id": msg.id,
+            "role": msg.sender,
+            "content": msg.body.content or "",
+            "compact": (msg.metadata or {}).get("kind") == "compact",
+        } for msg in self.service.display_history(session_id)]
 
     def _state(self) -> dict[str, Any]:
         return {
             "channel": CHANNEL,
             "session": {
-                "id": self.session_id,
-                "sourceId": self._source_id,
-                "title": self._title(),
+                "id": self.service.session_id,
+                "sourceId": self.service.source_id,
+                "title": self.service.title(),
             },
             "sessions": self._sessions(),
-            "model": self._model(),
-            "models": sorted(self.config.models) if self.config else [],
+            "model": self.service.current_model(),
+            "models": self.service.models(),
         }
 
     def _tasks(self) -> list[dict[str, Any]]:
-        tasks = [
-            t for t in SchedulerStore.load_all()
-            if t.channel == CHANNEL and t.session_id == self.session_id
-        ]
-        tasks.sort(key=lambda t: (t.trigger_at is None,
-                                  t.trigger_at or t.created_at))
-
         def _dt(value):
             return value.strftime("%Y-%m-%d %H:%M") if value else ""
 
@@ -254,7 +197,7 @@ class WebChannel:
             "triggerAt": _dt(t.trigger_at),
             "lastRunAt": _dt(t.last_run_at),
             "instruction": t.instruction.removeprefix("[Scheduled Task]"),
-        } for t in tasks]
+        } for t in self.service.tasks()]
 
     # ------------------------------------------------------------------
     # WebSocket handling
@@ -318,7 +261,9 @@ class WebChannel:
         if kind == "send":
             await self._on_send(ws, data)
         elif kind == "stop":
-            await self._on_stop(data)
+            turn_id = str(data.get("turnId") or "")
+            if turn_id:
+                await self.service.request_stop(turn_id)
         elif kind == "approval":
             req_id = str(data.get("reqId") or "")
             answer = str(data.get("answer") or "")
@@ -331,7 +276,7 @@ class WebChannel:
         elif kind == "sessions":
             await self._send(ws, {"type": "sessions", "sessions": self._sessions()})
         elif kind == "history":
-            session_id = str(data.get("sessionId") or self.session_id)
+            session_id = str(data.get("sessionId") or self.service.session_id)
             await self._send(ws, {
                 "type": "history",
                 "sessionId": session_id,
@@ -340,14 +285,15 @@ class WebChannel:
         elif kind == "select":
             await self._on_select(ws, str(data.get("sessionId") or ""))
         elif kind == "new":
-            self._new_session()
+            self.service.new_session()
             await self._broadcast({"type": "state", **self._state()})
             await self._send(ws, {
-                "type": "history", "sessionId": self.session_id, "messages": [],
+                "type": "history",
+                "sessionId": self.service.session_id,
+                "messages": [],
             })
         elif kind == "title":
-            title = str(data.get("title") or "").strip()
-            SessionStore.set_title(CHANNEL, self.session_id, title)
+            self.service.rename(str(data.get("title") or "").strip())
             await self._broadcast({"type": "state", **self._state()})
         elif kind == "model":
             await self._on_model(ws, str(data.get("model") or "").strip())
@@ -360,40 +306,21 @@ class WebChannel:
         text = str(data.get("text") or "").strip()
         if not text:
             return
-        msg = MessageIn(
-            channel=CHANNEL,
-            session_id=self.session_id,
-            body=MessageBody(content=text),
-            channel_message_id=str(uuid4()),
-            channel_sender_id=self._source_id,
-            channel_session_id=self._source_id,
-        )
-        await self.msg_bus.in_queue.enqueue(msg)
+        msg = await self.service.submit(text)
         await self._send(ws, {
             "type": "queued",
             "turnId": msg.id,
-            "sessionId": self.session_id,
+            "sessionId": self.service.session_id,
         })
 
-    async def _on_stop(self, data: dict[str, Any]) -> None:
-        turn_id = str(data.get("turnId") or "")
-        if not turn_id:
-            return
-        await self.msg_bus.stop_queue.enqueue(StopRequest(
-            channel=CHANNEL, session_id=self.session_id, turn_id=turn_id))
-
     async def _on_select(self, ws: ServerConnection, session_id: str) -> None:
-        entry = next(
-            (s for s in SessionStore.list_sessions(CHANNEL)
-             if s.session_id == session_id),
-            None,
-        )
+        entry = self.service.find(session_id)
         if entry is None:
             await self._send(ws, {
                 "type": "notice", "level": "error", "text": "会话不存在",
             })
             return
-        self._bind(entry.source_id, entry.session_id)
+        self.service.bind(entry.source_id, entry.session_id)
         await self._broadcast({"type": "state", **self._state()})
         await self._send(ws, {
             "type": "history",
@@ -402,7 +329,7 @@ class WebChannel:
         })
 
     async def _on_model(self, ws: ServerConnection, model: str) -> None:
-        if self.config is None:
+        if self.service.config is None:
             await self._send(ws, {
                 "type": "notice", "level": "error", "text": "未注入配置",
             })
@@ -410,13 +337,12 @@ class WebChannel:
         if not model:
             await self._send(ws, {
                 "type": "models",
-                "models": sorted(self.config.models),
-                "current": self._model(),
+                "models": self.service.models(),
+                "current": self.service.current_model(),
             })
             return
         try:
-            result = await switch_model(
-                self.config, CHANNEL, self.session_id, model)
+            result = await self.service.switch_model(model)
         except ValueError as exc:
             await self._send(ws, {
                 "type": "notice", "level": "error", "text": str(exc),
@@ -436,25 +362,3 @@ class WebChannel:
                 "text": f"模型已切换 {result.old_model} → {result.new_model}{note}",
             })
         await self._broadcast({"type": "state", **self._state()})
-
-    # ------------------------------------------------------------------
-    # Bus consumers
-    # ------------------------------------------------------------------
-
-    async def _out_loop(self) -> None:
-        while True:
-            msg_out = await self._out_queue.dequeue()
-            await self._broadcast({
-                "type": "out",
-                "message": msg_out.model_dump(mode="json", by_alias=True),
-            })
-            # 会话标题在首条用户消息后由 core 自动生成，回合结束时刷新列表
-            await self._broadcast({"type": "sessions", "sessions": self._sessions()})
-
-    async def _stream_loop(self) -> None:
-        while True:
-            event = await self._stream_queue.dequeue()
-            await self._broadcast({
-                "type": "stream",
-                "event": event.model_dump(mode="json", by_alias=True),
-            })

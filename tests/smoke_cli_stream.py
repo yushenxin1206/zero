@@ -1,11 +1,12 @@
-"""Offline smoke test for the streaming pipeline (no real LLM)."""
+"""Offline smoke tests for the streaming pipeline (no real LLM)."""
 import asyncio
-import sys
 
+import zero.core.runner as runner_mod
 from zero.config import Config
 from zero.core.context import Context
 from zero.core.runner import AgentRunner
 from zero.models import StreamEvent
+from zero.session.store import SessionStore
 
 
 class FakeProvider:
@@ -17,49 +18,51 @@ class FakeProvider:
             yield "content", chunk
 
 
-async def main():
-    import zero.core.runner as runner_mod
-    runner_mod.OpenAI = FakeProvider  # monkeypatch
-
-    cfg = Config.model_validate({
+def make_config() -> Config:
+    return Config.model_validate({
         "models": {"fake": {"provider": "deepseek", "contextWindowTokens": 100000}},
         "agentRuntimes": {"default": {"llmCallOptions": {"model": "fake"}}},
         "providers": {"deepseek": {"apiBase": "https://x.local", "apiKey": "k"}},
     })
+
+
+def test_runner_stream(monkeypatch):
+    monkeypatch.setattr(runner_mod, "OpenAI", FakeProvider)
+    cfg = make_config()
     ctx = Context(session_id="smoke-test-session", channel="cli")
     runner = AgentRunner(cfg, ctx)
 
-    events = []
-    async for ev in runner.run_stream():
-        events.append(ev)
+    async def scenario():
+        events = [ev async for ev in runner.run_stream()]
+        text = await runner.run()
+        return events, text
 
+    events, text = asyncio.run(scenario())
     kinds = [e.kind for e in events]
     assert kinds == ["delta", "delta", "delta", "done"], kinds
     assert events[-1].content == "你好，这是流式回复", events[-1].content
-    text = await runner.run()
     assert text == "你好，这是流式回复", text
-    print("runner stream ok:", kinds)
 
-    # --- store roundtrip with channel=cli ---
-    from zero.session.store import SessionStore
+
+def test_store_roundtrip():
     sid = SessionStore.create_session("cli", "smoke-src")
     sessions = SessionStore.list_sessions("cli")
     assert any(s.session_id == sid for s in sessions)
-    print("store ok: cli sessions =", len(sessions))
 
-    # --- bus stream dispatch ---
+
+def test_bus_stream_dispatch():
     from zero.bus.queue import MessageBus
-    from zero.models import MessageIn, MessageBody
-    bus = MessageBus()
-    sub = bus.subscribe_stream("cli")
-    dispatcher = asyncio.create_task(bus.run_stream_dispatcher())
-    await bus.stream_queue.enqueue(StreamEvent(channel="cli", kind="delta", content="x"))
-    got = await asyncio.wait_for(sub.dequeue(), timeout=1)
-    dispatcher.cancel()
+
+    async def scenario():
+        bus = MessageBus()
+        sub = bus.subscribe_stream("cli")
+        dispatcher = asyncio.create_task(bus.run_stream_dispatcher())
+        try:
+            await bus.stream_queue.enqueue(
+                StreamEvent(channel="cli", kind="delta", content="x"))
+            return await asyncio.wait_for(sub.dequeue(), timeout=1)
+        finally:
+            dispatcher.cancel()
+
+    got = asyncio.run(scenario())
     assert got.content == "x"
-    print("bus stream dispatch ok")
-
-    print("ALL SMOKE TESTS PASSED")
-
-
-asyncio.run(main())

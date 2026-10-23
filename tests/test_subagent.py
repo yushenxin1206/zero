@@ -1,4 +1,5 @@
-"""Offline tests for subagent single-shot invocation (no real LLM, isolated storage).
+"""Offline tests for subagent single-shot invocation (no real LLM,
+isolated storage via conftest).
 
 覆盖 run_subagent / SubAgentContext 的核心验收项：
   1. 单次调用：prompt 唯一输入，工具循环正常运转，返回最终文本
@@ -8,43 +9,23 @@
   5. 压缩跳过：子 agent 不触发 maybe_compress（会话模式照常触发，回归）
   6. tool_context 继承：工具收到的 context 带父轮路由字段
   7. hooks 照常生效：否决短路、错误结果留在内存对话里
-
-Run: python tests/test_subagent.py
 """
 import asyncio
 import json
-import sys
-import tempfile
 from pathlib import Path
 from uuid import uuid4
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import zero.core.context as ctx_mod
 import zero.core.runner as runner_mod
 import zero.session.store as store_mod
-
-# 隔离存储与记忆文件：全部重定向到临时目录
-_tmp = tempfile.TemporaryDirectory()
-_tmp_root = Path(_tmp.name)
-store_mod.SESSIONS_ROOT = _tmp_root / "sessions"
-ctx_mod.MEMORY_PATH = _tmp_root / "memory.md"
-ctx_mod.current_project_memory_path = (
-    lambda: _tmp_root / ".zero" / "memory" / "memory.md")
-
 from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.compactor import Compactor
-from zero.core.context import Context, SubAgentContext
+from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext, ToolCallDecision
-from zero.subagent.manager import SubagentManager
 from zero.core.runner import AgentRunner, run_subagent
-from zero.models import (
-    MessageBody,
-    MessageIn,
-    ToolContext,
-)
+from zero.models import MessageBody, MessageIn, ToolContext
 from zero.session.store import SessionStore
+from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
 
@@ -110,7 +91,7 @@ def stub_config() -> Config:
     })
 
 
-def install_provider(*scripts) -> list[ScriptedProvider]:
+def install_provider(monkeypatch, *scripts) -> list[ScriptedProvider]:
     """把 runner 模块的 OpenAI 换成脚本化桩；每次构造消费一份脚本。
 
     返回按构造顺序累积的桩实例列表（scripts 每项是一个 iteration 的
@@ -124,11 +105,11 @@ def install_provider(*scripts) -> list[ScriptedProvider]:
         made.append(p)
         return p
 
-    runner_mod.OpenAI = factory
+    monkeypatch.setattr(runner_mod, "OpenAI", factory)
     return made
 
 
-def install_compactor_spy() -> dict:
+def install_compactor_spy(monkeypatch) -> dict:
     """把 runner 模块的 Compactor 换成计数桩，返回调用记录 dict。"""
     holder = {"calls": 0}
 
@@ -137,13 +118,13 @@ def install_compactor_spy() -> dict:
             holder["calls"] += 1
             return False
 
-    runner_mod.Compactor = SpyCompactor
+    monkeypatch.setattr(runner_mod, "Compactor", SpyCompactor)
     return holder
 
 
 def snapshot_files() -> list[str]:
     """sessions 目录下所有相对路径快照（隔离性断言用）。"""
-    root = _tmp_root / "sessions"
+    root = store_mod.SESSIONS_ROOT
     if not root.exists():
         return []
     return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
@@ -153,9 +134,9 @@ def snapshot_files() -> list[str]:
 # 1. 单次调用：工具循环正常运转，第二次迭代收到完整内存对话
 # ---------------------------------------------------------------------------
 
-def test_single_shot_with_tools():
+def test_single_shot_with_tools(monkeypatch):
     tool = EchoTool()
-    providers = install_provider([
+    providers = install_provider(monkeypatch, [
         [("tool_calls", TOOL_CALL_CHUNK)],
         [("content", "子代理完成")],
     ])
@@ -174,21 +155,20 @@ def test_single_shot_with_tools():
     assert roles == ["system", "user", "assistant", "tool"]
     assert provider.payloads[1].messages[1]["content"] == "做点事"
     assert provider.payloads[1].messages[3]["tool_call_id"] == "call_1"
-    print("1. single-shot with tool loop ok")
 
 
 # ---------------------------------------------------------------------------
 # 2. 隔离：不读写 SessionStore，父会话历史不受影响
 # ---------------------------------------------------------------------------
 
-def test_isolation_from_session_store():
+def test_isolation_from_session_store(monkeypatch):
     sid = SessionStore.create_session(CHANNEL, "parent-src")
     SessionStore.append(MessageIn(
         session_id=sid, channel=CHANNEL,
         body=MessageBody(content="父轮消息")))
 
     tool = EchoTool()
-    install_provider([
+    install_provider(monkeypatch, [
         [("tool_calls", TOOL_CALL_CHUNK)],
         [("content", "done")],
     ])
@@ -206,15 +186,14 @@ def test_isolation_from_session_store():
     assert before == after, "子 agent 不得在 sessions 目录产生任何新文件"
     history = SessionStore.load_history(sid, CHANNEL)
     assert len(history) == 1 and history[0].body.content == "父轮消息"
-    print("2. isolation from SessionStore ok")
 
 
 # ---------------------------------------------------------------------------
 # 3. 自定义 system_prompt
 # ---------------------------------------------------------------------------
 
-def test_custom_system_prompt():
-    providers = install_provider([[("content", "ok")]])
+def test_custom_system_prompt(monkeypatch):
+    providers = install_provider(monkeypatch, [[("content", "ok")]])
     asyncio.run(run_subagent(
         "翻译任务",
         config=stub_config(),
@@ -223,20 +202,19 @@ def test_custom_system_prompt():
     ))
     first = providers[0].payloads[0].messages[0]
     assert first == {"role": "system", "content": "你是翻译代理，只输出译文。"}
-    print("3. custom system_prompt ok")
 
 
 # ---------------------------------------------------------------------------
 # 4. 失败抛 RuntimeError
 # ---------------------------------------------------------------------------
 
-def test_error_raises():
+def test_error_raises(monkeypatch):
     class BoomProvider:
         async def stream_chunks(self, payload, **_kw):
             raise RuntimeError("provider down")
             yield  # noqa: unreachable — 使其成为 async generator
 
-    runner_mod.OpenAI = lambda _cfg: BoomProvider()
+    monkeypatch.setattr(runner_mod, "OpenAI", lambda _cfg: BoomProvider())
     try:
         asyncio.run(run_subagent(
             "必败任务",
@@ -246,18 +224,18 @@ def test_error_raises():
         raise AssertionError("run_subagent 应当抛 RuntimeError")
     except RuntimeError as e:
         assert "provider down" in str(e)
-    print("4. error raises RuntimeError ok")
 
 
 # ---------------------------------------------------------------------------
 # 5. 压缩跳过：子 agent 不触发 maybe_compress；会话模式照常触发（回归）
 # ---------------------------------------------------------------------------
 
-def test_compression_gate():
-    spy = install_compactor_spy()
+def test_compression_gate(monkeypatch):
+    spy = install_compactor_spy(monkeypatch)
     # 每次构造 AgentRunner 会消耗两份脚本：self.provider + compactor.provider
     # （见 AgentRunner.__init__）。故子 agent 与随后的会话 runner 各需两份。
     install_provider(
+        monkeypatch,
         [[("content", "ok")]],           # 子 agent self.provider
         [[("content", "")]],             # 子 agent compactor.provider（未使用）
         [[("content", "会话答复")]],      # 会话 self.provider
@@ -287,16 +265,15 @@ def test_compression_gate():
     events = asyncio.run(drain())
     assert events[-1].kind == "done"
     assert spy["calls"] == 1, "会话模式每个 iteration 应调用压缩检查"
-    print("5. compression gate ok")
 
 
 # ---------------------------------------------------------------------------
 # 6. tool_context 继承：工具/hook 收到父轮路由字段
 # ---------------------------------------------------------------------------
 
-def test_tool_context_inherited():
+def test_tool_context_inherited(monkeypatch):
     tool = EchoTool()
-    install_provider([
+    install_provider(monkeypatch, [
         [("tool_calls", TOOL_CALL_CHUNK)],
         [("content", "done")],
     ])
@@ -327,14 +304,13 @@ def test_tool_context_inherited():
     # SubagentManager 的职责，见测试 10；执行层不改写调用方给的路由字段。
     assert tool.contexts[0].origin.kind == "user"
     assert seen["turn_id"] == "turn-42" and seen["channel"] == CHANNEL
-    print("6. tool_context inherited ok")
 
 
 # ---------------------------------------------------------------------------
 # 7. hooks 照常生效：否决短路，错误结果留在内存对话
 # ---------------------------------------------------------------------------
 
-def test_hooks_apply_to_subagent():
+def test_hooks_apply_to_subagent(monkeypatch):
     chain = HookChain()
 
     async def deny(tool_name, kwargs, ctx):
@@ -342,7 +318,7 @@ def test_hooks_apply_to_subagent():
 
     chain.on_before_tool_call(deny)
     tool = EchoTool()
-    providers = install_provider([
+    providers = install_provider(monkeypatch, [
         [("tool_calls", TOOL_CALL_CHUNK)],
         [("content", "被否决后的回复")],
     ])
@@ -357,18 +333,18 @@ def test_hooks_apply_to_subagent():
     assert reply == "被否决后的回复"
     tool_msg = providers[0].payloads[1].messages[3]
     assert json.loads(tool_msg["content"]) == {"error": "blocked: subagent"}
-    print("7. hooks apply to subagent ok")
 
 
 # ---------------------------------------------------------------------------
 # 8. 空正文/截断不再静默返回：run_subagent 应抛 RuntimeError
 # ---------------------------------------------------------------------------
 
-def test_empty_reply_raises():
+def test_empty_reply_raises(monkeypatch):
     # 仅 reasoning、无正文（reasoning 典型吃满预算后被截空的形态）：
     # runner 现在产出 error 事件，run_subagent 据此抛 RuntimeError，
     # 而不是把一个空字符串当成有效结果回投。
     install_provider(
+        monkeypatch,
         [[("reasoning", "只有思考")]],   # 子 agent self.provider：空正文
         [[("content", "")]],             # compactor.provider（未使用）
     )
@@ -378,7 +354,6 @@ def test_empty_reply_raises():
     except RuntimeError as e:
         assert "空正文" in str(e) or "截断" in str(e), \
             f"错误信息应说明空正文/截断，实际：{e}"
-    print("8. empty reply raises RuntimeError ok")
 
 
 # ---------------------------------------------------------------------------
@@ -406,17 +381,16 @@ def test_subagent_shell_fail_closed():
     assert "无人值守" in decision.reason, f"拒绝原因应说明无人值守：{decision.reason}"
     # 非 shell 工具不受影响
     assert asyncio.run(guard("read", {"path": "x"}, ctx)) is None
-    print("9. subagent 需扩权 → fail-closed ok")
 
 
 # ---------------------------------------------------------------------------
 # 10. manager 派发：工具上下文 origin 盖章 subagent，回投/结果事件同源
 # ---------------------------------------------------------------------------
 
-def test_manager_stamps_subagent_origin():
+def test_manager_stamps_subagent_origin(monkeypatch):
     tool = EchoTool()
     bus = MessageBus()
-    install_provider([
+    install_provider(monkeypatch, [
         [("tool_calls", TOOL_CALL_CHUNK)],
         [("content", "子任务完成")],
     ])
@@ -447,18 +421,4 @@ def test_manager_stamps_subagent_origin():
     assert msg.origin.kind == "subagent" and msg.origin.task_id == sid
     event = bus.stream_queue.queue.get_nowait()
     assert event.kind == "subagent_result" and event.origin.kind == "subagent"
-    print("10. manager stamps subagent origin ok")
 
-
-if __name__ == "__main__":
-    test_single_shot_with_tools()
-    test_isolation_from_session_store()
-    test_custom_system_prompt()
-    test_error_raises()
-    test_compression_gate()
-    test_tool_context_inherited()
-    test_hooks_apply_to_subagent()
-    test_empty_reply_raises()
-    test_subagent_shell_fail_closed()
-    test_manager_stamps_subagent_origin()
-    print("all subagent tests passed")

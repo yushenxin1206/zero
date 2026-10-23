@@ -4,46 +4,58 @@
 
 ## 环境要求
 
-- Python >= 3.14.5
-- 推荐使用 [uv](https://docs.astral.sh/uv/) 管理环境与依赖
+- Python >= 3.12
+- [uv](https://docs.astral.sh/uv/) 管理环境与依赖
+- 主平台 macOS（权限体系依赖 Seatbelt）；Windows 可运行 CLI / 飞书 / Web，沙箱相关用例自动跳过
 
 ## 安装
 
-```powershell
-# 克隆/进入项目目录后，创建虚拟环境（已存在则跳过）
-uv venv
+```bash
+# 克隆/进入项目目录后，按 uv.lock 创建虚拟环境并安装依赖
+uv sync
 
-# 以可编辑模式安装，生成 zero 命令入口
-uv pip install -e .
+# 桌面窗口（pywebview）是可选依赖
+uv sync --extra web
+
+# 开发依赖（pytest / ruff）
+uv sync --dev
 ```
 
-安装成功后，虚拟环境的 `Scripts` 目录下会生成 `zero.exe`，其内嵌解释器路径指向该虚拟环境，不依赖全局 Python。
+`uv run <command>` 会在项目虚拟环境中执行命令，无需手动激活。
 
 ## 运行
 
-```powershell
-# 激活虚拟环境
-.venv\Scripts\Activate.ps1
-
+```bash
 # 默认同时启动 CLI + 飞书通道（未配置飞书 app_id 时自动跳过飞书）
-zero
+uv run zero
 
 # 只运行 CLI 通道
-zero --cli
+uv run zero --cli
 
-# 以 pywebview 桌面窗口运行 web 通道（先安装可选依赖）
-uv pip install -e ".[web]"
-zero --web
+# 以 pywebview 桌面窗口运行 web 通道
+uv run zero --web
 ```
 
-激活虚拟环境后，`zero` 可在任意目录下运行；system prompt 中的工作目录会实时跟随命令实际运行时所在的目录。
+Windows 下等价的激活方式为 `.venv\Scripts\Activate.ps1`，入口为 `.venv\Scripts\zero.exe`。
 
-### 免激活全局使用（可选）
+### 免激活全局使用（Windows，可选）
 
 希望在任意终端、不激活虚拟环境也能使用 `zero`，可以执行 `setup_zero_path.ps1`：
 
 1. 先在用户目录创建 `bin\zero.cmd` shim，转发到 `<项目路径>\.venv\Scripts\zero.exe`（项目路径取脚本所在目录，自动推导）；
 2. 再把该 `bin` 目录加入用户 PATH。
+
+## 测试与静态检查
+
+```bash
+# 全量测试（一条命令，平台不适用的用例自动 skip）
+uv run pytest
+
+# 静态检查
+uv run ruff check .
+```
+
+pytest 配置与 ruff 规则见 `pyproject.toml`。测试不依赖本机真实数据：`tests/conftest.py` 会把 HOME、会话、调度器与沙箱 profile 全部重定向到临时目录。
 
 ## 配置
 

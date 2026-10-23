@@ -19,11 +19,14 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
-from zero.session.store import SESSIONS_ROOT
+from zero.session import store as session_store
 
-STATS_PATH = SESSIONS_ROOT / "cli" / ".cli_stats.json"
+# 命令使用频次落盘路径在调用时结算（而不是 import 时），
+# 便于测试把 SESSIONS_ROOT 重定向到临时目录。
+def stats_path() -> Path:
+    return session_store.SESSIONS_ROOT / "cli" / ".cli_stats.json"
 
-# Canonical slash commands (keep in sync with CLIChannel._handle_command)
+# Canonical slash commands (keep in sync with CliCommands.dispatch)
 COMMANDS: list[tuple[str, str]] = [
     ("/new", "新建会话"),
     ("/sessions", "选择 / 切换历史会话"),
@@ -40,12 +43,12 @@ COMMANDS: list[tuple[str, str]] = [
 class CommandStats:
     """Persistent per-command usage counts used for ranking."""
 
-    def __init__(self, path: Path = STATS_PATH):
-        self._path = path
+    def __init__(self, path: Path | None = None):
+        self._path = path or stats_path()
         self._counts: dict[str, int] = {}
-        if path.exists():
+        if self._path.exists():
             try:
-                data = json.loads(path.read_text(encoding="utf-8"))
+                data = json.loads(self._path.read_text(encoding="utf-8"))
                 if isinstance(data, dict):
                     self._counts = {str(k): int(v) for k, v in data.items()}
             except (OSError, ValueError):

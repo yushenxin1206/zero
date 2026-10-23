@@ -104,7 +104,6 @@ class AgentLoop:
                     # executing; stamp routing fields and forward them
                     reply_text = ""
                     final_usage: TokenUsage | None = None
-                    cancelled = False
                     saw_error: str | None = None
                     try:
                         async for event in runner.run_stream():
@@ -129,7 +128,6 @@ class AgentLoop:
                         # 用户终止：部分回复已通过 delta 送达 channel。
                         # 补发一个带 cancelled 标记的收尾流事件 + 最终
                         # MessageOut；不落盘——部分回复不进会话历史
-                        cancelled = True
                         final_event = StreamEvent(
                             kind="done",
                             content=reply_text,

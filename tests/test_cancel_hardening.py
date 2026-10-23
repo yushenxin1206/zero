@@ -6,13 +6,11 @@
 """
 import asyncio
 import json
-import tempfile
 import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from zero.config import default_config
-from zero.core.context import Context
 from zero.core.runner import AgentRunner
 from zero.models import MessageBody, MessageOut, MessageTool, StopRequest
 from zero.session import store as store_mod
@@ -34,8 +32,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
                     "index": 0, "id": "call_x", "type": "function",
                     "function": {"name": "foo", "arguments": "{}"}}
 
-        async def scenario(tmp: Path) -> list:
-            store_mod.SESSIONS_ROOT = tmp / "sessions"
+        async def scenario() -> list:
             context = Ctx(session_id="s-hard", channel="cli")
             runner = AgentRunner(config=default_config,
                                  running_context=context)
@@ -54,8 +51,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
             # 系统取消 ≠ 用户终止，文案必须如实区分
             return SessionStore.load_history("s-hard", "cli")
 
-        with tempfile.TemporaryDirectory() as tmp:
-            hist = asyncio.run(scenario(Path(tmp)))
+        hist = asyncio.run(scenario())
         self.assertEqual(len(hist), 2)
         self.assertEqual(hist[0].sender, "assistant")
         self.assertEqual(hist[0].body.tool_calls[0].id, "call_x")
@@ -76,11 +72,10 @@ class TestLoadHistoryOrphanRepair(unittest.TestCase):
             "".join(r.model_dump_json() + "\n" for r in rows),
             encoding="utf-8")
 
-    def _mk_session(self, tmp: Path, sid: str) -> Path:
-        store_mod.SESSIONS_ROOT = tmp / "sessions"
-        root = tmp / "sessions" / "cli" / "2026-10-06" / sid
+    def _mk_session(self, sid: str) -> Path:
+        root = store_mod.SESSIONS_ROOT / "cli" / "2026-10-06" / sid
         # index 不可少：_session_file 依据它定位日期目录
-        index = tmp / "sessions" / "cli" / "index.json"
+        index = store_mod.SESSIONS_ROOT / "cli" / "index.json"
         index.parent.mkdir(parents=True, exist_ok=True)
         index.write_text(json.dumps({"cli-x": {
             "session_id": sid, "date": "2026-10-06"}}), encoding="utf-8")
@@ -88,96 +83,93 @@ class TestLoadHistoryOrphanRepair(unittest.TestCase):
 
     def test_orphan_repaired_in_memory_and_idempotent(self):
         sid = "11111111-1111-1111-1111-111111111111"
-        with tempfile.TemporaryDirectory() as tmp:
-            f = self._mk_session(Path(tmp), sid)
-            self._write_history(f, [
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="问")),
-                # 孤儿：assistant(tool_calls) 后直接是下一条 user
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="",
-                                            tool_calls=[{
-                                                "id": "call_orphan",
-                                                "type": "function",
-                                                "function": {"name": "f",
-                                                             "arguments": "{}"},
-                                            }])),
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="继续")),
-            ])
-            # 只读路径：内存治愈，但**不写盘**（并发读绝不改写飞行中的历史）
-            hist = SessionStore.load_history(sid, "cli")
-            # [user, assistant(tool_calls), tool(占位), user]
-            self.assertEqual(len(hist), 4)
-            self.assertEqual(hist[2].sender, "tool")
-            self.assertEqual(hist[2].body.tool_call_id, "call_orphan")
-            # 加载修复不知道原始原因，文案中性（不谎称用户取消）
-            self.assertEqual(json.loads(hist[2].body.content)["error"],
-                             "missing tool result (auto-repaired at load)")
-            self.assertEqual(len(f.read_text().strip().splitlines()), 3)
+        f = self._mk_session(sid)
+        self._write_history(f, [
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="问")),
+            # 孤儿：assistant(tool_calls) 后直接是下一条 user
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="",
+                                        tool_calls=[{
+                                            "id": "call_orphan",
+                                            "type": "function",
+                                            "function": {"name": "f",
+                                                         "arguments": "{}"},
+                                        }])),
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="继续")),
+        ])
+        # 只读路径：内存治愈，但**不写盘**（并发读绝不改写飞行中的历史）
+        hist = SessionStore.load_history(sid, "cli")
+        # [user, assistant(tool_calls), tool(占位), user]
+        self.assertEqual(len(hist), 4)
+        self.assertEqual(hist[2].sender, "tool")
+        self.assertEqual(hist[2].body.tool_call_id, "call_orphan")
+        # 加载修复不知道原始原因，文案中性（不谎称用户取消）
+        self.assertEqual(json.loads(hist[2].body.content)["error"],
+                         "missing tool result (auto-repaired at load)")
+        self.assertEqual(len(f.read_text().strip().splitlines()), 3)
 
-            # turn owner（persist_repair=True）：落盘修复 + 幂等
-            hist2 = SessionStore.load_history(
-                sid, "cli", persist_repair=True)
-            self.assertEqual(len(hist2), 4)
-            raw = f.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(len(raw), 4)
-            hist3 = SessionStore.load_history(
-                sid, "cli", persist_repair=True)
-            self.assertEqual(len(hist3), 4)
-            self.assertEqual(len(f.read_text().strip().splitlines()), 4)
+        # turn owner（persist_repair=True）：落盘修复 + 幂等
+        hist2 = SessionStore.load_history(
+            sid, "cli", persist_repair=True)
+        self.assertEqual(len(hist2), 4)
+        raw = f.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(raw), 4)
+        hist3 = SessionStore.load_history(
+            sid, "cli", persist_repair=True)
+        self.assertEqual(len(hist3), 4)
+        self.assertEqual(len(f.read_text().strip().splitlines()), 4)
 
     def test_duplicate_placeholder_healed(self):
         """并发误插占位 + 真实结果共存（同一 tool_call_id 两条 tool）会被
         去重治愈：剔除占位、保留真实结果，避免发给 LLM 400。"""
         sid = "33333333-3333-3333-3333-333333333333"
-        with tempfile.TemporaryDirectory() as tmp:
-            f = self._mk_session(Path(tmp), sid)
-            self._write_history(f, [
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="问")),
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="",
-                                            tool_calls=[{
-                                                "id": "call_dup",
-                                                "type": "function",
-                                                "function": {"name": "f",
-                                                             "arguments": "{}"},
-                                            }])),
-                # 误插的占位（靠前）
-                MessageTool(session_id=sid, channel="cli",
-                            body=MessageBody(
-                                content='{"error": "missing tool result '
-                                        '(auto-repaired at load)"}',
-                                tool_call_id="call_dup")),
-                # 真实结果（靠后）
-                MessageTool(session_id=sid, channel="cli",
-                            body=MessageBody(content="real result",
-                                             tool_call_id="call_dup")),
-            ])
-            hist = SessionStore.load_history(
-                sid, "cli", persist_repair=True)
-            tools = [m for m in hist if m.sender == "tool"]
-            self.assertEqual(len(tools), 1)
-            self.assertEqual(tools[0].body.content, "real result")
-            # 已落盘自愈：磁盘上不再有占位行
-            raw = f.read_text(encoding="utf-8")
-            self.assertNotIn("auto-repaired", raw)
-            self.assertEqual(len(raw.strip().splitlines()), 3)
+        f = self._mk_session(sid)
+        self._write_history(f, [
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="问")),
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="",
+                                        tool_calls=[{
+                                            "id": "call_dup",
+                                            "type": "function",
+                                            "function": {"name": "f",
+                                                         "arguments": "{}"},
+                                        }])),
+            # 误插的占位（靠前）
+            MessageTool(session_id=sid, channel="cli",
+                        body=MessageBody(
+                            content='{"error": "missing tool result '
+                                    '(auto-repaired at load)"}',
+                            tool_call_id="call_dup")),
+            # 真实结果（靠后）
+            MessageTool(session_id=sid, channel="cli",
+                        body=MessageBody(content="real result",
+                                         tool_call_id="call_dup")),
+        ])
+        hist = SessionStore.load_history(
+            sid, "cli", persist_repair=True)
+        tools = [m for m in hist if m.sender == "tool"]
+        self.assertEqual(len(tools), 1)
+        self.assertEqual(tools[0].body.content, "real result")
+        # 已落盘自愈：磁盘上不再有占位行
+        raw = f.read_text(encoding="utf-8")
+        self.assertNotIn("auto-repaired", raw)
+        self.assertEqual(len(raw.strip().splitlines()), 3)
 
     def test_clean_history_untouched(self):
         sid = "22222222-2222-2222-2222-222222222222"
-        with tempfile.TemporaryDirectory() as tmp:
-            f = self._mk_session(Path(tmp), sid)
-            self._write_history(f, [
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="问")),
-                MessageOut(session_id=sid, channel="cli",
-                           body=MessageBody(content="答")),
-            ])
-            before = f.read_text(encoding="utf-8")
-            SessionStore.load_history(sid, "cli")
-            self.assertEqual(f.read_text(encoding="utf-8"), before)
+        f = self._mk_session(sid)
+        self._write_history(f, [
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="问")),
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="答")),
+        ])
+        before = f.read_text(encoding="utf-8")
+        SessionStore.load_history(sid, "cli")
+        self.assertEqual(f.read_text(encoding="utf-8"), before)
 
 
 class TestSigintStopTurn(unittest.TestCase):
@@ -187,7 +179,7 @@ class TestSigintStopTurn(unittest.TestCase):
         async def scenario():
             bus = MessageBus()
             ch = CLIChannel(msg_bus=bus)
-            ch.session_id = "s-sigint"
+            ch.service.session_id = "s-sigint"
             ch._active_turn_id = "turn-1"
             ch._sigint_stop_turn("turn-1")
             req = await asyncio.wait_for(bus.stop_queue.dequeue(), 1)
@@ -209,10 +201,10 @@ class TestSigintStopTurn(unittest.TestCase):
         async def scenario():
             bus = MessageBus()
             ch = CLIChannel(msg_bus=bus)
-            ch.session_id = "s-sigint2"
+            ch.service.session_id = "s-sigint2"
             ch._active_turn_id = "turn-2"
             abort = threading.Event()
-            ch._approval_abort = abort
+            ch.approval._abort = abort
             ch._sigint_stop_turn("turn-2")
             req = await asyncio.wait_for(bus.stop_queue.dequeue(), 1)
             return req, abort

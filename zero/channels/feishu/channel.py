@@ -24,7 +24,8 @@ from lark_oapi.api.im.v1 import (
 )
 
 from zero.bus.queue import MessageBus, MessageOutQueue
-from zero.models import FeishuConfig, MessageBody, MessageIn, MessageOut
+from zero.models import (
+    FeishuConfig, MessageBody, MessageIn, MessageOut, StreamEvent)
 from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,8 @@ class FeishuChannel:
         await channel.connect()        # only WebSocket receiver, no bus integration
         channel.send_text("oc_xxx", "hello")  # direct send
     """
+
+    name = CHANNEL
 
     def __init__(
         self,
@@ -229,15 +232,23 @@ class FeishuChannel:
             try:
                 msg_out = await self._out_queue.dequeue()
                 # 防御：正常情况下 dispatcher 已按 channel 路由，不会走到这里
-                if msg_out.channel != "feishu":
+                if msg_out.channel != CHANNEL:
                     logger.warning(
                         "Feishu channel got MessageOut for channel %r, ignored",
                         msg_out.channel,
                     )
                     continue
-                await self.send_response(msg_out)
+                await self.deliver(msg_out)
             except Exception:
                 logger.exception("Error sending message to Feishu")
+
+    async def deliver(self, message: MessageOut) -> None:
+        """Send one final agent reply back to its originating chat."""
+        await self.send_response(message)
+
+    async def deliver_stream(self, event: StreamEvent) -> None:
+        """Feishu renders only final replies; incremental events are unused."""
+        return
 
     # ------------------------------------------------------------------
     # Send messages (async wrappers around sync lark SDK)

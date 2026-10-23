@@ -1,64 +1,55 @@
-"""Offline smoke test: background turns (scheduled tasks, interrupted
+"""Offline smoke tests: background turns (scheduled tasks, interrupted
 turns) are demultiplexed by turn_id and rendered asynchronously on the
 CLI channel — no real LLM, no TTY.
 
 Covers:
   1. A scheduled task's stream events + final MessageOut render exactly
      once as a "定时任务" panel, bump the unread counter, and fire a toast.
-  2. An interactive turn still renders through _render_turn and does NOT
-     leak into the background pipeline; a late duplicate MessageOut is
-     discarded.
+  2. An interactive turn renders through _render_turn and does NOT leak
+     into the background pipeline; a late duplicate MessageOut is discarded.
   3. A finished-but-unrendered turn (e.g. Ctrl+C interrupted) renders as
      a "后台回答" panel when its late events arrive.
   4. /tasks lists persisted scheduled tasks.
-
-Run: python tests/smoke_cli_async_render.py
 """
 import asyncio
 import io
-import sys
-import tempfile
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-import zero.session.store as store_mod
-import zero.scheduler.store as sched_mod
-
-# Isolate storage: redirect sessions/scheduler roots to a temp dir.
-_tmp = tempfile.TemporaryDirectory()
-store_mod.SESSIONS_ROOT = Path(_tmp.name) / "sessions"
-sched_mod.SCHEDULER_ROOT = Path(_tmp.name) / "scheduler"
-sched_mod.TASKS_FILE = sched_mod.SCHEDULER_ROOT / "tasks.jsonl"
 
 from rich.console import Console
 
+import zero.channels.cli.background as background_mod
 from zero.bus.queue import MessageBus
+from zero.channels.cli import CHANNEL, CLIChannel
 from zero.models import MessageBody, MessageOut, Origin, StreamEvent
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
-import zero.channels.cli as cli_mod
-from zero.channels.cli import CLIChannel, CHANNEL
 
 
-async def main():
+async def run_with_channel(scenario):
+    """Start a CLI channel + bus dispatchers, then run one scenario."""
     bus = MessageBus()
-    ch = CLIChannel(bus)
     buf = io.StringIO()
-    ch.console = Console(file=buf, highlight=False, width=100)
-
-    toasts = []
-    cli_mod.toast = lambda title, msg: toasts.append((title, msg))
-
-    tasks = [
+    ch = CLIChannel(bus, console=Console(
+        file=buf, highlight=False, width=100))
+    dispatchers = [
         asyncio.create_task(bus.run_out_dispatcher()),
         asyncio.create_task(bus.run_stream_dispatcher()),
-        asyncio.create_task(ch._stream_listener()),
-        asyncio.create_task(ch._out_listener()),
-        asyncio.create_task(ch._async_render_worker()),
     ]
+    ch.start_consumers()
+    ch.spawn(ch.background.run())
     try:
-        # --- 1. scheduled task result renders asynchronously, exactly once ---
+        return await scenario(bus, ch, buf)
+    finally:
+        await ch.stop_consumers()
+        for task in dispatchers:
+            task.cancel()
+
+
+def test_scheduled_task_result_renders_once(monkeypatch):
+    toasts = []
+    monkeypatch.setattr(
+        background_mod, "toast", lambda title, msg: toasts.append((title, msg)))
+
+    async def scenario(bus, ch, buf):
         task = ScheduleTask(
             channel=CHANNEL, session_id="sess-sched",
             instruction="[Scheduled Task]每天总结科技新闻",
@@ -76,15 +67,19 @@ async def main():
             body=MessageBody(content="今日要闻汇总"),
             origin=origin, turn_id="turn-sched"))
         await asyncio.sleep(0.5)
+
         out = buf.getvalue()
         assert "今日要闻汇总" in out, out
         assert "每天总结科技新闻" in out, out  # subtitle carries the instruction
         assert out.count("zero · 定时任务") == 1, out  # dedup done/MessageOut
-        assert ch._unread == 1, ch._unread
+        assert ch.input.unread == 1, ch.input.unread
         assert toasts and toasts[0][0] == "zero · 定时任务完成", toasts
-        print("scheduled async render ok (panel + unread + toast, no dup)")
 
-        # --- 2. interactive turn renders via _render_turn, no bg leak ---
+    asyncio.run(run_with_channel(scenario))
+
+
+def test_interactive_turn_does_not_leak_to_background():
+    async def scenario(bus, ch, buf):
         ch._active_turn_id = "turn-user"
         render = asyncio.create_task(ch._render_turn("turn-user"))
         await bus.stream_queue.enqueue(StreamEvent(
@@ -109,9 +104,12 @@ async def main():
             turn_id="turn-user"))
         await asyncio.sleep(0.3)
         assert "后台回答" not in buf.getvalue(), buf.getvalue()
-        print("interactive turn ok (no bg leak, late MessageOut discarded)")
 
-        # --- 3. interrupted turn's late completion renders as 后台回答 ---
+    asyncio.run(run_with_channel(scenario))
+
+
+def test_interrupted_turn_renders_as_background():
+    async def scenario(bus, ch, buf):
         await bus.stream_queue.enqueue(StreamEvent(
             channel=CHANNEL, session_id="sess-user", turn_id="turn-old",
             kind="done", content="迟到的回答"))
@@ -119,22 +117,23 @@ async def main():
         out = buf.getvalue()
         assert "后台回答" in out, out
         assert "迟到的回答" in out, out
-        print("interrupted-turn fallback render ok")
 
-        # --- 4. /tasks lists persisted tasks ---
-        ch.session_id = "sess-sched"
-        buf.truncate(0)
-        buf.seek(0)
-        ch._handle_tasks("all")
+    asyncio.run(run_with_channel(scenario))
+
+
+def test_tasks_listing():
+    task = ScheduleTask(
+        channel=CHANNEL, session_id="sess-sched",
+        instruction="[Scheduled Task]每天总结科技新闻",
+        schedule_type="once",
+    )
+    SchedulerStore.create(task)
+
+    async def scenario(bus, ch, buf):
+        ch.service.session_id = "sess-sched"
+        await ch.commands.dispatch("/tasks all")
         out = buf.getvalue()
         assert task.id[:8] in out, out
         assert "每天总结科技新闻" in out, out
-        print("/tasks listing ok")
 
-        print("ALL ASYNC RENDER SMOKE TESTS PASSED")
-    finally:
-        for t in tasks:
-            t.cancel()
-
-
-asyncio.run(main())
+    asyncio.run(run_with_channel(scenario))

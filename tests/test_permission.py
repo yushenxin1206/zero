@@ -12,26 +12,18 @@
   9. 文件类工具走审批门：read D 档 / write G 档授权 / 无人值守
  10. 覆盖漏接检测：带 *_path 参数的工具必须在 HANDLED_TOOLS 里
  11. 失败语义：守卫内部异常 → 拒绝（fail-closed）
-
-Run: python tests/test_permission.py
 """
 import asyncio
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 from uuid import uuid4
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import pytest
 
 from zero.permission import envelope, seatbelt
-
-# 隔离 profiles 临时目录：临时 .sb 文件不落进 ~/.zero/run
-# （策略文件不隔离——读禁止名单在 import 时按它构建，改了会与 deny 列表脱节）
-_tmp = tempfile.TemporaryDirectory()
-seatbelt.PROFILES_DIR = Path(_tmp.name) / "run"
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookContext
@@ -39,6 +31,9 @@ from zero.models import ApprovalRequest, Origin, ToolContext
 from zero.permission.guard import HANDLED_TOOLS, PermissionGuard
 from zero.tools.shell import Shell
 from zero.tools.write import Write
+
+DARWIN_ONLY = pytest.mark.skipif(
+    sys.platform != "darwin", reason="Seatbelt / launchd 仅 macOS")
 
 
 def make_ctx(channel: str = "cli", kind: str = "user") -> HookContext:
@@ -89,7 +84,6 @@ def test_render():
     assert "\n(allow mach-lookup)\n" not in text, "裸放 mach-lookup 会开到 securityd"
     assert '(global-name "com.apple.securityd")' in text
     assert '(global-name "com.apple.SecurityServer")' in text
-    print("1. render ok")
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +106,6 @@ def test_scope():
 
     v = envelope.check_writable(outside("zero-out-selftest"))
     assert not v.ok and v.tier == envelope.G, v
-    print("2. scope P/G/D ok")
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +120,6 @@ def test_wrap():
     assert argv[3:] == ["/bin/echo", "hi"]
     assert path.read_text(encoding="utf-8") == body
     path.unlink(missing_ok=True)
-    print("3. wrap ok")
 
 
 # ---------------------------------------------------------------------------
@@ -137,10 +129,8 @@ def test_wrap():
 def test_probe():
     if sys.platform != "darwin":
         assert not envelope.available()
-        print("4. probe ok (非 macOS → 不可用)")
         return
     assert envelope.available(), envelope.unavailable_reason()
-    print("4. probe ok (Seatbelt 已生效)")
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +161,6 @@ def test_guard_basics():
         worker.cancel()
 
     asyncio.run(main())
-    print("5. guard 非 shell / P 档 / 无人值守 fail-closed ok")
 
 
 def test_guard_unattended_expand_fail_closed():
@@ -186,13 +175,11 @@ def test_guard_unattended_expand_fail_closed():
         assert d is not None and d.proceed is False, d
 
     asyncio.run(main())
-    print("5b. guard 非 CLI 渠道 fail-closed ok")
 
 
 def test_guard_tiers():
     if not envelope.available():
-        print("6. guard D/G 档（跳过：内核沙箱不可用）")
-        return
+        pytest.skip("内核沙箱不可用，跳过 D/G 档语义")
 
     async def main():
         bus = MessageBus()
@@ -233,17 +220,16 @@ def test_guard_tiers():
         assert not envelope.check_writable(target2, ctx).ok
 
     asyncio.run(main())
-    print("6. guard D 档不进面板 / G 档授权与拒绝 ok")
 
 
 # ---------------------------------------------------------------------------
 # 7. shell.py 回投
 # ---------------------------------------------------------------------------
 
+@DARWIN_ONLY
 def test_shell_denied_roundtrip():
     if not envelope.available():
-        print("7. shell denied 回投（跳过：内核沙箱不可用）")
-        return
+        pytest.skip("内核沙箱不可用，跳过 shell 拒绝回投")
 
     shell = Shell()
     ctx = ToolContext(channel="cli", session_id=str(uuid4()))
@@ -262,13 +248,13 @@ def test_shell_denied_roundtrip():
     assert result["returncode"] == 0, result
     assert "sandbox_denied" not in result, result
     Path(inside).unlink(missing_ok=True)
-    print("7. shell denied 回投 ok")
 
 
 # ---------------------------------------------------------------------------
 # 8. launchd 变更面：读允许 / 写拒绝（报警线）
 # ---------------------------------------------------------------------------
 
+@DARWIN_ONLY
 def test_launchd_mutation_blocked():
     """锁住「launchd 只能读、不能变」这一语义。
 
@@ -282,8 +268,7 @@ def test_launchd_mutation_blocked():
     是因为命令压根不可用而变成空测试。
     """
     if not envelope.available():
-        print("8. launchd 变更面（跳过：内核沙箱不可用）")
-        return
+        pytest.skip("内核沙箱不可用，跳过 launchd 变更面")
 
     uid = os.getuid()
     tag = uuid4().hex[:8]
@@ -327,11 +312,11 @@ def test_launchd_mutation_blocked():
         control_wrote = escape.exists()
         bootout()
         escape.unlink(missing_ok=True)
-        assert control_ok, (
-            "对照步失败：沙箱外 launchctl bootstrap 都不成功，"
-            "本测试已失去意义（命令本身不可用）")
-        assert control_wrote, (
-            "对照步失败：沙箱外也写不出包络外文件，本测试已失去意义")
+        if not control_ok or not control_wrote:
+            # 沙箱外都做不到 → 该环境（如无 GUI 会话的 CI）无法复现这条
+            # 攻击向量，测试失去意义。跳过而非失败，避免把环境限制误报成
+            # 安全回归；开发机上仍然强制执行。
+            pytest.skip("对照步不可复现：当前环境无法 bootstrap launchd job")
 
         # 沙箱内：bootstrap 必须被拒，且不得写出任何东西
         r = sandboxed(["/bin/launchctl", "bootstrap", f"gui/{uid}",
@@ -353,7 +338,6 @@ def test_launchd_mutation_blocked():
         escape.unlink(missing_ok=True)
         plist.unlink(missing_ok=True)
 
-    print("8. launchd 变更面被挡住（读允许/写拒绝）ok")
 
 
 # ---------------------------------------------------------------------------
@@ -440,7 +424,6 @@ def test_file_tools_use_approval_gate():
         assert not envelope.check_writable(target2, ctx).ok
 
     asyncio.run(main())
-    print("9. 进程内工具走审批门（read D 档 / write G 档授权 / 无人值守）ok")
 
 
 # ---------------------------------------------------------------------------
@@ -470,40 +453,18 @@ def test_guard_covers_all_file_tools():
         f"这些工具带 *_path 参数却没被守卫处理：{missing}——"
         f"请登记进 permission.guard.HANDLED_TOOLS，或说明为何无需检查")
     assert covered >= 3, f"只找到 {covered} 个带路径参数的工具，测试可能已失效"
-    print(f"10. 守卫覆盖全部 {covered} 个带路径参数的工具 ok")
 
 
-def test_guard_fail_closed_on_internal_error():
+def test_guard_fail_closed_on_internal_error(monkeypatch):
     """守卫内部异常必须变成拒绝，不能被 hook 的 fail-open 吞成放行。"""
-    original = envelope.check_readable
-
     def boom(*_a, **_kw):
         raise RuntimeError("injected guard bug")
 
-    envelope.check_readable = boom
-    try:
-        guard = PermissionGuard(MessageBus())
-        decision = asyncio.run(
-            guard("read", {"file_path": "zero/permission/envelope.py"}, make_ctx()))
-    finally:
-        envelope.check_readable = original
+    monkeypatch.setattr(envelope, "check_readable", boom)
+    guard = PermissionGuard(MessageBus())
+    decision = asyncio.run(
+        guard("read", {"file_path": "zero/permission/envelope.py"}, make_ctx()))
 
     assert decision is not None and decision.proceed is False, decision
     assert "fail-closed" in decision.reason, decision.reason
-    print("11. 守卫内部异常 → 拒绝（fail-closed）ok")
 
-
-if __name__ == "__main__":
-    test_render()
-    test_scope()
-    test_wrap()
-    test_probe()
-    test_guard_basics()
-    test_guard_unattended_expand_fail_closed()
-    test_guard_tiers()
-    test_shell_denied_roundtrip()
-    test_launchd_mutation_blocked()
-    test_file_tools_use_approval_gate()
-    test_guard_covers_all_file_tools()
-    test_guard_fail_closed_on_internal_error()
-    print("all permission tests passed")

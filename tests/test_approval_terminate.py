@@ -6,10 +6,7 @@ hook 在 before_tool_call 抛 TurnCancelled（等价审批被终止后在其等�
    下一轮不再因孤儿 tool_call_id 触发 400。
 """
 import asyncio
-import json
-import tempfile
 import unittest
-from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from zero.config import default_config
@@ -17,7 +14,6 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn
-from zero.session import store as store_mod
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
@@ -47,7 +43,7 @@ class FakeProvider:
         }
 
 
-async def run_case(tmp: Path) -> dict:
+async def run_case() -> dict:
     bus = MessageBus()
     cfg = default_config
     registry = ToolRegistry()
@@ -59,7 +55,6 @@ async def run_case(tmp: Path) -> dict:
 
     loop = AgentLoop(msg_bus=bus, config=cfg,
                      tool_registry=registry, hooks=CancellingHooks())
-    store_mod.SESSIONS_ROOT = tmp / "sessions"
 
     from zero.core.runner import AgentRunner
     orig = AgentRunner.__init__
@@ -110,8 +105,7 @@ async def run_case(tmp: Path) -> dict:
 class TestApprovalTerminate(unittest.TestCase):
 
     def test_approval_cancel_persists_placeholder(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            r = asyncio.run(run_case(Path(tmp)))
+        r = asyncio.run(run_case())
         # 终止信号切达 cancelled 收尾，而非 error
         self.assertIsNone(r["err_ev"], "TurnCancelled 不应被吞成 error")
         self.assertIsNotNone(r["done_ev"])
