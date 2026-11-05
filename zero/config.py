@@ -17,12 +17,10 @@ from zero.models import (
     ProviderConfig,
     ProviderConfigs,
 )
+from zero.paths import current
 from zero.utils.file import save_or_create_file
 
 HOME = Path.home()
-ZERO_ROOT = HOME / '.zero'
-CONFIG_PATH = ZERO_ROOT / 'config.json'
-MEMORY_PATH = ZERO_ROOT / "memory.md"
 
 # 项目级记忆的存放目录名（相对运行目录）。项目级记忆由模型用 write/edit
 # 工具维护，代码侧只读不写。
@@ -32,10 +30,14 @@ PROJECT_ZERO_DIRNAME = ".zero"
 def project_memory_path(cwd: Path) -> Path:
     """项目级记忆文件路径：<cwd>/.zero/memory/memory.md。
 
-    与用户级 MEMORY_PATH（~/.zero/memory.md）区分：后者是跨项目的用户偏好
+    与用户级记忆（``current().memory``）区分：后者是跨项目的用户偏好
     与背景，前者是当前项目的持久事实与约定。cwd 由调用方传入（通常
-    core/context.get_cwd()），避免本模块反向依赖 core。
+    core/context.get_cwd()），避免本模块反向依赖 core。显式配置了
+    ``Paths.project_memory`` 时以它为准（测试/嵌入式宿主用）。
     """
+    override = current().project_memory
+    if override is not None:
+        return override
     return cwd / PROJECT_ZERO_DIRNAME / "memory" / "memory.md"
 
 # 工具结果截断阈值（字符）。core/runner.py 执行截断、core/context.py
@@ -135,7 +137,8 @@ class Config(BaseSettings):
         return getattr(self.providers, provider_key)
 
 
-def save_config(config: Config):
+def save_config(config: Config, path: Path | None = None):
+    """写出配置模板。``path`` 缺省取当前数据根，测试/嵌入可显式指定。"""
     # 仅人工手动运行（python -m zero.config）生成 config.json 模板，运行时
     # 不会调用，故用全字段 dump 展示完整默认值结构。注意：勿在已含
     # agentRuntimes 条目的配置上重跑——全字段展开会把磁盘上精简的条目污染
@@ -143,21 +146,23 @@ def save_config(config: Config):
     # 的字段级继承（例如 compact 会带上显式的默认 temperature）。
     config_json = config.model_dump_json(indent=2, by_alias=True)
     save_or_create_file(
-        file_path=CONFIG_PATH,
+        file_path=path or current().config,
         content=config_json
     )
 
 
-def load_config():
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+def load_config(path: Path | None = None) -> Config:
+    """显式读取配置。import 时绝不调用；调用方自己决定读取时机。
+
+    ``path`` 缺省取当前数据根的 ``config.json``，不存在时返回全默认 Config。
+    """
+    target = path or current().config
+    if target.exists():
+        with open(target, 'r', encoding='utf-8') as f:
             data = json.load(f)
             return Config.model_validate(data)
-    else:
-        return Config()
+    return Config()
 
-
-default_config = load_config()
 
 if __name__ == '__main__':
     save_config(load_config())

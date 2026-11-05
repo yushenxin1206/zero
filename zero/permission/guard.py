@@ -48,10 +48,6 @@ HANDLED_TOOLS = ("shell", "read", "write", "edit")
 
 _TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-permission add-root <path>"
 
-# 有人值守、可以就地弹审批面板作答的渠道。新增交互渠道（如 web 桌面窗口）
-# 时在此登记；飞书等异步渠道与 scheduler/subagent 来源仍然 fail-closed。
-ATTENDED_CHANNELS = frozenset({"cli", "web"})
-
 _DEGRADED_UNATTENDED = (
     "permission: 本机内核沙箱不可用（探针未通过），且当前渠道无人值守，"
     "命令未执行。这类环境下没有「包络内免审批」，一律 fail-closed"
@@ -127,13 +123,14 @@ class PermissionGuard:
         self.msg_bus = msg_bus
 
     def _attended(self, ctx: HookContext) -> bool:
-        """有人能回答审批吗？非交互渠道与后台来源都算无人值守。"""
-        if self.msg_bus is None or ctx.channel not in ATTENDED_CHANNELS:
+        """有人能回答审批吗？非交互渠道与后台来源都算无人值守。
+
+        渠道/来源判定收敛到 ``envelope.attended``：网络放行用的是同一份规则，
+        避免"能审批"和"能联网"两套名单各自漂移。
+        """
+        if self.msg_bus is None:
             return False
-        origin = ctx.tool_context.origin if ctx.tool_context else None
-        if origin is not None and origin.kind in ("scheduler", "subagent"):
-            return False
-        return True
+        return envelope.attended(ctx)
 
     # ------------------------------------------------------------------
     # 分发

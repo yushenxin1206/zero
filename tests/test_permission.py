@@ -23,6 +23,7 @@ from uuid import uuid4
 
 import pytest
 
+from zero.paths import current
 from zero.permission import envelope, seatbelt
 
 from zero.bus.queue import MessageBus
@@ -69,7 +70,7 @@ def test_render():
     # 渲染值一律 realpath 后的字面量（macOS：/tmp → /private/tmp）
     root = seatbelt._quote(envelope._real("/tmp/proj"))
     sess = seatbelt._quote(envelope._real("/tmp/proj/sess"))
-    policy = seatbelt._quote(envelope._real(envelope.PROFILE_FILE))
+    policy = seatbelt._quote(envelope._real(current().profile_file))
     ssh = seatbelt._quote(envelope._real(envelope.HOME / ".ssh"))
     assert "(deny default)" in text
     assert "(allow file-read*)" in text
@@ -84,6 +85,31 @@ def test_render():
     assert "\n(allow mach-lookup)\n" not in text, "裸放 mach-lookup 会开到 securityd"
     assert '(global-name "com.apple.securityd")' in text
     assert '(global-name "com.apple.SecurityServer")' in text
+
+
+def test_render_denied_network():
+    """无人值守档必须显式断网，且压过基线里可能的网络放行。"""
+    env = envelope.Envelope(project_root=Path("/tmp/proj"), network=False)
+    text = seatbelt.render_profile(env)
+    assert "(allow network*)" not in text
+    assert "(deny network*)" in text
+
+
+def test_network_policy_by_source():
+    """网络放行与「能否弹审批」共用同一判定：只有交互渠道的用户轮次放行。"""
+    assert envelope.attended(make_ctx())
+    assert envelope.current_envelope(make_ctx()).network
+    assert envelope.current_envelope(ToolContext(channel="cli")).network
+
+    unattended = (
+        ToolContext(channel="cli", origin=Origin(kind="scheduler")),
+        ToolContext(channel="cli", origin=Origin(kind="subagent")),
+        ToolContext(channel="feishu"),
+        None,
+    )
+    for ctx in unattended:
+        assert not envelope.attended(ctx), ctx
+        assert not envelope.current_envelope(ctx).network, ctx
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +157,14 @@ def test_probe():
         assert not envelope.available()
         return
     assert envelope.available(), envelope.unavailable_reason()
+
+
+@DARWIN_ONLY
+def test_network_probe():
+    """断网档双向探针：宿主能连、沙箱内必须连不上。"""
+    if not envelope.available():
+        pytest.skip("内核沙箱不可用，跳过断网探针")
+    assert envelope.network_enforced(), "断网档未生效（(deny network*) 没起作用）"
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +282,43 @@ def test_shell_denied_roundtrip():
     assert result["returncode"] == 0, result
     assert "sandbox_denied" not in result, result
     Path(inside).unlink(missing_ok=True)
+
+
+@DARWIN_ONLY
+def test_shell_network_by_source():
+    """端到端：同一联网命令，交互来源成功，无人值守来源被内核拒绝。
+
+    用 ``python -c`` 而不是 nc：单程序即可"连接 + 读取"，正是评审文档里
+    指出的外泄形态；且拒绝时 stderr 带 ``Operation not permitted``，能同时
+    验证 sandbox_denied 与断网 hint 的回投链路。
+    """
+    if not envelope.available():
+        pytest.skip("内核沙箱不可用，跳过断网端到端")
+
+    import shlex
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(5)
+    port = listener.getsockname()[1]
+    code = f"import socket; socket.create_connection(('127.0.0.1', {port}), 2)"
+    command = shlex.join([sys.executable, "-B", "-c", code])
+    try:
+        attended_ctx = ToolContext(
+            channel="cli", session_id=str(uuid4()), origin=Origin(kind="user"))
+        result = asyncio.run(Shell().run(context=attended_ctx, command=command))
+        assert result["returncode"] == 0, result
+
+        unattended_ctx = ToolContext(
+            channel="cli", session_id=str(uuid4()),
+            origin=Origin(kind="scheduler"))
+        result = asyncio.run(Shell().run(context=unattended_ctx, command=command))
+        assert result["returncode"] != 0, result
+        assert result.get("sandbox_denied") is True, result
+        assert "断网" in result["needed"], result
+    finally:
+        listener.close()
 
 
 # ---------------------------------------------------------------------------

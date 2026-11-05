@@ -9,7 +9,6 @@ import asyncio
 import unittest
 
 from zero.bus.queue import MessageBus
-from zero.config import default_config
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, Hooks
 from zero.core.loop import AgentLoop
@@ -17,6 +16,7 @@ from zero.models import MessageBody, MessageIn
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
+from tests.support import make_test_config
 
 
 class _DummyTool(Tool):
@@ -45,7 +45,7 @@ class FakeProvider:
 
 async def run_case() -> dict:
     bus = MessageBus()
-    cfg = default_config
+    cfg = make_test_config()
     registry = ToolRegistry()
     registry.register(_DummyTool())
 

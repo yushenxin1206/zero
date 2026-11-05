@@ -5,7 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-import zero.session.store as store_mod
+from zero.paths import current
 from zero.core.compactor import (
     COMPACT_FINAL_INSTRUCTION,
     COMPRESS_PROMPT,
@@ -416,7 +416,7 @@ def test_maybe_compress_chained():
 
 def _write_legacy_summary(sid: str, content: str, covered: str) -> Path:
     """直接在会话目录写入旧版 SummaryRecord 结构的 summary.json。"""
-    path = store_mod.SESSIONS_ROOT / CHANNEL
+    path = current().sessions / CHANNEL
     for date_dir in path.iterdir():
         target = date_dir / sid / "summary.json"
         if target.parent.is_dir():

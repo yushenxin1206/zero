@@ -1,8 +1,8 @@
-"""Offline tests for session titles (isolated SESSIONS_ROOT via conftest)."""
+"""Offline tests for session titles (isolated data root via conftest)."""
 import json
 
-import zero.session.store as store_mod
 from zero.models import MessageBody, MessageIn, MessageOut
+from zero.paths import current
 from zero.session.store import TITLE_MAX_LEN, SessionStore
 
 CHANNEL = "cli"
@@ -13,7 +13,7 @@ def fresh_session(source_id: str) -> str:
 
 
 def index_path():
-    return store_mod.SESSIONS_ROOT / CHANNEL / "index.json"
+    return current().sessions / CHANNEL / "index.json"
 
 
 def test_make_title():

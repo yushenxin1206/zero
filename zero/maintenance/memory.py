@@ -8,7 +8,7 @@ import datetime as dt
 import json
 import logging
 
-from zero.config import MEMORY_PATH
+from zero.paths import current
 from zero.models import AgentRuntimeConfig, MaintenanceConfig
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
@@ -56,7 +56,7 @@ async def run_memory(
     if not summaries:
         return  # 无新复盘信息，无需更新
 
-    memory_path = MEMORY_PATH
+    memory_path = current().memory
     current = ""
     if memory_path.exists():
         current = memory_path.read_text(encoding="utf-8").strip()

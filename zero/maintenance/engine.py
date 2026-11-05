@@ -10,7 +10,8 @@ import datetime as dt
 import json
 import logging
 
-from zero.config import ZERO_ROOT, Config
+from zero.config import Config
+from zero.paths import current
 from zero.models import AgentRuntimeConfig
 from zero.providers.openai import OpenAI
 from zero.scheduler import cron
@@ -20,8 +21,9 @@ from zero.maintenance.session_summary import run_session_summary
 
 logger = logging.getLogger(__name__)
 
-STATE_DIR = ZERO_ROOT / "maintenance"
-STATE_FILE = STATE_DIR / "state.json"
+# ---------------------------------------------------------------------------
+# 运行态（路径随 current() 惰性结算，不 import 时冻结）
+# ---------------------------------------------------------------------------
 
 # 启动补跑延迟（秒）：错过的最近槽位在启动 60s 后补跑
 CATCHUP_DELAY = 60
@@ -106,18 +108,20 @@ class MaintenanceEngine:
     # ------------------------------------------------------------------
 
     def _load_state(self) -> dict:
-        if not STATE_FILE.exists():
+        state_file = current().maintenance_state
+        if not state_file.exists():
             return {}
         try:
-            data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            data = json.loads(state_file.read_text(encoding="utf-8"))
             return data if isinstance(data, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
 
     def _save_state(self, state: dict) -> None:
         try:
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            STATE_FILE.write_text(
+            state_file = current().maintenance_state
+            state_file.parent.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(
                 json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             logger.exception("maintenance 状态写入失败（下次运行可能重复补跑）")

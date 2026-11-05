@@ -18,6 +18,12 @@ _DENIED_HINT = (
     "请改用包络内数据。不要尝试绕过。"
 )
 
+_NETWORK_HINT = (
+    "本来源无人值守（scheduler / subagent / 非交互渠道），shell 默认断网。"
+    "若命令确实需要联网，请让用户在有交互的 CLI/Web 会话中执行；"
+    "无人值守来源不能申请网络扩权。"
+)
+
 
 class Shell(Tool):
 
@@ -80,12 +86,13 @@ class Shell(Tool):
         # 内核沙箱：脱离白名单命中或本机不可用时退化为裸执行——两种情况都
         # 已在 permission.guard 里审批过，这里不重复判定。
         profile_path = None
+        env = None
         argv: list[str] = []
         if not is_windows:
             argv = shlex.split(command)
             if envelope.available() and not envelope.matches_unsandbox(argv):
-                profile = seatbelt.render_profile(
-                    envelope.current_envelope(context))
+                env = envelope.current_envelope(context)
+                profile = seatbelt.render_profile(env)
                 argv, profile_path = seatbelt.wrap(argv, profile)
 
         try:
@@ -149,7 +156,10 @@ class Shell(Tool):
             if any(m in result["stderr"] for m in _DENIED_MARKERS):
                 # 内核兜底拦下：把"缺什么"回投给模型，触发 write_paths 申请
                 result["sandbox_denied"] = True
-                result["needed"] = _DENIED_HINT
+                hints = [_DENIED_HINT]
+                if env is not None and not env.network:
+                    hints.append(_NETWORK_HINT)
+                result["needed"] = " ".join(hints)
 
         return result
 

@@ -16,7 +16,6 @@ from pathlib import Path
 from uuid import uuid4
 
 import zero.core.runner as runner_mod
-import zero.session.store as store_mod
 from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.compactor import Compactor
@@ -24,6 +23,7 @@ from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext, ToolCallDecision
 from zero.core.runner import AgentRunner, run_subagent
 from zero.models import MessageBody, MessageIn, ToolContext
+from zero.paths import current
 from zero.session.store import SessionStore
 from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
@@ -124,7 +124,7 @@ def install_compactor_spy(monkeypatch) -> dict:
 
 def snapshot_files() -> list[str]:
     """sessions 目录下所有相对路径快照（隔离性断言用）。"""
-    root = store_mod.SESSIONS_ROOT
+    root = current().sessions
     if not root.exists():
         return []
     return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
@@ -212,7 +212,7 @@ def test_error_raises(monkeypatch):
     class BoomProvider:
         async def stream_chunks(self, payload, **_kw):
             raise RuntimeError("provider down")
-            yield  # noqa: unreachable — 使其成为 async generator
+            yield  # 不可达：仅用于声明 async generator
 
     monkeypatch.setattr(runner_mod, "OpenAI", lambda _cfg: BoomProvider())
     try:

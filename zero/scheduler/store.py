@@ -7,11 +7,8 @@ one ScheduleTask per line, keyed by task id.
 """
 from datetime import datetime
 
-from zero.config import ZERO_ROOT
+from zero.paths import current
 from zero.scheduler.models import ScheduleTask
-
-SCHEDULER_ROOT = ZERO_ROOT / "scheduler"
-TASKS_FILE = SCHEDULER_ROOT / "tasks.jsonl"
 
 
 class SchedulerStore:
@@ -19,9 +16,10 @@ class SchedulerStore:
     @staticmethod
     def _load_tasks() -> dict[str, ScheduleTask]:
         tasks: dict[str, ScheduleTask] = {}
-        if not TASKS_FILE.exists():
+        path = current().tasks
+        if not path.exists():
             return tasks
-        with TASKS_FILE.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -32,8 +30,9 @@ class SchedulerStore:
 
     @staticmethod
     def _save_tasks(tasks: dict[str, ScheduleTask]) -> None:
-        TASKS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with TASKS_FILE.open("w", encoding="utf-8") as f:
+        path = current().tasks
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as f:
             for task in tasks.values():
                 f.write(task.model_dump_json() + "\n")
 

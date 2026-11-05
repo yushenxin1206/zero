@@ -21,13 +21,17 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from zero.config import ZERO_ROOT
+from zero.paths import current
 
 logger = logging.getLogger(__name__)
 
 SEATBELT_EXEC = Path("/usr/bin/sandbox-exec")
-PROFILES_DIR = ZERO_ROOT / "run"
-PROBE_MARK = ".seatbelt-probe"  # 探针标记，落在 PROFILES_DIR 内（不污染用户仓库）
+PROBE_MARK = ".seatbelt-probe"  # 探针标记，落在 profiles 目录内（不污染用户仓库）
+
+
+def _profiles_dir() -> Path:
+    """沙箱 profile 的临时目录，随当前数据根结算（不 import 时冻结）。"""
+    return current().profiles
 
 
 class SeatbeltError(Exception):
@@ -47,7 +51,7 @@ def _quote(path: Path) -> str:
 
 def _probe_mark() -> Path:
     """探针标记的真实路径。恒定为 deny 项，是"deny 真的生效"的判据。"""
-    return Path(os.path.realpath(PROFILES_DIR / PROBE_MARK))
+    return Path(os.path.realpath(_profiles_dir() / PROBE_MARK))
 
 
 def render_profile(env: Any) -> str:
@@ -97,6 +101,11 @@ def render_profile(env: Any) -> str:
 
     if env.network:
         out.append("(allow network*)")
+    else:
+        # 无人值守来源（scheduler / subagent / 非交互渠道）：显式 deny，
+        # 压过 system.sb 基线里可能存在的网络放行。
+        out.append("; ---- 网络：无人值守来源，显式禁止 ----")
+        out.append("(deny network*)")
     return "\n".join(out) + "\n"
 
 
@@ -110,12 +119,13 @@ def wrap(argv: list[str], profile_text: str) -> tuple[list[str], Path]:
     profiles 目录 0700 且不在写集合内 → 沙箱内进程改不了它（deny default 兜底）。
     不加 /bin/sh -c，保持"无 shell 语义"不变。
     """
-    PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+    profiles = _profiles_dir()
+    profiles.mkdir(parents=True, exist_ok=True)
     try:
-        os.chmod(PROFILES_DIR, 0o700)
+        os.chmod(profiles, 0o700)
     except OSError:  # noqa: BLE001 - 权限收紧失败不应阻断执行
-        logger.warning("无法收紧 %s 权限", PROFILES_DIR)
-    fd, name = tempfile.mkstemp(suffix=".sb", dir=str(PROFILES_DIR))
+        logger.warning("无法收紧 %s 权限", profiles)
+    fd, name = tempfile.mkstemp(suffix=".sb", dir=str(profiles))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(profile_text)
     return [str(SEATBELT_EXEC), "-f", name, *argv], Path(name)

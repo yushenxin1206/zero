@@ -18,9 +18,9 @@ from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.models import Message, MessageBody, MessageIn, StopRequest
+from zero.paths import current
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
-from zero.session import store as session_store
 from zero.session.models import SessionMeta
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -66,10 +66,10 @@ class ChannelService:
         self.source_prefix = source_prefix or channel
         self.source_id = ""
         self.session_id = ""
-        # 路径在构造时结算，而不是模块导入时——测试把 SESSIONS_ROOT 指到
-        # 临时目录后，新建的 channel 立即生效。
+        # 路径在构造时结算，而不是模块导入时——测试/嵌入方调 paths.configure()
+        # 后，新建的 channel 立即生效。
         self._binding_path = (
-            session_store.SESSIONS_ROOT / channel / f".{channel}_current.json")
+            current().sessions / channel / f".{channel}_current.json")
 
     # ------------------------------------------------------------------
     # Session binding

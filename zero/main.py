@@ -18,7 +18,8 @@ from zero.tools.edit import Edit
 from zero.tools.shell import Shell
 from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
-from zero.config import ZERO_ROOT, default_config
+from zero.config import Config, load_config
+from zero.paths import configure, current
 
 log = logging.getLogger(__name__)
 
@@ -50,17 +51,18 @@ def build_hooks(msg_bus: MessageBus) -> Hooks:
 
 def build_agent_loop(msg_bus: MessageBus,
                      tool_registry: ToolRegistry,
-                     hooks: Hooks) -> AgentLoop:
+                     hooks: Hooks,
+                     config: Config) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
-        config=default_config,
+        config=config,
         tool_registry=tool_registry,
         hooks=hooks,
     )
 
 
-def build_maintenance_engine() -> MaintenanceEngine:
-    return MaintenanceEngine(config=default_config)
+def build_maintenance_engine(config: Config) -> MaintenanceEngine:
+    return MaintenanceEngine(config=config)
 
 
 @dataclass
@@ -75,7 +77,7 @@ class CoreRuntime:
     maintenance: MaintenanceEngine
 
 
-def build_core() -> CoreRuntime:
+def build_core(config: Config) -> CoreRuntime:
     msg_bus = MessageBus()
     registry = build_tool_registry()
     hooks = build_hooks(msg_bus)
@@ -83,12 +85,13 @@ def build_core() -> CoreRuntime:
     # 同一条链——permission.guard 对子 agent 的需审批命令直接 fail-closed
     subagent_manager = SubagentManager(
         msg_bus=msg_bus,
-        config=default_config,
+        config=config,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
         hooks=hooks,
     )
     registry.register(SubagentTool(subagent_manager))
-    agent_loop = build_agent_loop(msg_bus, tool_registry=registry, hooks=hooks)
+    agent_loop = build_agent_loop(
+        msg_bus, tool_registry=registry, hooks=hooks, config=config)
     return CoreRuntime(
         msg_bus=msg_bus,
         tool_registry=registry,
@@ -96,7 +99,7 @@ def build_core() -> CoreRuntime:
         subagent_manager=subagent_manager,
         agent_loop=agent_loop,
         scheduler=Scheduler(msg_bus=msg_bus),
-        maintenance=build_maintenance_engine(),
+        maintenance=build_maintenance_engine(config),
     )
 
 
@@ -121,8 +124,8 @@ def start_background(core: CoreRuntime) -> list[asyncio.Task]:
     ]
 
 
-def start_feishu(msg_bus: MessageBus) -> asyncio.Task | None:
-    feishu_cfg = default_config.channels.feishu
+def start_feishu(msg_bus: MessageBus, config: Config) -> asyncio.Task | None:
+    feishu_cfg = config.channels.feishu
     if not feishu_cfg.app_id:
         log.warning("未配置飞书 app_id，跳过 feishu channel")
         return None
@@ -131,19 +134,19 @@ def start_feishu(msg_bus: MessageBus) -> asyncio.Task | None:
     return asyncio.create_task(_guard(channel.start(), "feishu"))
 
 
-async def run(cli_only: bool = False):
+async def run(config: Config, cli_only: bool = False):
     """
     启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
     共享同一个 MessageBus / AgentLoop / Scheduler。
     """
-    core = build_core()
+    core = build_core(config)
     background = start_background(core)
     if not cli_only:
-        if (feishu := start_feishu(core.msg_bus)) is not None:
+        if (feishu := start_feishu(core.msg_bus, config)) is not None:
             background.append(feishu)
 
     cli_channel = CLIChannel(
-        msg_bus=core.msg_bus, config=default_config,
+        msg_bus=core.msg_bus, config=config,
         tool_registry=core.tool_registry)
     core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
@@ -161,21 +164,21 @@ async def run(cli_only: bool = False):
             log.error("%s task failed", task_names.get(t, "unknown"), exc_info=exc)
 
 
-def run_web_desktop():
+def run_web_desktop(config: Config):
     """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。"""
     from zero.channels.web.shell import run_desktop
 
-    web_cfg = default_config.channels.web
+    web_cfg = config.channels.web
 
     async def backend(holder: dict):
         from zero.channels.web.server import WebChannel
 
-        core = build_core()
+        core = build_core(config)
         background = start_background(core)
-        if (feishu := start_feishu(core.msg_bus)) is not None:
+        if (feishu := start_feishu(core.msg_bus, config)) is not None:
             background.append(feishu)
 
-        channel = WebChannel(msg_bus=core.msg_bus, config=default_config)
+        channel = WebChannel(msg_bus=core.msg_bus, config=config)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()
@@ -253,9 +256,14 @@ def quiet_third_party_loggers():
 def main():
     args = parse_args()
 
+    # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
+    # 显式 Config，不再访问模块级单例。
+    configure()
+    config = load_config()
+
     # 日志统一写文件（绝对路径，任意目录启动都不会散落 debug.log），
     # 避免打断 rich 渲染的终端界面
-    log_dir = ZERO_ROOT
+    log_dir = current().root
     log_dir.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=str(log_dir / "debug.log"),
@@ -266,9 +274,9 @@ def main():
 
     try:
         if args.web:
-            run_web_desktop()
+            run_web_desktop(config)
         else:
-            asyncio.run(run(cli_only=args.cli))
+            asyncio.run(run(config, cli_only=args.cli))
     except KeyboardInterrupt:
         pass
 
