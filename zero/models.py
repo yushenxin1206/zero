@@ -111,6 +111,9 @@ class Message(Base):
     # 仅第三方插件/未来扩展使用的透传口袋；核心代码（core/ channels/
     # scheduler/ 内置 plugins）一律不读不写
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # 加载期补写的「工具结果缺失」占位。真实消息恒为 False；读取方据此
+    # 区分占位与真实结果，不靠正文文案匹配。
+    synthetic: bool = False
     timestamp: datetime = Field(default_factory=datetime.now)
 
     def to_openai(self) -> dict[str, Any] | None:

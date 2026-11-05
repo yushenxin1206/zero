@@ -10,10 +10,11 @@ import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
-from zero.config import default_config
+from tests.support import make_test_config
 from zero.core.runner import AgentRunner
-from zero.models import MessageBody, MessageOut, MessageTool, StopRequest
-from zero.session import store as store_mod
+from zero.models import Message, MessageBody, MessageOut, StopRequest
+from zero.paths import current
+from zero.session.models import TurnMarker
 from zero.session.store import SessionStore
 
 
@@ -34,7 +35,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
 
         async def scenario() -> list:
             context = Ctx(session_id="s-hard", channel="cli")
-            runner = AgentRunner(config=default_config,
+            runner = AgentRunner(config=make_test_config(),
                                  running_context=context)
             runner.provider = ToolsProvider()
 
@@ -62,104 +63,109 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
                          "aborted: runner cancelled (application shutdown)")
 
 
-class TestLoadHistoryOrphanRepair(unittest.TestCase):
-    """load_history 兜底：任何来源的孤儿 tool_calls 在加载时治愈。"""
+class TestLoadHistoryTurnRecovery(unittest.TestCase):
+    """恢复语义由 turn 标记决定，不再靠正文文案猜测。"""
 
     @staticmethod
-    def _write_history(path: Path, rows: list[MessageOut]) -> None:
+    def _write_history(path: Path, rows: list) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             "".join(r.model_dump_json() + "\n" for r in rows),
             encoding="utf-8")
 
     def _mk_session(self, sid: str) -> Path:
-        root = store_mod.SESSIONS_ROOT / "cli" / "2026-10-06" / sid
+        root = current().sessions / "cli" / "2026-10-06" / sid
         # index 不可少：_session_file 依据它定位日期目录
-        index = store_mod.SESSIONS_ROOT / "cli" / "index.json"
+        index = current().sessions / "cli" / "index.json"
         index.parent.mkdir(parents=True, exist_ok=True)
         index.write_text(json.dumps({"cli-x": {
             "session_id": sid, "date": "2026-10-06"}}), encoding="utf-8")
         return root / "messages.jsonl"
 
-    def test_orphan_repaired_in_memory_and_idempotent(self):
+    @staticmethod
+    def _tool_call_msg(sid: str, call_id: str) -> MessageOut:
+        return MessageOut(session_id=sid, channel="cli",
+                          body=MessageBody(content="", tool_calls=[{
+                              "id": call_id,
+                              "type": "function",
+                              "function": {"name": "f", "arguments": "{}"},
+                          }]))
+
+    def test_closed_turn_missing_result_repaired_once(self):
         sid = "11111111-1111-1111-1111-111111111111"
         f = self._mk_session(sid)
         self._write_history(f, [
+            TurnMarker(kind="turn_begin", turn_id="t1"),
             MessageOut(session_id=sid, channel="cli",
                        body=MessageBody(content="问")),
-            # 孤儿：assistant(tool_calls) 后直接是下一条 user
-            MessageOut(session_id=sid, channel="cli",
-                       body=MessageBody(content="",
-                                        tool_calls=[{
-                                            "id": "call_orphan",
-                                            "type": "function",
-                                            "function": {"name": "f",
-                                                         "arguments": "{}"},
-                                        }])),
-            MessageOut(session_id=sid, channel="cli",
-                       body=MessageBody(content="继续")),
+            self._tool_call_msg(sid, "call_orphan"),
+            TurnMarker(kind="turn_end", turn_id="t1"),
         ])
-        # 只读路径：内存治愈，但**不写盘**（并发读绝不改写飞行中的历史）
-        hist = SessionStore.load_history(sid, "cli")
-        # [user, assistant(tool_calls), tool(占位), user]
-        self.assertEqual(len(hist), 4)
-        self.assertEqual(hist[2].sender, "tool")
-        self.assertEqual(hist[2].body.tool_call_id, "call_orphan")
-        # 加载修复不知道原始原因，文案中性（不谎称用户取消）
-        self.assertEqual(json.loads(hist[2].body.content)["error"],
-                         "missing tool result (auto-repaired at load)")
-        self.assertEqual(len(f.read_text().strip().splitlines()), 3)
 
-        # turn owner（persist_repair=True）：落盘修复 + 幂等
-        hist2 = SessionStore.load_history(
-            sid, "cli", persist_repair=True)
-        self.assertEqual(len(hist2), 4)
-        raw = f.read_text(encoding="utf-8").strip().splitlines()
-        self.assertEqual(len(raw), 4)
-        hist3 = SessionStore.load_history(
-            sid, "cli", persist_repair=True)
-        self.assertEqual(len(hist3), 4)
+        # 只读路径：内存补占位，不写盘
+        hist = SessionStore.load_history(sid, "cli")
+        self.assertEqual(len(hist), 3)
+        self.assertEqual(hist[2].sender, "tool")
+        self.assertTrue(hist[2].synthetic)
+        self.assertEqual(hist[2].body.tool_call_id, "call_orphan")
         self.assertEqual(len(f.read_text().strip().splitlines()), 4)
 
-    def test_duplicate_placeholder_healed(self):
-        """并发误插占位 + 真实结果共存（同一 tool_call_id 两条 tool）会被
-        去重治愈：剔除占位、保留真实结果，避免发给 LLM 400。"""
+        # 轮次所有者：落盘修复一次，之后幂等
+        hist2 = SessionStore.load_history(
+            sid, "cli", repair_closed_turns=True)
+        self.assertEqual(len(hist2), 3)
+        raw = f.read_text(encoding="utf-8").strip().splitlines()
+        self.assertEqual(len(raw), 5)  # begin + 3 消息 + end
+        self.assertIn('"synthetic":true', raw[3])
+        hist3 = SessionStore.load_history(
+            sid, "cli", repair_closed_turns=True)
+        self.assertEqual(len(hist3), 3)
+        self.assertEqual(len(f.read_text().strip().splitlines()), 5)
+
+    def test_open_turn_is_dropped_unless_it_is_the_active_turn(self):
+        """没有 turn_end 的轮次：对后续轮次是崩溃残留，绝不拼进上下文。"""
+        sid = "22222222-2222-2222-2222-222222222222"
+        f = self._mk_session(sid)
+        self._write_history(f, [
+            TurnMarker(kind="turn_begin", turn_id="t-crash"),
+            Message(session_id=sid, channel="cli", sender="user",
+                    recipient="assistant", body=MessageBody(content="半截问题")),
+            self._tool_call_msg(sid, "call_crash"),
+        ])
+        before = f.read_text(encoding="utf-8")
+
+        # 新轮次读历史：残留整轮丢弃，且不写盘
+        self.assertEqual(SessionStore.load_history(sid, "cli"), [])
+        self.assertEqual(f.read_text(encoding="utf-8"), before)
+
+        # 该轮的 owner 自己读：原样返回，也不补占位（它可能还在写）
+        own = SessionStore.load_history(
+            sid, "cli", active_turn_id="t-crash",
+            repair_closed_turns=True)
+        self.assertEqual(len(own), 2)
+        self.assertEqual([m.sender for m in own], ["user", "assistant"])
+        self.assertEqual(f.read_text(encoding="utf-8"), before)
+
+    def test_residue_excluded_but_closed_turns_kept(self):
         sid = "33333333-3333-3333-3333-333333333333"
         f = self._mk_session(sid)
         self._write_history(f, [
+            TurnMarker(kind="turn_begin", turn_id="t-closed"),
             MessageOut(session_id=sid, channel="cli",
                        body=MessageBody(content="问")),
             MessageOut(session_id=sid, channel="cli",
-                       body=MessageBody(content="",
-                                        tool_calls=[{
-                                            "id": "call_dup",
-                                            "type": "function",
-                                            "function": {"name": "f",
-                                                         "arguments": "{}"},
-                                        }])),
-            # 误插的占位（靠前）
-            MessageTool(session_id=sid, channel="cli",
-                        body=MessageBody(
-                            content='{"error": "missing tool result '
-                                    '(auto-repaired at load)"}',
-                            tool_call_id="call_dup")),
-            # 真实结果（靠后）
-            MessageTool(session_id=sid, channel="cli",
-                        body=MessageBody(content="real result",
-                                         tool_call_id="call_dup")),
+                       body=MessageBody(content="答")),
+            TurnMarker(kind="turn_end", turn_id="t-closed"),
+            TurnMarker(kind="turn_begin", turn_id="t-crash"),
+            MessageOut(session_id=sid, channel="cli",
+                       body=MessageBody(content="下一问")),
+            self._tool_call_msg(sid, "call_crash2"),
         ])
-        hist = SessionStore.load_history(
-            sid, "cli", persist_repair=True)
-        tools = [m for m in hist if m.sender == "tool"]
-        self.assertEqual(len(tools), 1)
-        self.assertEqual(tools[0].body.content, "real result")
-        # 已落盘自愈：磁盘上不再有占位行
-        raw = f.read_text(encoding="utf-8")
-        self.assertNotIn("auto-repaired", raw)
-        self.assertEqual(len(raw.strip().splitlines()), 3)
+        hist = SessionStore.load_history(sid, "cli")
+        self.assertEqual([m.body.content for m in hist], ["问", "答"])
 
     def test_clean_history_untouched(self):
-        sid = "22222222-2222-2222-2222-222222222222"
+        sid = "44444444-4444-4444-4444-444444444444"
         f = self._mk_session(sid)
         self._write_history(f, [
             MessageOut(session_id=sid, channel="cli",

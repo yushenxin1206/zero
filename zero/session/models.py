@@ -3,11 +3,27 @@ Session-specific data models.
 """
 
 from datetime import datetime
+from typing import Literal
 from uuid import uuid4
 
 from pydantic import Field
 
 from zero.models import Base
+
+
+class TurnMarker(Base):
+    """messages.jsonl 里的一轮事务边界记录（不占 Message 的 sender/body）。
+
+    ``turn_begin`` 在用户消息落盘前写入，``turn_end`` 在本轮最后一条
+    消息落盘后写入。二者之间是该轮的全部消息；没有配对的 turn_end
+    意味着写入方在轮次中途退出，读取方据此把整轮排除在模型上下文之外。
+    """
+    kind: Literal["turn_begin", "turn_end"]
+    turn_id: str
+    # 仅 turn_end 有意义：ok / cancelled / interrupted。读取方只判断
+    # 「有没有 end」，status 用于排查而不是决定是否可用。
+    status: str = "ok"
+    timestamp: datetime = Field(default_factory=datetime.now)
 
 
 class SessionMeta(Base):

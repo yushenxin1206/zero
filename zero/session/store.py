@@ -32,12 +32,10 @@ from pathlib import Path
 from uuid import uuid4
 
 from zero.models import Message, MessageBody, MessageTool, CompactRecord
-from zero.session.models import SessionMeta, SessionSummary
-from zero.config import ZERO_ROOT
+from zero.paths import current
+from zero.session.models import SessionMeta, SessionSummary, TurnMarker
 
 logger = logging.getLogger(__name__)
-
-SESSIONS_ROOT = ZERO_ROOT / "sessions"
 
 # 自动标题（首条用户消息截断）的最大长度
 TITLE_MAX_LEN = 30
@@ -88,7 +86,7 @@ class SessionStore:
 
     @staticmethod
     def _index_path(channel: str) -> Path:
-        return SESSIONS_ROOT / channel / "index.json"
+        return current().sessions / channel / "index.json"
 
     @staticmethod
     def _load_index(channel: str) -> dict[str, SessionMeta]:
@@ -131,7 +129,7 @@ class SessionStore:
             date = entry.date
         else:
             date = datetime.now().strftime("%Y-%m-%d")
-        return SESSIONS_ROOT / channel / date / session_id
+        return current().sessions / channel / date / session_id
 
     @staticmethod
     def _session_file(channel: str, session_id: str) -> Path:
@@ -296,6 +294,29 @@ class SessionStore:
         return path.exists() and path.stat().st_size > 0
 
     @staticmethod
+    def _append_json(channel: str, session_id: str, payload: str) -> None:
+        path = SessionStore._session_file(channel, session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(payload + "\n")
+
+    @staticmethod
+    def begin_turn(channel: str, session_id: str, turn_id: str) -> None:
+        """写入轮次开始标记。必须在该轮第一条消息之前落盘。"""
+        SessionStore._append_json(
+            channel, session_id,
+            TurnMarker(kind="turn_begin", turn_id=turn_id).model_dump_json())
+
+    @staticmethod
+    def end_turn(channel: str, session_id: str, turn_id: str,
+                 status: str = "ok") -> None:
+        """写入轮次结束标记。必须在该轮最后一条消息之后落盘。"""
+        SessionStore._append_json(
+            channel, session_id,
+            TurnMarker(kind="turn_end", turn_id=turn_id,
+                       status=status).model_dump_json())
+
+    @staticmethod
     def append(message: Message) -> None:
         """Append a Message to its session file.
 
@@ -303,10 +324,9 @@ class SessionStore:
         读改写（随渠道会话数放大的写放大）。活跃时间戳由调用方在 turn 边界
         用 touch() 统一刷新一次。
         """
-        path = SessionStore._session_file(message.channel, message.session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a", encoding="utf-8") as f:
-            f.write(message.model_dump_json() + "\n")
+        SessionStore._append_json(
+            message.channel, message.session_id,
+            message.model_dump_json())
 
     @staticmethod
     def touch(channel: str, session_id: str) -> None:
@@ -343,87 +363,50 @@ class SessionStore:
         tmp.replace(path)
 
     # 加载期占位 tool 结果的固定文案：既是给 LLM 的中性说明，也是
-    # self-heal 识别「占位 vs 真实结果」的标记
-    _PLACEHOLDER_NOTE = "missing tool result (auto-repaired at load)"
+    # 加载期补写占位的固定文案。读取方不再靠文案识别，改用 synthetic 字段。
+    _SYNTHETIC_NOTE = "tool result missing: turn ended before completion"
 
     @staticmethod
     def _placeholder_tool_msg(tool_call_id: str, session_id: str,
                               channel: str) -> MessageTool:
-        """孤儿 tool_call 的占位 tool 结果。
+        """闭合轮次里缺失的 tool 结果占位。
 
-        加载时兜底修复无法得知原始原因（异常退出、进程被杀、旧版本
-        bug 皆有可能），文案必须中性——不能谎称「用户取消」，否则误导
-        LLM 后续行为与事后排查。具体修复动作记在日志 warning 里。
+        只在 turn_end 已经存在（写入方确定不会再补结果）时使用；文案
+        保持中性，具体修复动作记在日志 warning 里。
         """
         return MessageTool(
-            # 确定性 id：同一 tool_call 每次加载得到同一条占位，纯内存
-            # 修复才能稳定幂等（随机 id 会让每次加载的快照都不同）
+            # 确定性 id：重复加载得到同一条占位，重写结果稳定。
             id=f"repaired-{tool_call_id}",
             session_id=session_id,
             channel=channel,
             sender="tool",
             recipient="assistant",
             body=MessageBody(
-                content='{"error": "%s"}' % SessionStore._PLACEHOLDER_NOTE,
+                content=json.dumps(
+                    {"error": SessionStore._SYNTHETIC_NOTE},
+                    ensure_ascii=False),
                 tool_call_id=tool_call_id,
             ),
+            synthetic=True,
         )
 
     @staticmethod
-    def _is_placeholder(msg: Message) -> bool:
-        """是否为加载期插入的占位 tool 结果。"""
-        return (msg.sender == "tool"
-                and SessionStore._PLACEHOLDER_NOTE in (msg.body.content or ""))
-
-    @staticmethod
-    def _drop_placeholder_duplicates(messages: list[Message]) -> list[Message]:
-        """丢弃「已有真实结果」的占位 tool 结果。
-
-        历史上曾因并发加载误插占位、随后真实结果才落盘，导致同一
-        tool_call_id 同时有占位和真实两条 tool 消息（发给 LLM 会 400）。
-        这里按 tool_call_id 去重：只要存在真实结果，占位一律剔除，
-        从而自愈已损坏的历史。
-        """
-        real_ids = {
-            m.body.tool_call_id for m in messages
-            if m.sender == "tool" and m.body.tool_call_id
-            and not SessionStore._is_placeholder(m)
-        }
-        if not real_ids:
-            return messages
-        return [
-            m for m in messages
-            if not (SessionStore._is_placeholder(m)
-                    and m.body.tool_call_id in real_ids)
-        ]
-
-    @staticmethod
-    def _repair_orphan_tool_calls(
+    def _repair_tool_sequence(
             messages: list[Message], channel: str,
-            session_id: str) -> tuple[list[Message], bool, bool]:
-        """检测并修复孤儿 tool_calls。
+            session_id: str) -> tuple[list[Message], bool]:
+        """给一个已闭合的消息段补齐缺失的 tool 结果。
 
-        返回 (修复后列表, 是否有改动, 尾部是否未闭合)。
+        只处理「已经确认不会再增长」的段（无标记的历史段，或已出现
+        turn_end 的轮次）。孤儿 = assistant(tool_calls) 的某个 tool_call_id
+        没有后续配对的 tool 消息；残缺序列发给 LLM 会 400。
 
-        孤儿 = assistant(tool_calls) 的某个 tool_call_id 没有后续配对的
-        tool 消息（序列在 tool 结果齐备前被 user/assistant 消息打断，
-        或文件直接结束）。残缺序列发给 LLM 会 400。修复 = 在断裂点插入
-        占位 tool 结果。
-
-        **纯内存**：本方法不落盘（曾在这里直接重写 messages.jsonl，导致
-        并发读路径把飞行中的健康历史误判成孤儿、写入占位后真实结果再落盘
-        → 同一 tool_call_id 重复 → 400）。是否落盘由调用方在确定无飞行
-        轮次的边界决定（见 load_history 的 persist_repair）。
-
-        tail_open=True 表示文件以未闭合的 assistant(tool_calls) 结尾，
-        可能只是「一轮正在执行中」的正常瞬态；调用方据此绝不写盘。
+        纯内存，不落盘；由 load_history 决定是否在安全边界写回。
         """
         repaired: list[Message] = []
         pending: dict[str, str] = {}   # tool_call_id -> tool_call_id
         changed = False
 
         def settle():
-            """结算当前 pending：每个未配对的 tool_call 补一条占位。"""
             nonlocal pending, changed
             for tc_id in pending.values():
                 repaired.append(SessionStore._placeholder_tool_msg(
@@ -434,7 +417,6 @@ class SessionStore:
         for m in messages:
             tool_calls = m.body.tool_calls or []
             if m.sender == "assistant" and tool_calls:
-                # 新的 tool_calls 轮次开始：上一轮若还有未配对的即孤儿
                 settle()
                 repaired.append(m)
                 pending = {tc.id: tc.id for tc in tool_calls}
@@ -442,50 +424,84 @@ class SessionStore:
                 pending.pop(m.body.tool_call_id, None)
                 repaired.append(m)
             else:
-                # user / 普通 assistant / 其它：tool 结果序列至此必须闭合
                 settle()
                 repaired.append(m)
-        tail_open = bool(pending)
-        settle()  # 尾部孤儿
-        return repaired, changed, tail_open
+        settle()  # 段末仍未配对
+        return repaired, changed
 
     @staticmethod
-    def _write_history(session_id: str, channel: str,
-                       messages: list[Message]) -> None:
-        """原子重写 messages.jsonl（tmp + replace）。"""
+    def _write_records(session_id: str, channel: str,
+                       records: list[Message | TurnMarker]) -> None:
+        """原子重写 messages.jsonl（tmp + replace），保留轮次标记。"""
         path = SessionStore._session_file(channel, session_id)
         tmp = path.with_suffix(".jsonl.tmp")
         tmp.write_text(
-            "".join(m.model_dump_json() + "\n" for m in messages),
+            "".join(r.model_dump_json() + "\n" for r in records),
             encoding="utf-8")
         tmp.replace(path)
+
+    @staticmethod
+    def _read_records(path: Path) -> list[Message | TurnMarker]:
+        records: list[Message | TurnMarker] = []
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                data = json.loads(line)
+                if data.get("kind") in ("turn_begin", "turn_end"):
+                    records.append(TurnMarker.model_validate(data))
+                else:
+                    records.append(Message.model_validate(data))
+        return records
+
+    @staticmethod
+    def _group_turns(
+            records: list[Message | TurnMarker],
+    ) -> list[tuple[TurnMarker | None, list[Message], TurnMarker | None]]:
+        """把记录切成顺序段：(begin?, messages, end?)。
+
+        段外消息（没有 begin 的历史段）begin/end 都是 None；turn_end
+        之后的零散消息归入新的无标记段，保证重写时顺序与原文一致。
+        """
+        groups: list[tuple[TurnMarker | None, list[Message],
+                           TurnMarker | None]] = [(None, [], None)]
+        for r in records:
+            if isinstance(r, TurnMarker):
+                if r.kind == "turn_begin":
+                    # 上一段若没有 end，保留其原样；新 begin 另起一段
+                    groups.append((r, [], None))
+                elif r.kind == "turn_end":
+                    begin, msgs, end = groups[-1]
+                    if begin is not None and end is None \
+                            and begin.turn_id == r.turn_id:
+                        groups[-1] = (begin, msgs, r)
+                        groups.append((None, [], None))
+                    # 孤立 end 无对应 begin，忽略
+            else:
+                begin, msgs, end = groups[-1]
+                groups[-1] = (begin, msgs + [r], end)
+        return groups
 
     @staticmethod
     def load_history(
             session_id: str,
             channel: str,
             include_compact: bool = True,
-            persist_repair: bool = False,
+            repair_closed_turns: bool = False,
+            active_turn_id: str = "",
     ) -> list[Message]:
         """Load all messages for a session in chronological order.
 
-        When include_compact is True and a compression record exists, the
-        covered prefix is replaced by a single synthetic compact user message
-        (metadata.kind == "compact"), keeping the tail (messages after
-        covered_upto) intact. Falls back to full history if the covered
-        message id can't be located.
+        恢复语义由 turn_begin/turn_end 标记决定：
+        - 有 end 的轮次：完整保留；若缺 tool 结果，补 synthetic 占位。
+        - 无 end 的轮次：若正是调用方自己的活跃轮（active_turn_id 匹配）
+          则原样返回；否则视为进程中途退出的残留，整轮排除在模型上下文
+          之外，既不补占位也不写盘。
+        - 没有任何标记的历史段：视为已闭合，同样只做内存补全。
 
-        加载期在**内存**中一次治愈两类历史残缺，避免残缺序列发给 LLM
-        触发 400：(1) 孤儿 tool_calls（补占位 tool 结果）；(2) 旧并发 bug
-        遗留的「占位 + 真实结果」重复（剔除占位）。
-
-        persist_repair=True 时把治愈结果原子写回 messages.jsonl。**调用方
-        必须保证此刻该会话没有正在执行的轮次**：飞行中的正常瞬态
-        （assistant(tool_calls) 已落盘、工具尚未返回）与尾部孤儿形态完全
-        相同——并发读写的读路径若写盘，就会把健康历史误「治」，随后真实
-        结果落盘 → 同一 tool_call_id 重复 → 400。因此只有 turn owner
-        （Context 在轮次起点首次读历史）传 True；maintenance / CLI / 其它
-        只读方一律默认 False。尾部未闭合时即便 True 也不写盘（防御）。
+        只有 repair_closed_turns=True（轮次所有者首次读历史）才把已闭合
+        段的补全结果原子写回；其它读路径永远零写盘。活跃轮绝不改写。
         """
         try:
             path = SessionStore._session_file(channel, session_id)
@@ -493,29 +509,55 @@ class SessionStore:
             return []
         if not path.exists():
             return []
-        messages = []
-        with path.open("r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                messages.append(Message.model_validate_json(line))
 
-        raw = messages
-        deduped = SessionStore._drop_placeholder_duplicates(raw)
-        messages, inserted, tail_open = SessionStore._repair_orphan_tool_calls(
-            deduped, channel, session_id)
-        changed = inserted or len(deduped) != len(raw)
-        if persist_repair and not tail_open and changed:
-            SessionStore._write_history(session_id, channel, messages)
+        groups = SessionStore._group_turns(
+            SessionStore._read_records(path))
+        view: list[Message] = []
+        disk: list[Message | TurnMarker] = []
+        changed = False
+
+        for begin, msgs, end in groups:
+            if begin is None:
+                fixed, group_changed = SessionStore._repair_tool_sequence(
+                    msgs, channel, session_id)
+                view.extend(fixed)
+                disk.extend(fixed)
+                changed = changed or group_changed
+                continue
+
+            if end is None and begin.turn_id != active_turn_id:
+                logger.warning(
+                    "session %s/%s: dropped unfinished turn %s "
+                    "(no turn_end marker)", channel, session_id, begin.turn_id)
+                disk.append(begin)
+                disk.extend(msgs)      # 保留残留原样，不做任何修补
+                continue
+
+            if end is None:
+                # 调用方自己的飞行轮：原样参与上下文
+                view.extend(msgs)
+                disk.append(begin)
+                disk.extend(msgs)
+                continue
+
+            fixed, group_changed = SessionStore._repair_tool_sequence(
+                msgs, channel, session_id)
+            view.extend(fixed)
+            disk.append(begin)
+            disk.extend(fixed)
+            disk.append(end)
+            changed = changed or group_changed
+
+        if repair_closed_turns and changed:
+            SessionStore._write_records(session_id, channel, disk)
             logger.warning(
-                "session %s/%s: healed history on disk "
-                "(orphan/duplicate tool results)", channel, session_id)
+                "session %s/%s: repaired missing tool results in closed turns",
+                channel, session_id)
 
         if not include_compact:
-            return messages
+            return view
         return apply_compact(
-            messages, SessionStore.load_compact(channel, session_id),
+            view, SessionStore.load_compact(channel, session_id),
             session_id, channel)
 
     # ------------------------------------------------------------------
@@ -525,9 +567,10 @@ class SessionStore:
     @staticmethod
     def list_channels() -> list[str]:
         """List all channel names that have session directories on disk."""
-        if not SESSIONS_ROOT.exists():
+        root = current().sessions
+        if not root.exists():
             return []
-        return sorted(p.name for p in SESSIONS_ROOT.iterdir() if p.is_dir())
+        return sorted(p.name for p in root.iterdir() if p.is_dir())
 
     @staticmethod
     def list_recent(channel: str, since: datetime) -> list[SessionMeta]:
@@ -594,9 +637,10 @@ class SessionStore:
         content 字段，直接跳过。返回迁移的会话数。
         """
         migrated = 0
-        if not SESSIONS_ROOT.exists():
+        root = current().sessions
+        if not root.exists():
             return 0
-        for channel_dir in SESSIONS_ROOT.iterdir():
+        for channel_dir in root.iterdir():
             if not channel_dir.is_dir():
                 continue
             for date_dir in channel_dir.iterdir():

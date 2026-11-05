@@ -6,11 +6,11 @@ import time
 import unittest
 
 from zero.bus.queue import MessageBus
-from zero.config import default_config
 from zero.core.cancellation import TurnCancelled
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
 from zero.session.store import SessionStore
+from tests.support import make_test_config
 
 
 class FakeProvider:
@@ -27,7 +27,7 @@ class FakeProvider:
 
 async def main() -> dict:
     bus = MessageBus()
-    cfg = default_config
+    cfg = make_test_config()
     loop = AgentLoop(msg_bus=bus, config=cfg)
 
     from zero.core.runner import AgentRunner
@@ -94,6 +94,9 @@ async def main() -> dict:
             "done_ev": done_ev,
             "msg_out": msg_out,
             "history": SessionStore.load_history("s-test-stop", "cli"),
+            "raw": SessionStore._session_file(
+                "cli", "s-test-stop").read_text(
+                    encoding="utf-8").strip().splitlines(),
         }
     finally:
         AgentRunner.__init__ = orig_init
@@ -114,6 +117,13 @@ class TestTurnStop(unittest.TestCase):
         # 会话历史不落盘部分回复（只有用户 MessageIn）
         self.assertEqual(len(result["history"]), 1)
         self.assertEqual(result["history"][0].body.content, "hi")
+        # 写入路径必须把整轮包在 begin/end 之间（取消轮也要闭合）
+        first = json.loads(result["raw"][0])
+        last = json.loads(result["raw"][-1])
+        self.assertEqual(first["kind"], "turn_begin")
+        self.assertEqual(last["kind"], "turn_end")
+        self.assertEqual(last["status"], "cancelled")
+        self.assertEqual(first["turn_id"], last["turn_id"])
 
     def test_cancel_after_assistant_tools_repairs_history(self):
         """取消落在『已持久化 assistant(tool_calls)』后：未执行的工具补齐
@@ -134,7 +144,7 @@ class TestTurnStop(unittest.TestCase):
                     "function": {"name": "bar", "arguments": "{}"}}
 
         async def main_repair() -> list:
-            cfg = default_config
+            cfg = make_test_config()
             context = Context(session_id="s-repair", channel="cli")
             stop_event = asyncio.Event()
             runner = AgentRunner(config=cfg, running_context=context,
@@ -219,7 +229,7 @@ class TestStopDuringSilentThinking(unittest.TestCase):
 
         async def scenario() -> dict:
             bus = MessageBus()
-            loop = AgentLoop(msg_bus=bus, config=default_config)
+            loop = AgentLoop(msg_bus=bus, config=make_test_config())
 
             prov = OpenAI(ProviderConfig(api_base="http://stub", api_key="k"))
             # turn1 思考期 3s（终止应打断它）；turn2 立即完整输出

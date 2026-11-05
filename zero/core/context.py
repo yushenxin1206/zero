@@ -17,7 +17,8 @@ from zero.models import Message, MessageBody, CompactRecord, ToolContext
 from zero.permission import envelope
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
-from zero.config import MEMORY_PATH, TOOL_RESULT_MAX_CHARS, project_memory_path
+from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
+from zero.paths import current
 
 
 # 包安装目录（skills 等内置资源所在位置），与运行目录无关
@@ -41,6 +42,8 @@ SHELL_SANDBOX_NOTE = (
     " do NOT rephrase it to slip past the sandbox — if you genuinely need to"
     " write outside the workspace, retry once with write_paths=[\"/absolute/path\"]"
     " to request an expansion approval."
+    " Unattended sessions (scheduler / subagent) also run WITHOUT network access;"
+    " network commands cannot be granted there — do not retry them."
 )
 SHELL_APPROVAL_NOTE = (
     " The kernel sandbox is unavailable here, so every shell command needs user"
@@ -81,7 +84,7 @@ def current_project_memory_path() -> Path:
     """当前项目（运行目录）的项目级记忆文件路径。
 
     独立成模块级函数（而非内联调用），便于测试把项目级记忆重定向到临时
-    目录，与 MEMORY_PATH 的隔离方式一致。
+    目录，与用户级记忆（current().memory）的隔离方式一致。
     """
     return project_memory_path(get_cwd())
 
@@ -126,9 +129,11 @@ class Context:
         self._raw_history = SessionStore.load_history(
             self.session_id, self.channel,
             include_compact=False,
-            # turn owner：Context 在轮次起点首次读历史，此刻串行 loop 中没有
-            # 任何正在执行的轮次，是唯一安全的落盘修复点（详见 store.load_history）
-            persist_repair=True)
+            # turn owner：本轮的 begin 已经落盘，但轮次仍可能继续增长。
+            # 传 active_turn_id 让加载器只把「自己这一轮」的未闭合段
+            # 纳入上下文；其它没有 turn_end 的段是崩溃残留，整轮丢弃。
+            repair_closed_turns=True,
+            active_turn_id=self.tool_context.turn_id)
         self._compact_record = SessionStore.load_compact(
             self.channel, self.session_id)
         self._history_loaded = True
@@ -206,7 +211,7 @@ class Context:
         # 否则模型无从得知记忆位置，记忆功能永远无法冷启动。
         # 文件本身由模型按需用 write 工具创建（write 会自动建父目录），
         # 代码侧不做任何写入，避免 prompt 构建产生副作用。
-        memory_path = MEMORY_PATH
+        memory_path = current().memory
         memory = ""
         if memory_path.exists():
             memory = memory_path.read_text(encoding="utf-8").strip()

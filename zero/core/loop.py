@@ -53,6 +53,10 @@ class AgentLoop:
         try:
             while True:
                 msg_in = await self.msg_bus.in_queue.dequeue()
+                # 轮次事务边界：begin 必须先于该轮任何消息落盘。CLI/飞书/Web
+                # 共用同一个 AgentLoop，因此这里是最内层且唯一建立边界的地方。
+                SessionStore.begin_turn(
+                    msg_in.channel, msg_in.session_id, msg_in.id)
                 SessionStore.append(msg_in)
                 # turn 边界统一刷新活跃时间戳：msg_in 紧跟出队、无前置分支，
                 # 即使本轮中途失败也已标记活跃（turn 内其它 append 不再触索引）
@@ -147,6 +151,9 @@ class AgentLoop:
                             channel_session_id=msg_in.channel_session_id,
                         )
                         await self.msg_bus.out_queue.enqueue(msg_out)
+                        SessionStore.end_turn(
+                            msg_in.channel, msg_in.session_id, msg_in.id,
+                            status="cancelled")
                         logger.info(
                             "Turn %s cancelled by user (partial %d chars)",
                             msg_in.id, len(reply_text))
@@ -181,6 +188,10 @@ class AgentLoop:
                     )
                     SessionStore.append(msg_out)
                     await self.msg_bus.out_queue.enqueue(msg_out)
+                    # 本轮最后一条消息之后闭合事务；缺这一行的轮次就是
+                    # 崩溃残留，加载时整轮丢弃而不是补占位。
+                    SessionStore.end_turn(
+                        msg_in.channel, msg_in.session_id, msg_in.id)
                 finally:
                     self._current = None
                     self._current_stop_event = None
