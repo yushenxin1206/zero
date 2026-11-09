@@ -143,7 +143,7 @@ class WebChannel(BusChannel):
             "message": message.model_dump(mode="json", by_alias=True),
         })
         # 会话标题在首条用户消息后由 core 自动生成，回合结束时刷新列表
-        await self._broadcast({"type": "sessions", "sessions": self._sessions()})
+        await self._broadcast({"type": "sessions", "sessions": await self._sessions()})
 
     async def deliver_stream(self, event: StreamEvent) -> None:
         await self._broadcast({
@@ -155,7 +155,7 @@ class WebChannel(BusChannel):
     # Snapshots
     # ------------------------------------------------------------------
 
-    def _sessions(self) -> list[dict[str, Any]]:
+    def _sessions_sync(self) -> list[dict[str, Any]]:
         return [{
             "id": entry.session_id,
             "sourceId": entry.source_id,
@@ -164,7 +164,7 @@ class WebChannel(BusChannel):
             "updatedAt": entry.last_updated_at.strftime("%Y-%m-%d %H:%M"),
         } for entry in self.service.sessions()]
 
-    def _history(self, session_id: str) -> list[dict[str, Any]]:
+    def _history_sync(self, session_id: str) -> list[dict[str, Any]]:
         return [{
             "id": msg.id,
             "role": msg.sender,
@@ -172,7 +172,7 @@ class WebChannel(BusChannel):
             "compact": (msg.metadata or {}).get("kind") == "compact",
         } for msg in self.service.display_history(session_id)]
 
-    def _state(self) -> dict[str, Any]:
+    def _state_sync(self) -> dict[str, Any]:
         return {
             "channel": CHANNEL,
             "session": {
@@ -180,12 +180,12 @@ class WebChannel(BusChannel):
                 "sourceId": self.service.source_id,
                 "title": self.service.title(),
             },
-            "sessions": self._sessions(),
+            "sessions": self._sessions_sync(),
             "model": self.service.current_model(),
             "models": self.service.models(),
         }
 
-    def _tasks(self) -> list[dict[str, Any]]:
+    def _tasks_sync(self) -> list[dict[str, Any]]:
         def _dt(value):
             return value.strftime("%Y-%m-%d %H:%M") if value else ""
 
@@ -198,6 +198,20 @@ class WebChannel(BusChannel):
             "lastRunAt": _dt(t.last_run_at),
             "instruction": t.instruction.removeprefix("[Scheduled Task]"),
         } for t in self.service.tasks()]
+
+    # 会话列表/历史/任务快照都要读索引与 JSONL：统一在线程池构建，
+    # WebSocket 处理协程在磁盘 IO 期间不阻塞事件循环
+    async def _sessions(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._sessions_sync)
+
+    async def _history(self, session_id: str) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._history_sync, session_id)
+
+    async def _state(self) -> dict[str, Any]:
+        return await asyncio.to_thread(self._state_sync)
+
+    async def _tasks(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._tasks_sync)
 
     # ------------------------------------------------------------------
     # WebSocket handling
@@ -213,7 +227,7 @@ class WebChannel(BusChannel):
             return
         self._clients.add(ws)
         try:
-            await self._send(ws, {"type": "state", **self._state()})
+            await self._send(ws, {"type": "state", **await self._state()})
             async for raw in ws:
                 try:
                     data = json.loads(raw)
@@ -274,31 +288,33 @@ class WebChannel(BusChannel):
                     "text": "审批已超时或不存在",
                 })
         elif kind == "sessions":
-            await self._send(ws, {"type": "sessions", "sessions": self._sessions()})
+            await self._send(ws, {
+                "type": "sessions", "sessions": await self._sessions()})
         elif kind == "history":
             session_id = str(data.get("sessionId") or self.service.session_id)
             await self._send(ws, {
                 "type": "history",
                 "sessionId": session_id,
-                "messages": self._history(session_id),
+                "messages": await self._history(session_id),
             })
         elif kind == "select":
             await self._on_select(ws, str(data.get("sessionId") or ""))
         elif kind == "new":
-            self.service.new_session()
-            await self._broadcast({"type": "state", **self._state()})
+            await asyncio.to_thread(self.service.new_session)
+            await self._broadcast({"type": "state", **await self._state()})
             await self._send(ws, {
                 "type": "history",
                 "sessionId": self.service.session_id,
                 "messages": [],
             })
         elif kind == "title":
-            self.service.rename(str(data.get("title") or "").strip())
-            await self._broadcast({"type": "state", **self._state()})
+            await asyncio.to_thread(
+                self.service.rename, str(data.get("title") or "").strip())
+            await self._broadcast({"type": "state", **await self._state()})
         elif kind == "model":
             await self._on_model(ws, str(data.get("model") or "").strip())
         elif kind == "tasks":
-            await self._send(ws, {"type": "tasks", "tasks": self._tasks()})
+            await self._send(ws, {"type": "tasks", "tasks": await self._tasks()})
         else:
             logger.warning("unknown web message type: %r", kind)
 
@@ -314,18 +330,19 @@ class WebChannel(BusChannel):
         })
 
     async def _on_select(self, ws: ServerConnection, session_id: str) -> None:
-        entry = self.service.find(session_id)
+        entry = await asyncio.to_thread(self.service.find, session_id)
         if entry is None:
             await self._send(ws, {
                 "type": "notice", "level": "error", "text": "会话不存在",
             })
             return
-        self.service.bind(entry.source_id, entry.session_id)
-        await self._broadcast({"type": "state", **self._state()})
+        await asyncio.to_thread(
+            self.service.bind, entry.source_id, entry.session_id)
+        await self._broadcast({"type": "state", **await self._state()})
         await self._send(ws, {
             "type": "history",
             "sessionId": session_id,
-            "messages": self._history(session_id),
+            "messages": await self._history(session_id),
         })
 
     async def _on_model(self, ws: ServerConnection, model: str) -> None:
@@ -335,10 +352,11 @@ class WebChannel(BusChannel):
             })
             return
         if not model:
+            current = await asyncio.to_thread(self.service.current_model)
             await self._send(ws, {
                 "type": "models",
                 "models": self.service.models(),
-                "current": self.service.current_model(),
+                "current": current,
             })
             return
         try:
@@ -361,4 +379,4 @@ class WebChannel(BusChannel):
                 "type": "notice", "level": "info",
                 "text": f"模型已切换 {result.old_model} → {result.new_model}{note}",
             })
-        await self._broadcast({"type": "state", **self._state()})
+        await self._broadcast({"type": "state", **await self._state()})

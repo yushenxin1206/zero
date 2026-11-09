@@ -17,6 +17,7 @@ CLI 的 /model、未来 Feishu channel 都通过这里切换会话绑定模型�
 注意：切换时的强制压缩不随 config.compact.enabled 走——它是一次性为了
 「切换后不超窗」的正确性措施，与持续的自动压缩开关无关。
 """
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -69,8 +70,9 @@ async def switch_model(
             f"模型 {new_model!r} 不在 models 注册表中，"
             f"已知键: {sorted(config.models)}")
 
-    old_model = (SessionStore.get_model(channel, session_id)
-                 or config.resolve_runtime("default").llm_call_options.model)
+    old_model = (await asyncio.to_thread(
+        SessionStore.get_model, channel, session_id)
+        or config.resolve_runtime("default").llm_call_options.model)
     if old_model == new_model:
         return ModelSwitchResult(
             old_model=old_model, new_model=new_model, compacted=False,
@@ -84,8 +86,10 @@ async def switch_model(
     old_provider = OpenAI(config._resolve_provider(config.models[old_model].provider))
     old_llm_options: LLMCallOptions = old_runtime.llm_call_options.model_copy()
 
-    # 同一进程内会话上下文的 system prompt 复用同一 Context 构建逻辑
+    # 同一进程内会话上下文的 system prompt 复用同一 Context 构建逻辑；
+    # 历史/压缩记录/提示词全部在线程池读完再进入压缩调用，事件循环不等盘
     ctx = Context(session_id=session_id, channel=channel)
+    await ctx.aprepare()
     raw = ctx.raw_history
     rec = ctx.compact_record
 
@@ -111,7 +115,8 @@ async def switch_model(
         )
         compacted = record is not None
 
-    SessionStore.set_model(channel, session_id, new_model)
+    await asyncio.to_thread(
+        SessionStore.set_model, channel, session_id, new_model)
     logger.info(
         "会话模型切换: session=%s %s -> %s%s", session_id, old_model, new_model,
         " (已按新窗口压缩)" if compacted else "")

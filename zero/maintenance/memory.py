@@ -4,6 +4,7 @@
 ~/.zero/memory.md，交给 LLM 合并出新的记忆文件并全量重写。空输出防护、
 .bak 备份、tmp+replace 原子写。
 """
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -47,26 +48,20 @@ async def run_memory(
 ) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
-    summaries: list[SessionSummary] = []
-    for channel in SessionStore.list_channels():
-        for meta in SessionStore.list_recent(channel, since):
-            s = SessionStore.load_summary(channel, meta.session_id)
-            if s is not None:
-                summaries.append(s)
+    # 会话索引/复盘读取是阻塞文件 IO：整批放线程池，事件循环只等结果
+    summaries = await asyncio.to_thread(_collect_summaries, since)
     if not summaries:
         return  # 无新复盘信息，无需更新
 
     memory_path = current().memory
-    current = ""
-    if memory_path.exists():
-        current = memory_path.read_text(encoding="utf-8").strip()
+    current_memory = await asyncio.to_thread(_read_text_or_empty, memory_path)
 
     summaries_json = json.dumps(
         [s.model_dump(mode="json") for s in summaries], ensure_ascii=False, indent=2)
     messages = [
         {"role": "system", "content": MEMORY_PROMPT},
         {"role": "user",
-         "content": f"<current_memory>\n{current or '(empty)'}\n</current_memory>"},
+         "content": f"<current_memory>\n{current_memory or '(empty)'}\n</current_memory>"},
         {"role": "user",
          "content": f"<session_summaries>\n{summaries_json}\n</session_summaries>"},
         {"role": "user", "content": MEMORY_FINAL_INSTRUCTION},
@@ -80,11 +75,33 @@ async def run_memory(
         logger.warning("记忆沉淀输出为空，保留原记忆")
         return
 
-    # 备份旧文件后原子写入（tmp + replace）
+    # 备份旧文件后原子写入（tmp + replace），整体放线程池
+    await asyncio.to_thread(_write_memory, memory_path, current_memory, new_text)
+    logger.info("记忆沉淀完成：合并 %d 份会话复盘", len(summaries))
+
+
+def _collect_summaries(since: dt.datetime) -> list[SessionSummary]:
+    """读取窗口内所有渠道的会话复盘（阻塞 IO，由线程池调用）。"""
+    summaries: list[SessionSummary] = []
+    for channel in SessionStore.list_channels():
+        for meta in SessionStore.list_recent(channel, since):
+            s = SessionStore.load_summary(channel, meta.session_id)
+            if s is not None:
+                summaries.append(s)
+    return summaries
+
+
+def _read_text_or_empty(path) -> str:
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
+
+def _write_memory(memory_path, old_content: str, new_text: str) -> None:
+    """备份旧文件后原子写入（tmp + replace）。"""
     if memory_path.exists():
         memory_path.with_suffix(".md.bak").write_text(
-            memory_path.read_text(encoding="utf-8"), encoding="utf-8")
+            old_content, encoding="utf-8")
     tmp = memory_path.with_suffix(".md.tmp")
     tmp.write_text(new_text, encoding="utf-8")
     tmp.replace(memory_path)
-    logger.info("记忆沉淀完成：合并 %d 份会话复盘", len(summaries))

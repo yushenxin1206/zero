@@ -5,6 +5,7 @@ LLM 生成结构化复盘，写入会话级 summary.json（SessionSummary），�
 title / description 回写到渠道索引。增量锚点 covered_upto 让重复运行
 只把新消息送入 LLM，无新消息则跳过（幂等省 token）。
 """
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -54,14 +55,24 @@ async def run_session_summary(
 ) -> None:
     """入口：复盘所有渠道 24h 内活跃的会话。单会话失败不中断批次。"""
     since = dt.datetime.now() - SESSION_SUMMARY_WINDOW
-    for channel in SessionStore.list_channels():
-        for meta in SessionStore.list_recent(channel, since):
-            try:
-                await _summarize_session(
-                    provider, runtime, maintenance_cfg, channel, meta.session_id)
-            except Exception:  # noqa: BLE001 - 单会话失败不中断批次
-                logger.exception(
-                    "会话复盘失败: channel=%s session=%s", channel, meta.session_id)
+    # 索引扫描是阻塞 IO：先在线程池筛出目标会话，再逐个异步复盘
+    targets = await asyncio.to_thread(_collect_targets, since)
+    for channel, session_id in targets:
+        try:
+            await _summarize_session(
+                provider, runtime, maintenance_cfg, channel, session_id)
+        except Exception:  # noqa: BLE001 - 单会话失败不中断批次
+            logger.exception(
+                "会话复盘失败: channel=%s session=%s", channel, session_id)
+
+
+def _collect_targets(since: dt.datetime) -> list[tuple[str, str]]:
+    """窗口内活跃会话的 (channel, session_id) 列表（阻塞 IO，由线程池调用）。"""
+    return [
+        (channel, meta.session_id)
+        for channel in SessionStore.list_channels()
+        for meta in SessionStore.list_recent(channel, since)
+    ]
 
 
 def _build_messages(prev: SessionSummary | None, tail: list[Message]) -> list[dict]:
@@ -109,11 +120,14 @@ async def _summarize_session(
         session_id: str,
 ) -> None:
     """复盘单个会话：生成 SessionSummary 并落盘，回写索引。"""
-    # 含压缩合成消息（load_history 默认 include_compact=True），天然有界
-    raw = SessionStore.load_history(session_id, channel)
+    # 含压缩合成消息（load_history 默认 include_compact=True），天然有界；
+    # 历史/复盘读取放线程池，避免阻塞事件循环
+    raw = await asyncio.to_thread(
+        SessionStore.load_history, session_id, channel)
     if not raw:
         return
-    prev = SessionStore.load_summary(channel, session_id)
+    prev = await asyncio.to_thread(
+        SessionStore.load_summary, channel, session_id)
     tail = raw
     hit = False
     if prev is not None:
@@ -146,9 +160,11 @@ async def _summarize_session(
         return
     summary.covered_upto = raw[-1].id
     summary.updated_at = dt.datetime.now()
-    SessionStore.save_summary(channel, session_id, summary)
+    await asyncio.to_thread(
+        SessionStore.save_summary, channel, session_id, summary)
     # 回写索引（update_meta_by_summary 绝不触碰 last_updated_at，防 24h 过滤自激）
-    SessionStore.update_meta_by_summary(
+    await asyncio.to_thread(
+        SessionStore.update_meta_by_summary,
         channel, session_id,
         title=summary.title or None,
         description=summary.description or None,

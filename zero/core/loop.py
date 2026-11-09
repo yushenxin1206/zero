@@ -14,7 +14,7 @@ from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
-    MessageBody, MessageOut, StreamEvent, TokenUsage, ToolContext)
+    MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext)
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
@@ -53,150 +53,188 @@ class AgentLoop:
         try:
             while True:
                 msg_in = await self.msg_bus.in_queue.dequeue()
-                # 轮次事务边界：begin 必须先于该轮任何消息落盘。CLI/飞书/Web
-                # 共用同一个 AgentLoop，因此这里是最内层且唯一建立边界的地方。
-                SessionStore.begin_turn(
-                    msg_in.channel, msg_in.session_id, msg_in.id)
-                SessionStore.append(msg_in)
-                # turn 边界统一刷新活跃时间戳：msg_in 紧跟出队、无前置分支，
-                # 即使本轮中途失败也已标记活跃（turn 内其它 append 不再触索引）
-                SessionStore.touch(msg_in.channel, msg_in.session_id)
-                # 首条用户消息自动生成会话标题（已有标题则不覆盖）
-                SessionStore.auto_title(
-                    msg_in.channel, msg_in.session_id, msg_in.body.content or "")
-
-                # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
-                # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
-                # 事件路由）据此把交互事件精确挂到触发它的那一轮
-                tool_context = ToolContext(
-                    channel=msg_in.channel,
-                    session_id=msg_in.session_id,
-                    turn_id=msg_in.id,
-                    origin=msg_in.origin,
-                    channel_message_id=msg_in.channel_message_id,
-                    channel_sender_id=msg_in.channel_sender_id,
-                    channel_session_id=msg_in.channel_session_id,
-                )
-
-                context = Context(
-                    session_id=msg_in.session_id,
-                    channel=msg_in.channel,
-                    tool_registry=self.tool_registry,
-                    tool_context=tool_context,
-                )
-
-                # 活跃 turn 注册：stop 信号按 (channel, session_id, turn_id)
-                # 精确匹配，避免跨渠道/会话误终止
-                self._current = (msg_in.channel, msg_in.session_id, msg_in.id)
+                # 活跃 turn 先注册再落盘：慢写入/慢历史加载期间到达的停止
+                # 信号也能精确命中本轮，而不是被当成「无活跃轮」丢弃
                 stop_event = asyncio.Event()
+                self._current = (
+                    msg_in.channel, msg_in.session_id, msg_in.id)
                 self._current_stop_event = stop_event
                 try:
-                    runner = AgentRunner(
-                        config=self.config,
-                        running_context=context,
-                        tool_registry=self.tool_registry,
-                        hooks=self.hooks,
-                        # 会话级模型绑定：该会话若被 /model 切换到特定模型，
-                        # 则本轮用绑定模型解析运行时；空串（未绑定）跟随全局
-                        # default
-                        model_override=SessionStore.get_model(
-                            msg_in.channel, msg_in.session_id) or None,
-                        stop_event=stop_event,
-                    )
-
-                    # runner.run_stream() yields incremental events while
-                    # executing; stamp routing fields and forward them
-                    reply_text = ""
-                    final_usage: TokenUsage | None = None
-                    saw_error: str | None = None
-                    try:
-                        async for event in runner.run_stream():
-                            event.channel = msg_in.channel
-                            event.session_id = msg_in.session_id
-                            event.turn_id = msg_in.id
-                            event.origin = msg_in.origin
-                            await self.msg_bus.stream_queue.enqueue(event)
-                            if event.kind == "delta":
-                                reply_text += event.content
-                            elif event.kind == "done":
-                                reply_text = event.content or reply_text
-                                usage_data = (event.metadata or {}).get(
-                                    "token_usage")
-                                if isinstance(usage_data, dict):
-                                    final_usage = TokenUsage(**usage_data)
-                            elif event.kind == "error":
-                                # 记录错误：LLM/工具失败（如孤儿 tool_call_id
-                                # 触发 400）。不中断消费，但终止后不落盘空回复。
-                                saw_error = event.content
-                    except TurnCancelled:
-                        # 用户终止：部分回复已通过 delta 送达 channel。
-                        # 补发一个带 cancelled 标记的收尾流事件 + 最终
-                        # MessageOut；不落盘——部分回复不进会话历史
-                        final_event = StreamEvent(
-                            kind="done",
-                            content=reply_text,
-                            metadata={"cancelled": True},
-                            channel=msg_in.channel,
-                            session_id=msg_in.session_id,
-                            turn_id=msg_in.id,
-                            origin=msg_in.origin,
-                        )
-                        await self.msg_bus.stream_queue.enqueue(final_event)
-                        msg_out = MessageOut(
-                            session_id=msg_in.session_id,
-                            channel=msg_in.channel,
-                            body=MessageBody(content=reply_text),
-                            origin=msg_in.origin,
-                            turn_id=msg_in.id,
-                            channel_session_id=msg_in.channel_session_id,
-                        )
-                        await self.msg_bus.out_queue.enqueue(msg_out)
-                        SessionStore.end_turn(
-                            msg_in.channel, msg_in.session_id, msg_in.id,
-                            status="cancelled")
-                        logger.info(
-                            "Turn %s cancelled by user (partial %d chars)",
-                            msg_in.id, len(reply_text))
-                        continue
-
-                    content = reply_text
-
-                    # 出错时把原因以 [error] 标签接在正文后一并落盘。空正文
-                    # 不再直接丢弃：否则历史里只剩一条悬空的用户消息，下一
-                    # 轮模型无从得知为何没有回复；部分截断也借此标明"这半句
-                    # 被剪断了"，避免被当成完整答复。
-                    if saw_error is not None:
-                        note = f"[error] {saw_error}"
-                        content = (
-                            f"{content}\n\n{note}" if content.strip() else note)
-                        logger.warning(
-                            "Turn %s failed (%s); persisted with error tag",
-                            msg_in.id, saw_error)
-
-                    msg_out = MessageOut(
-                        session_id=msg_in.session_id,
-                        channel=msg_in.channel,
-                        body=MessageBody(
-                            content=content,
-                            token_usage=final_usage,
-                        ),
-                        origin=msg_in.origin,
-                        # turn_id 让 channel 端能把最终消息精确匹配到触发它的
-                        # 那一轮，避免定时任务结果与用户回复在 FIFO 队列里错位
-                        turn_id=msg_in.id,
-                        channel_session_id=msg_in.channel_session_id,
-                    )
-                    SessionStore.append(msg_out)
-                    await self.msg_bus.out_queue.enqueue(msg_out)
-                    # 本轮最后一条消息之后闭合事务；缺这一行的轮次就是
-                    # 崩溃残留，加载时整轮丢弃而不是补占位。
-                    SessionStore.end_turn(
-                        msg_in.channel, msg_in.session_id, msg_in.id)
+                    await self._handle_turn(msg_in, stop_event)
                 finally:
                     self._current = None
                     self._current_stop_event = None
         finally:
             stop_task.cancel()
+
+    async def _handle_turn(self, msg_in: MessageIn, stop_event: asyncio.Event):
+        """处理一轮：落盘用户消息、准备上下文、跑 runner、闭合轮次边界。
+
+        所有阻塞文件 IO 都经 asyncio.to_thread 移出事件循环；取消分支
+        直接 return（本方法是独立协程，不再位于 while 循环内）。
+        """
+        # 轮次事务边界：begin 必须先于该轮任何消息落盘。CLI/飞书/Web
+        # 共用同一个 AgentLoop，因此这里是最内层且唯一建立边界的地方。
+        await asyncio.to_thread(
+            SessionStore.begin_turn,
+            msg_in.channel, msg_in.session_id, msg_in.id)
+        await asyncio.to_thread(
+            SessionStore.append, msg_in)
+        # turn 边界统一刷新活跃时间戳：msg_in 紧跟出队、无前置分支，
+        # 即使本轮中途失败也已标记活跃（turn 内其它 append 不再触索引）
+        await asyncio.to_thread(
+            SessionStore.touch, msg_in.channel, msg_in.session_id)
+        # 首条用户消息自动生成会话标题（已有标题则不覆盖）
+        await asyncio.to_thread(
+            SessionStore.auto_title, msg_in.channel,
+            msg_in.session_id, msg_in.body.content or "")
+
+        # 慢写入期间到达的停止信号：写完当前这一条就收尾，不再继续读历史、
+        # 起 runner。线程里的写盘无法硬中断，但最多只多等这一次写入。
+        if stop_event.is_set():
+            await self._finish_cancelled(msg_in)
+            return
+
+        # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
+        # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
+        # 事件路由）据此把交互事件精确挂到触发它的那一轮
+        tool_context = ToolContext(
+            channel=msg_in.channel,
+            session_id=msg_in.session_id,
+            turn_id=msg_in.id,
+            origin=msg_in.origin,
+            channel_message_id=msg_in.channel_message_id,
+            channel_sender_id=msg_in.channel_sender_id,
+            channel_session_id=msg_in.channel_session_id,
+        )
+
+        context = Context(
+            session_id=msg_in.session_id,
+            channel=msg_in.channel,
+            tool_registry=self.tool_registry,
+            tool_context=tool_context,
+        )
+
+        # 历史/compact/提示词/会话目录一次性在线程池读取完成，
+        # 后续 runner 迭代只访问内存快照
+        await context.aprepare()
+        # 历史加载期间也可能收到停止信号：同理，不再起 runner
+        if stop_event.is_set():
+            await self._finish_cancelled(msg_in)
+            return
+        model_override = await asyncio.to_thread(
+            SessionStore.get_model,
+            msg_in.channel, msg_in.session_id) or None
+        runner = AgentRunner(
+            config=self.config,
+            running_context=context,
+            tool_registry=self.tool_registry,
+            hooks=self.hooks,
+            # 会话级模型绑定：该会话若被 /model 切换到特定模型，
+            # 则本轮用绑定模型解析运行时；空串（未绑定）跟随全局
+            # default
+            model_override=model_override,
+            stop_event=stop_event,
+        )
+
+        # runner.run_stream() yields incremental events while
+        # executing; stamp routing fields and forward them
+        reply_text = ""
+        final_usage: TokenUsage | None = None
+        saw_error: str | None = None
+        try:
+            async for event in runner.run_stream():
+                event.channel = msg_in.channel
+                event.session_id = msg_in.session_id
+                event.turn_id = msg_in.id
+                event.origin = msg_in.origin
+                await self.msg_bus.stream_queue.enqueue(event)
+                if event.kind == "delta":
+                    reply_text += event.content
+                elif event.kind == "done":
+                    reply_text = event.content or reply_text
+                    usage_data = (event.metadata or {}).get(
+                        "token_usage")
+                    if isinstance(usage_data, dict):
+                        final_usage = TokenUsage(**usage_data)
+                elif event.kind == "error":
+                    # 记录错误：LLM/工具失败（如孤儿 tool_call_id
+                    # 触发 400）。不中断消费，但终止后不落盘空回复。
+                    saw_error = event.content
+        except TurnCancelled:
+            # 用户终止：部分回复已通过 delta 送达 channel。
+            # 补发一个带 cancelled 标记的收尾流事件 + 最终
+            # MessageOut；不落盘——部分回复不进会话历史
+            await self._finish_cancelled(msg_in, reply_text)
+            return
+
+        content = reply_text
+
+        # 出错时把原因以 [error] 标签接在正文后一并落盘。空正文
+        # 不再直接丢弃：否则历史里只剩一条悬空的用户消息，下一
+        # 轮模型无从得知为何没有回复；部分截断也借此标明"这半句
+        # 被剪断了"，避免被当成完整答复。
+        if saw_error is not None:
+            note = f"[error] {saw_error}"
+            content = (
+                f"{content}\n\n{note}" if content.strip() else note)
+            logger.warning(
+                "Turn %s failed (%s); persisted with error tag",
+                msg_in.id, saw_error)
+
+        msg_out = MessageOut(
+            session_id=msg_in.session_id,
+            channel=msg_in.channel,
+            body=MessageBody(
+                content=content,
+                token_usage=final_usage,
+            ),
+            origin=msg_in.origin,
+            # turn_id 让 channel 端能把最终消息精确匹配到触发它的
+            # 那一轮，避免定时任务结果与用户回复在 FIFO 队列里错位
+            turn_id=msg_in.id,
+            channel_session_id=msg_in.channel_session_id,
+        )
+        await asyncio.to_thread(
+            SessionStore.append, msg_out)
+        await self.msg_bus.out_queue.enqueue(msg_out)
+        # 本轮最后一条消息之后闭合事务；缺这一行的轮次就是
+        # 崩溃残留，加载时整轮丢弃而不是补占位。
+        await asyncio.to_thread(
+            SessionStore.end_turn,
+            msg_in.channel, msg_in.session_id, msg_in.id)
+
+    async def _finish_cancelled(self, msg_in: MessageIn, partial: str = ""):
+        """取消收尾：广播 cancelled done 事件、回最终 MessageOut、闭合轮次。
+
+        部分回复不落盘；轮次边界仍必须闭合，否则加载时会被当成崩溃残留。
+        """
+        final_event = StreamEvent(
+            kind="done",
+            content=partial,
+            metadata={"cancelled": True},
+            channel=msg_in.channel,
+            session_id=msg_in.session_id,
+            turn_id=msg_in.id,
+            origin=msg_in.origin,
+        )
+        await self.msg_bus.stream_queue.enqueue(final_event)
+        msg_out = MessageOut(
+            session_id=msg_in.session_id,
+            channel=msg_in.channel,
+            body=MessageBody(content=partial),
+            origin=msg_in.origin,
+            turn_id=msg_in.id,
+            channel_session_id=msg_in.channel_session_id,
+        )
+        await self.msg_bus.out_queue.enqueue(msg_out)
+        await asyncio.to_thread(
+            SessionStore.end_turn,
+            msg_in.channel, msg_in.session_id, msg_in.id,
+            status="cancelled")
+        logger.info(
+            "Turn %s cancelled by user (partial %d chars)",
+            msg_in.id, len(partial))
 
     async def _run_stop_consumer(self) -> None:
         """消费 bus.stop_queue 的旁路终止信号。

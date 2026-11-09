@@ -11,6 +11,7 @@ context.messages / load_history 用 [压缩消息] + 尾部 合成 payload。
   恢复全量历史。
 - 压缩失败必须 fail-safe：跳过本轮，继续使用完整历史，只记日志。
 """
+import asyncio
 import json
 import logging
 import math
@@ -307,7 +308,8 @@ class Compactor:
         record = CompactRecord(
             content=content, covered_upto=raw[tail_start - 1].id)
         try:
-            SessionStore.save_compact(channel, session_id, record)
+            await asyncio.to_thread(
+                SessionStore.save_compact, channel, session_id, record)
         except OSError:
             logger.exception("压缩记录落盘失败，跳过本轮压缩: session=%s", session_id)
             return None

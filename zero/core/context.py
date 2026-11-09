@@ -1,6 +1,7 @@
 """
 Build context for agent
 """
+import asyncio
 import json
 import os
 import platform
@@ -119,6 +120,9 @@ class Context:
         # compact_record / messages 时读一次盘，之后 turn 内只走 record()
         # 增量追加，避免每次 LLM 迭代重读整个 messages.jsonl
         self._history_loaded = False
+        # 会话目录在环境块里展示；aprepare 在后台线程算好后缓存，
+        # 避免 system prompt 构建时在事件循环里读 index.json
+        self._session_dir: Path | None = None
         self._raw_history: list[Message] = []
         self._compact_record: CompactRecord | None = None
 
@@ -156,6 +160,21 @@ class Context:
         self._ensure_history()
         self._compact_record = rec
 
+    async def aprepare(self) -> None:
+        """把 turn 起点需要读盘的内容一次性挪到线程池。
+
+        历史、compact、会话目录、memory/skills 提示词都在这里读；之后
+        runner 的每次迭代只访问内存快照，事件循环不再等磁盘。
+        """
+        if not self._history_loaded:
+            await asyncio.to_thread(self._ensure_history)
+        if self._session_dir is None:
+            self._session_dir = await asyncio.to_thread(
+                SessionStore.session_dir, self.channel, self.session_id)
+        if self._prompt_cache is None:
+            # 构建提示词会读 memory.md / skills frontmatter
+            await asyncio.to_thread(lambda: self.system_prompt)
+
     def record(self, message: Message) -> None:
         """把 runner 产生的消息写入会话历史（session 模式落 SessionStore）。
 
@@ -164,8 +183,17 @@ class Context:
 
         runner 的持久化缝隙：会话上下文落盘，内存上下文（SubAgentContext）
         只追加内存列表，对 runner 透明。
+
+        同步版本仅用于取消/退出语境（task 已被取消，不能再 await）。
+        正常异步路径统一走 arecord，把追加操作放进线程池。
         """
         SessionStore.append(message)
+        if self._history_loaded:
+            self._raw_history.append(message)
+
+    async def arecord(self, message: Message) -> None:
+        """异步落盘：append 是阻塞文件 IO，不在事件循环里直接执行。"""
+        await asyncio.to_thread(SessionStore.append, message)
         if self._history_loaded:
             self._raw_history.append(message)
 
@@ -187,7 +215,8 @@ class Context:
     def _environment(self) -> str:
         # platform.machine() 在部分环境返回空串，只拼接非空部分
         os_info = " ".join(p for p in (platform.system(), platform.machine()) if p)
-        session_dir = SessionStore.session_dir(self.channel, self.session_id)
+        session_dir = (self._session_dir
+                       or SessionStore.session_dir(self.channel, self.session_id))
         # 沙箱是否真的在跑以探针为准（可用时包络内免审批，否则每条 shell 走审批）
         sandbox_note = (SHELL_SANDBOX_NOTE if envelope.available()
                         else SHELL_APPROVAL_NOTE)
@@ -419,6 +448,13 @@ class SubAgentContext(Context):
 
     def record(self, message: Message) -> None:
         self._messages.append(message)
+
+    async def arecord(self, message: Message) -> None:
+        self.record(message)
+
+    async def aprepare(self) -> None:
+        """纯内存上下文无历史/提示词磁盘读取，无需预热。"""
+        return
 
 
 if __name__ == "__main__":

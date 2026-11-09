@@ -8,6 +8,8 @@ intents layered on top of ``ChannelService``. They live together here so
 """
 from __future__ import annotations
 
+import asyncio
+
 from rich.console import Console
 from rich.markup import escape
 from rich.prompt import Prompt
@@ -109,27 +111,30 @@ class CliCommands:
             self.console.print("[dim]bye[/dim]")
             return False
         if cmd in ("/new", "/n"):
-            self.service.new_session()
-            self.greet_current()
+            # 新建会话要写索引，打招呼要读历史：都放线程池
+            await asyncio.to_thread(self.service.new_session)
+            await asyncio.to_thread(self.greet_current)
             return True
         if cmd in ("/sessions", "/s"):
             if self.pick_session():
-                self.greet_current()
+                await asyncio.to_thread(self.greet_current)
             return True
         if cmd in ("/title", "/t"):
-            self._handle_title(arg)
+            # 索引读写是阻塞 IO，放到线程池，避免卡住同一事件循环里的流式渲染
+            await asyncio.to_thread(self._handle_title, arg)
             return True
         if cmd in ("/model", "/m"):
             await self._handle_model(arg)
             return True
         if cmd in ("/tasks", "/ts"):
-            self._handle_tasks(arg)
+            await asyncio.to_thread(self._handle_tasks, arg)
             return True
         if cmd == "/bgstream":
             self._handle_bgstream(arg)
             return True
         if cmd in ("/history", "/h"):
-            self.renderer.print_full_history(self.service.session_id)
+            await asyncio.to_thread(
+                self.renderer.print_full_history, self.service.session_id)
             return True
         if cmd in ("/help", "/?"):
             lines = "\n".join(f"  {c:<12} {desc}" for c, desc in COMMANDS)
@@ -226,7 +231,7 @@ class CliCommands:
         if not models:
             self.console.print("[dim]models 注册表为空[/dim]")
             return
-        current = self.service.current_model()
+        current = await asyncio.to_thread(self.service.current_model)
         name = arg.strip()
         if not name:
             keys = sorted(models)

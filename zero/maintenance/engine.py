@@ -75,7 +75,8 @@ class MaintenanceEngine:
         while True:
             now = dt.datetime.now()
             async with self._state_lock:
-                last_run = _parse_dt(self._load_state().get(name, {}).get("last_run_at"))
+                state = await asyncio.to_thread(self._load_state)
+            last_run = _parse_dt(state.get(name, {}).get("last_run_at"))
             slot = _last_slot(cron_expr, now)
             if slot is not None and (last_run is None or last_run < slot):
                 # 从未运行或错过最近槽位 → 延迟补跑一次
@@ -99,12 +100,12 @@ class MaintenanceEngine:
         except Exception:  # noqa: BLE001 - 维护任务失败不能杀死循环
             logger.exception("maintenance 任务 %s 执行失败", name)
         async with self._state_lock:
-            state = self._load_state()
+            state = await asyncio.to_thread(self._load_state)
             state.setdefault(name, {})["last_run_at"] = slot.isoformat()
-            self._save_state(state)
+            await asyncio.to_thread(self._save_state, state)
 
     # ------------------------------------------------------------------
-    # State file（小文件同步 IO，锁内读写即可）
+    # State file（读写都在线程池执行，事件循环不参与磁盘等待）
     # ------------------------------------------------------------------
 
     def _load_state(self) -> dict:

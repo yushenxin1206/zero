@@ -309,7 +309,7 @@ class AgentRunner:
                 token_usage=usage,
             ),
         )
-        self.context.record(msg_out)
+        await self.context.arecord(msg_out)
 
     async def _execute_and_persist(self, tc: ToolCall) -> None:
         """Execute a single tool call and record its result
@@ -366,17 +366,12 @@ class AgentRunner:
                     logger.exception("Tool execution failed: %s", tc.function.name)
                     content = json.dumps({"error": str(e)}, ensure_ascii=False)
 
-        # 工具结果统一经 _persist_tool_result 落盘，占位结果（取消补齐）复用
-        self._persist_tool_result(tc, content)
+        # 工具结果统一经 _persist_tool_result_async 落盘，占位结果（取消补齐）
+        # 走同步版本：取消语境里 await 会立刻再抛，不能丢占位。
+        await self._persist_tool_result_async(tc, content)
 
-    def _persist_tool_result(self, tc: ToolCall, content: str) -> None:
-        """以 role=tool 消息记录一次工具执行结果（含取消时的占位结果）。
-
-        同步方法：context.record() 是纯同步落盘；取消语境（CancelledError/
-        GeneratorExit 的 except 里）不能再 await——被取消的 task 中 await
-        会立即再抛，占位补齐将永远写不进去。
-        """
-        tool_msg = MessageTool(
+    def _tool_result_message(self, tc: ToolCall, content: str) -> MessageTool:
+        return MessageTool(
             id=str(uuid4()),
             session_id=self.context.session_id,
             channel=self.context.channel,
@@ -387,7 +382,14 @@ class AgentRunner:
                 tool_call_id=tc.id,
             ),
         )
-        self.context.record(tool_msg)
+
+    async def _persist_tool_result_async(self, tc: ToolCall, content: str) -> None:
+        """正常异步路径：工具结果写入线程池，不阻塞事件循环。"""
+        await self.context.arecord(self._tool_result_message(tc, content))
+
+    def _persist_tool_result(self, tc: ToolCall, content: str) -> None:
+        """仅取消/退出语境使用：task 已取消，不能再 await。"""
+        self.context.record(self._tool_result_message(tc, content))
 
 
 async def run_subagent(
