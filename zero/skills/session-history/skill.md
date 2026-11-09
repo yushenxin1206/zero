@@ -24,8 +24,9 @@ description: >
 │       └── messages.jsonl        # 第三层：完整消息（逐行一条 JSON 消息）
 ```
 
-- `index.json`：`{source_id: {session_id, date, last_updated_at, title, description}}`。
-  用 `last_updated_at`（ISO 时间）和 `title`/`description` 快速筛选相关会话。
+- `index.json`：`{source_id: {session_id, date, title, description}}`。
+  索引只有元数据，**不含活跃时间**：用 `title` / `description` 筛相关会话；
+  需要按新近度排序时，看该会话 `messages.jsonl` 的 mtime（或按 `date` 目录粗筛）。
 - `summary.json`（SessionSummary）：`{title, description, done[], went_well[], went_wrong[], improvements[], covered_upto, updated_at}`。
 - `compact.json`（CompactRecord）：`{content, covered_upto, created_at}`；`content` 是被
   `<compact>...</compact>` 标签包裹的历史摘要；`covered_upto` 指向 `messages.jsonl` 中最后一条
@@ -52,9 +53,10 @@ description: >
 
 1. 用 `ls` / `glob` 列出 `~/.zero/sessions/` 下的渠道目录（channel）。
 2. 对每个相关渠道，读取 `index.json`。
-3. 按用户的意图筛选：用 `title`、`description`、`last_updated_at` 缩小候选会话范围，
-   通常先挑最近更新的 1-3 个最相关会话。
-4. 如果索引信息已足够回答用户，**到此为止**。
+3. 按用户的意图筛选：用 `title`、`description` 缩小候选会话范围。
+4. 需要按新近度挑「最近的 1-3 个」时，不要找索引里的时间字段——它没有；
+   对候选会话目录执行 `ls -lt`，或 `stat` 其 `messages.jsonl`，按 mtime 排序。
+5. 如果索引信息已足够回答用户，**到此为止**。
 
 ### 第二层：会话摘要（summary.json）
 

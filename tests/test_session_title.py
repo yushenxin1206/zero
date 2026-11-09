@@ -69,13 +69,13 @@ def test_backward_compatible_index_entry():
 
 
 def test_index_serialization_is_snake_case():
-    """磁盘格式保持 snake_case，且不落 source_id。"""
+    """磁盘格式保持 snake_case；活跃时间与 source_id 都是运行时字段。"""
     fresh_session("src-2")
     raw = json.loads(index_path().read_text(encoding="utf-8"))
     for entry in raw.values():
-        assert set(entry) >= {"session_id", "date", "last_updated_at", "title"}
+        assert set(entry) >= {"session_id", "date", "title"}
         assert "source_id" not in entry and "sourceId" not in entry
-        assert isinstance(entry["last_updated_at"], str)  # ISO string on disk
+        assert "last_updated_at" not in entry and "lastUpdatedAt" not in entry
 
 
 def test_first_user_message():

@@ -128,9 +128,10 @@ description: >
 - 本会话：`show --dir D`（或直接 read `plan.json`），汇报整体 status、
   当前步骤、done / pending / blocked 计数与下一步。
 - 新会话问旧任务：读 `~/.zero/sessions/{channel}/index.json`，按
-  `title` / `description` / `last_updated_at` 定位候选会话，再读该会话
-  数据目录下的 `plan.json`。定位方式与 session-history skill 的三层检索
-  一致；需要更多细节时按该 skill 深入。
+  `title` / `description` 定位候选会话；索引不含活跃时间，需要按新近度
+  排序时看候选会话 `messages.jsonl` 的 mtime（或按 `date` 目录粗筛）。
+  再读该会话数据目录下的 `plan.json`。定位方式与 session-history skill 的
+  三层检索一致；需要更多细节时按该 skill 深入。
 
 ## 约束（Constraints）
 

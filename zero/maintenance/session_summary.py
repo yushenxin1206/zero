@@ -1,6 +1,6 @@
 """会话复盘（session_summary）维护任务。
 
-筛选各渠道 index.json 中 last_updated_at 在 24 小时内的会话，逐会话调
+筛选各渠道 24 小时内活跃（messages.jsonl 的 mtime）的会话，逐会话调
 LLM 生成结构化复盘，写入会话级 summary.json（SessionSummary），并把
 title / description 回写到渠道索引。增量锚点 covered_upto 让重复运行
 只把新消息送入 LLM，无新消息则跳过（幂等省 token）。
@@ -162,7 +162,8 @@ async def _summarize_session(
     summary.updated_at = dt.datetime.now()
     await asyncio.to_thread(
         SessionStore.save_summary, channel, session_id, summary)
-    # 回写索引（update_meta_by_summary 绝不触碰 last_updated_at，防 24h 过滤自激）
+    # 回写索引只改标题/描述；活跃时间只由 messages.jsonl 推导，复盘不会
+    # 让会话在 24h 过滤里重新变「活跃」
     await asyncio.to_thread(
         SessionStore.update_meta_by_summary,
         channel, session_id,

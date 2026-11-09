@@ -10,7 +10,6 @@ Channel-level index for session lookup:
         "<source_id>": {
             "session_id": "<uuid4>",
             "date": "2026-08-12",
-            "last_updated_at": "2026-08-12T14:30:00",
             "title": "调试飞书消息丢失问题",
             "description": "……（maintenance session_summary 定时任务回写）"
         }
@@ -23,9 +22,10 @@ are ignored on validation. The on-disk format stays snake_case JSON.
 The index is metadata-only: it is written when a session is created or its
 title/description/model changes, never per turn. Activity time used for
 listing and the "24h active" maintenance filter is derived from the session's
-messages.jsonl mtime, so a turn just appends and never rewrites the whole
-index. Index reads are served from an in-process cache invalidated by the
-index file's mtime.
+messages.jsonl mtime and never persisted, so a turn just appends and never
+rewrites the whole index. Index reads are served from an in-process cache
+invalidated by the index file's mtime; the cache also keeps a
+session_id → entry map, because the index itself is keyed by source_id.
 
 Session-level files inside {session_dir}:
     messages.jsonl  append-only 原始消息
@@ -167,19 +167,19 @@ class SessionStore:
 
     @staticmethod
     def _last_activity_at(channel: str, entry: SessionMeta) -> datetime:
-        """会话最后活跃时间：messages.jsonl 的 mtime，缺文件时退回索引值。
+        """会话最后活跃时间：messages.jsonl 的 mtime；从未落消息则视为未活跃。
 
-        写路径不再为每次 turn 重写索引，活跃时间因此必须由消息文件本身
-        推导；索引里的 last_updated_at 只作为尚未落消息文件的会话的兜底。
+        索引不持久化活跃时间，列表排序与 24 小时过滤都读这个派生值。返回
+        epoch 表示「从未活跃」：列表里排在最后，维护任务也不会选中它。
         """
         if not entry.date:
-            return entry.last_updated_at
+            return datetime.fromtimestamp(0)
         path = (current().sessions / channel / entry.date
                 / entry.session_id / "messages.jsonl")
         try:
             return datetime.fromtimestamp(path.stat().st_mtime)
         except OSError:
-            return entry.last_updated_at
+            return datetime.fromtimestamp(0)
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -687,8 +687,8 @@ class SessionStore:
     ) -> bool:
         """Write back the index's title/description. None means "don't change".
 
-        绝不触碰 last_updated_at——否则复盘回写会让会话在维护任务的
-        "24h 活跃"过滤中永远自激（复盘→更新索引→看起来活跃→再次复盘）。
+        索引不含活跃时间：活跃时间只由 messages.jsonl 推导，所以这次回写
+        不会把会话重新标成「24h 活跃」，复盘任务不会自激。
         Returns True if the session was found and updated.
         """
         index = SessionStore._load_index(channel)

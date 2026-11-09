@@ -35,7 +35,9 @@ class SessionMeta(Base):
     """
     session_id: str = Field(default_factory=lambda: str(uuid4()))
     date: str = ""  # 创建日期 YYYY-MM-DD，用于会话目录分桶
-    last_updated_at: datetime = Field(default_factory=datetime.now)
+    # 最后活跃时间：不落盘，仅 list_sessions 返回时按 messages.jsonl 的
+    # mtime 派生（与 source_id 同属运行时字段）。索引文件里出现该字段会被忽略。
+    last_updated_at: datetime = Field(default_factory=datetime.now, exclude=True)
     title: str = ""
     # 复盘性描述（会话级摘要），由 maintenance session_summary 定时任务回写
     description: str = ""
