@@ -35,10 +35,18 @@ Session-level files inside {session_dir}:
 import json
 import logging
 import os
+import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Iterator, TypeVar
 from uuid import uuid4
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows 无 fcntl，退化为仅进程内锁
+    fcntl = None
 
 from zero.models import Message, MessageBody, MessageTool, CompactRecord
 from zero.paths import current
@@ -56,6 +64,39 @@ TITLE_MAX_LEN = 30
 _index_cache: dict[str, tuple[int, dict[str, SessionMeta],
                                dict[str, SessionMeta]]] = {}
 _index_lock = threading.Lock()
+
+# 每个渠道一把进程内写锁：索引的读-改-写必须整段串行，否则后台复盘回写
+# 与用户改标题同时发生时会互相覆盖（写盘本身是整份重写）。
+_channel_locks: dict[str, threading.Lock] = {}
+_channel_locks_guard = threading.Lock()
+
+T = TypeVar("T")
+
+
+def _channel_write_lock(channel: str) -> threading.Lock:
+    with _channel_locks_guard:
+        lock = _channel_locks.get(channel)
+        if lock is None:
+            lock = _channel_locks[channel] = threading.Lock()
+        return lock
+
+
+@contextmanager
+def _index_file_lock(channel: str) -> Iterator[None]:
+    """跨进程互斥：索引同目录下的锁文件，flock 独占。
+
+    平台没有 fcntl（Windows）时只保留进程内锁，单进程多线程仍安全。
+    """
+    path = SessionStore._index_path(channel).with_name(".index.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+") as fh:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
@@ -147,14 +188,22 @@ class SessionStore:
 
     @staticmethod
     def _save_index(channel: str, index: dict[str, SessionMeta]) -> None:
-        """原子写回索引并刷新进程内缓存。"""
+        """原子写回索引并刷新进程内缓存（调用方必须已持有本渠道写锁）。"""
         path = SessionStore._index_path(channel)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {sid: e.model_dump(mode="json") for sid, e in index.items()}
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp.replace(path)
+        # 临时文件必须每次唯一：固定名在并发写时会互相踩，第二个 replace 报错
+        fd, tmp_name = tempfile.mkstemp(
+            dir=path.parent, prefix=".index-", suffix=".json.tmp")
+        tmp = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                # 先拼成整串再写：json.dump 逐块写会慢一个数量级
+                f.write(json.dumps(data, ensure_ascii=False, indent=2))
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         stamp = path.stat().st_mtime_ns
         with _index_lock:
             _index_cache[str(path)] = (
@@ -217,6 +266,26 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _write_index(
+            channel: str,
+            mutate: Callable[[dict[str, SessionMeta]], tuple[T, bool]],
+    ) -> T:
+        """索引的事务性读-改-写：锁内取最新副本，改完原子写回。
+
+        锁顺序固定为「渠道写锁 → 索引锁文件 → 缓存锁」，缓存锁只出现在
+        _load_index / _save_index 内部；读路径只取缓存锁，不会反向拿写锁，
+        因此不存在死锁环。
+
+        mutate 返回 (结果, 是否落盘)；返回 False 时不写（例如目标会话不存在）。
+        """
+        with _channel_write_lock(channel), _index_file_lock(channel):
+            index = SessionStore._load_index(channel)
+            result, changed = mutate(index)
+            if changed:
+                SessionStore._save_index(channel, index)
+            return result
+
+    @staticmethod
     def resolve_session(channel: str, source_id: str) -> str:
         """
         Look up or create a session for the given channel-specific source_id.
@@ -233,11 +302,16 @@ class SessionStore:
             # 已有会话：活跃时间由 messages.jsonl 的 mtime 表达，无需写索引
             return index[source_id].session_id
 
-        writable = SessionStore._load_index(channel)
-        meta = SessionMeta(date=datetime.now().strftime("%Y-%m-%d"))
-        writable[source_id] = meta
-        SessionStore._save_index(channel, writable)
-        return meta.session_id
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[str, bool]:
+            existing = entries.get(source_id)
+            if existing is not None:
+                # 并发下另一个写者刚建了同一 source_id：复用它，不覆盖
+                return existing.session_id, False
+            meta = SessionMeta(date=datetime.now().strftime("%Y-%m-%d"))
+            entries[source_id] = meta
+            return meta.session_id, True
+
+        return SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def create_session(channel: str, source_id: str) -> str:
@@ -245,11 +319,12 @@ class SessionStore:
         Force-create a NEW session for source_id, replacing any existing
         binding. Use for explicit "new conversation" actions (CLI /new).
         """
-        index = SessionStore._load_index(channel)
-        meta = SessionMeta(date=datetime.now().strftime("%Y-%m-%d"))
-        index[source_id] = meta
-        SessionStore._save_index(channel, index)
-        return meta.session_id
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[str, bool]:
+            meta = SessionMeta(date=datetime.now().strftime("%Y-%m-%d"))
+            entries[source_id] = meta
+            return meta.session_id, True
+
+        return SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def list_sessions(channel: str) -> list[SessionMeta]:
@@ -291,13 +366,14 @@ class SessionStore:
     @staticmethod
     def set_title(channel: str, session_id: str, title: str) -> bool:
         """Manually set/rename a session title. Returns True if updated."""
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
-            if entry.session_id == session_id:
-                entry.title = title.strip()
-                SessionStore._save_index(channel, index)
-                return True
-        return False
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
+            for entry in entries.values():
+                if entry.session_id == session_id:
+                    entry.title = title.strip()
+                    return True, True
+            return False, False
+
+        return SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def get_model(channel: str, session_id: str) -> str:
@@ -309,13 +385,14 @@ class SessionStore:
     @staticmethod
     def set_model(channel: str, session_id: str, model: str) -> bool:
         """Bind a model to the session. Returns True if updated."""
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
-            if entry.session_id == session_id:
-                entry.model = model.strip()
-                SessionStore._save_index(channel, index)
-                return True
-        return False
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
+            for entry in entries.values():
+                if entry.session_id == session_id:
+                    entry.model = model.strip()
+                    return True, True
+            return False, False
+
+        return SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def auto_title(channel: str, session_id: str, text: str) -> None:
@@ -324,13 +401,17 @@ class SessionStore:
         title = SessionStore.make_title(text)
         if not title:
             return
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
-            if entry.session_id == session_id:
-                if not entry.title:
-                    entry.title = title
-                    SessionStore._save_index(channel, index)
-                return
+
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[None, bool]:
+            for entry in entries.values():
+                if entry.session_id == session_id:
+                    if not entry.title:
+                        entry.title = title
+                        return None, True
+                    return None, False
+            return None, False
+
+        SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def first_user_message(channel: str, session_id: str,
@@ -691,16 +772,17 @@ class SessionStore:
         不会把会话重新标成「24h 活跃」，复盘任务不会自激。
         Returns True if the session was found and updated.
         """
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
-            if entry.session_id == session_id:
-                if title is not None:
-                    entry.title = title.strip()
-                if description is not None:
-                    entry.description = description.strip()
-                SessionStore._save_index(channel, index)
-                return True
-        return False
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
+            for entry in entries.values():
+                if entry.session_id == session_id:
+                    if title is not None:
+                        entry.title = title.strip()
+                    if description is not None:
+                        entry.description = description.strip()
+                    return True, True
+            return False, False
+
+        return SessionStore._write_index(channel, mutate)
 
     @staticmethod
     def migrate_legacy_summaries() -> int:
