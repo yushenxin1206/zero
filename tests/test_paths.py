@@ -1,6 +1,7 @@
 """P0-2 验收：导入零副作用 + 同进程多数据根隔离。"""
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -8,9 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from zero.config import Config, load_config, save_config
+from zero.config import load_config
 from zero.paths import current, scope
 from zero.session.store import SessionStore
+from zero.utils.file import save_or_create_file
 
 
 def test_import_zero_has_no_data_root_io():
@@ -60,15 +62,14 @@ def test_two_scopes_do_not_interfere(tmp_path):
     async def worker(root: Path, marker: str) -> dict:
         with scope(root):
             sid = SessionStore.create_session("cli", f"src-{marker}")
-            cfg = Config.model_validate({
+            save_or_create_file(current().config, json.dumps({
                 "models": {marker: {
                     "provider": "deepseek",
                     "contextWindowTokens": 65536,
                 }},
                 "providers": {"deepseek": {
                     "apiBase": "https://test.local", "apiKey": "test"}},
-            })
-            save_config(cfg, path=current().config)
+            }))
             current().memory.parent.mkdir(parents=True, exist_ok=True)
             current().memory.write_text(marker, encoding="utf-8")
             await asyncio.sleep(0)  # 让两个任务真正交错

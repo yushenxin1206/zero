@@ -1,7 +1,9 @@
+import argparse
 import json
+import sys
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, PrivateAttr
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
@@ -56,6 +58,11 @@ class Config(BaseSettings):
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
     model_config = SettingsConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    # 这份配置是从哪个文件读出来的。只有非空时才允许 save_config 回写：
+    # Config 继承 BaseSettings，Config() 会把环境变量算作显式字段，若不设
+    # 这个来源标记，环境变量就会被固化成磁盘配置。load_config 负责赋值。
+    _loaded_from: Path | None = PrivateAttr(default=None)
 
     def resolve_runtime(self, task: str, model_override: str | None = None) -> AgentRuntimeConfig:
         """按任务名解析出物化的运行时配置（配置层唯一的解析入口）。
@@ -137,18 +144,63 @@ class Config(BaseSettings):
         return getattr(self.providers, provider_key)
 
 
-def save_config(config: Config, path: Path | None = None):
-    """写出配置模板。``path`` 缺省取当前数据根，测试/嵌入可显式指定。"""
-    # 仅人工手动运行（python -m zero.config）生成 config.json 模板，运行时
-    # 不会调用，故用全字段 dump 展示完整默认值结构。注意：勿在已含
-    # agentRuntimes 条目的配置上重跑——全字段展开会把磁盘上精简的条目污染
-    # 成全显式（fields_set 来自磁盘键集合），各任务条目因此失去对 default
-    # 的字段级继承（例如 compact 会带上显式的默认 temperature）。
-    config_json = config.model_dump_json(indent=2, by_alias=True)
+class ConfigWriteError(RuntimeError):
+    """配置写盘被拒绝：来源不可信，或目标已存在。"""
+
+
+def render_template() -> str:
+    """完整默认值模板（只供展示 / 新建文件，绝不用于回写已有配置）。
+
+    用 ``model_validate({})`` 而不是 ``Config()``：后者会读环境变量，
+    模板里混进环境变量再存盘，就等于把环境变量固化成了配置。
+    """
+    return Config.model_validate({}).model_dump_json(indent=2, by_alias=True)
+
+
+def write_template(path: Path | None = None) -> Path:
+    """把模板写成一份新配置；目标已存在则拒绝，绝不覆盖手写内容。"""
+    target = path or current().config
+    if target.exists():
+        raise ConfigWriteError(
+            f'{target} 已存在，拒绝覆盖：模板只用于新建，改配置请手动编辑')
+    save_or_create_file(file_path=target, content=render_template())
+    return target
+
+
+def save_config(config: Config, path: Path | None = None) -> bool:
+    """把配置的显式字段原子写回磁盘，返回是否真的写了。
+
+    三条刻意设计的约束：
+
+    1. 只写 ``model_fields_set``（exclude_unset，递归生效）。没写的键保持
+       缺席，而「没写 = 继承 agentRuntimes.default / 使用默认值」正是配置
+       的语义；全字段 dump 会把继承拍平成明文，从此不再跟随上层。
+    2. 只接受 ``load_config`` 读出来的配置。``Config`` 继承 BaseSettings，
+       ``Config()`` 会把环境变量算作显式字段；允许凭空回写的话，环境变量
+       就会被焊进磁盘。来源文件与目标文件也必须一致。
+    3. 语义内容与磁盘相同则不写：不碰 mtime，也不做无意义的 IO。
+    """
+    target = path or current().config
+    if config._loaded_from is None:
+        raise ConfigWriteError(
+            '配置不是从文件读出的（可能来自环境变量或默认值），拒绝写回：'
+            '请只回写 load_config 返回的 Config')
+    if config._loaded_from != target:
+        raise ConfigWriteError(
+            f'配置来自 {config._loaded_from}，不能写回 {target}')
+    if not target.exists():
+        raise ConfigWriteError(f'{target} 不存在，无法回写')
+
+    with open(target, 'r', encoding='utf-8') as f:
+        disk = json.load(f)
+    data = config.model_dump(mode='json', by_alias=True, exclude_unset=True)
+    if data == disk:
+        return False
     save_or_create_file(
-        file_path=path or current().config,
-        content=config_json
+        file_path=target,
+        content=json.dumps(data, ensure_ascii=False, indent=2),
     )
+    return True
 
 
 def load_config(path: Path | None = None) -> Config:
@@ -160,11 +212,35 @@ def load_config(path: Path | None = None) -> Config:
     if target.exists():
         with open(target, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return Config.model_validate(data)
+            config = Config.model_validate(data)
+        config._loaded_from = target
+        return config
     return Config()
 
 
+def main(argv: list[str] | None = None) -> int:
+    """``python -m zero.config``：默认只打印模板，``--write`` 才落盘。"""
+    parser = argparse.ArgumentParser(
+        prog='python -m zero.config',
+        description='打印配置模板；默认不写任何文件。')
+    parser.add_argument(
+        '--write', action='store_true',
+        help='把模板写入配置文件（目标已存在时拒绝）')
+    args = parser.parse_args(argv)
+
+    if not args.write:
+        print(render_template())
+        return 0
+    try:
+        target = write_template()
+    except ConfigWriteError as exc:
+        print(f'未写入：{exc}', file=sys.stderr)
+        return 1
+    print(f'已写入 {target}')
+    return 0
+
+
 if __name__ == '__main__':
-    save_config(load_config())
+    raise SystemExit(main())
 
 

@@ -59,7 +59,14 @@ pytest 配置与 ruff 规则见 `pyproject.toml`。测试不依赖本机真实�
 
 ## 配置
 
-配置文件位于 `~/.zero/config.json`，首次运行自动生成默认配置。需要飞书通道时填入：
+配置文件位于 `~/.zero/config.json`，**需要自己创建**：程序不会自动生成，缺失时按默认值运行。
+
+```bash
+uv run python -m zero.config           # 把完整默认值模板打印到终端
+uv run python -m zero.config --write   # 仅在配置文件不存在时写入模板
+```
+
+`--write` 遇到已有配置会拒绝覆盖，避免把手工维护的精简配置冲成一份全显式的。配置里**只写你真正要改的字段**；没写的字段继续继承（`agentRuntimes.compact` 等任务条目继承 `agentRuntimes.default`，其余用默认值）。需要飞书通道时填入：
 
 ```json
 {
