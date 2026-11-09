@@ -20,6 +20,13 @@ Index entries are modeled by session.models.SessionMeta. Fields missing in older
 index files (e.g. title, description) fall back to model defaults; unknown fields
 are ignored on validation. The on-disk format stays snake_case JSON.
 
+The index is metadata-only: it is written when a session is created or its
+title/description/model changes, never per turn. Activity time used for
+listing and the "24h active" maintenance filter is derived from the session's
+messages.jsonl mtime, so a turn just appends and never rewrites the whole
+index. Index reads are served from an in-process cache invalidated by the
+index file's mtime.
+
 Session-level files inside {session_dir}:
     messages.jsonl  append-only 原始消息
     compact.json    上下文压缩记录（CompactRecord）
@@ -27,6 +34,8 @@ Session-level files inside {session_dir}:
 """
 import json
 import logging
+import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -39,6 +48,12 @@ logger = logging.getLogger(__name__)
 
 # 自动标题（首条用户消息截断）的最大长度
 TITLE_MAX_LEN = 30
+
+# 渠道索引的进程内缓存：index 文件路径 -> (mtime_ns, {source_id: SessionMeta})。
+# 只缓存解析结果，读方拿到的共享条目必须只读；需要修改的调用方走
+# _load_index() 拿副本。写索引后同步刷新缓存。
+_index_cache: dict[str, tuple[int, dict[str, SessionMeta]]] = {}
+_index_lock = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -89,29 +104,74 @@ class SessionStore:
         return current().sessions / channel / "index.json"
 
     @staticmethod
-    def _load_index(channel: str) -> dict[str, SessionMeta]:
+    def _cached_index(channel: str) -> dict[str, SessionMeta]:
+        """读取索引的共享缓存（只读视图）：按 index 文件 mtime 失效。
+
+        返回的 SessionMeta 与缓存共享，调用方不得修改；需要改字段的代码
+        走 _load_index() 拿副本。
+        """
         path = SessionStore._index_path(channel)
-        if not path.exists():
-            return {}
-        with path.open("r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return {sid: SessionMeta.model_validate(e) for sid, e in raw.items()}
+        key = str(path)
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            stamp = -1
+        with _index_lock:
+            cached = _index_cache.get(key)
+            if cached is not None and cached[0] == stamp:
+                return cached[1]
+        if stamp < 0:
+            index: dict[str, SessionMeta] = {}
+        else:
+            with path.open("r", encoding="utf-8") as f:
+                raw = json.load(f)
+            index = {sid: SessionMeta.model_validate(e) for sid, e in raw.items()}
+        with _index_lock:
+            _index_cache[key] = (stamp, index)
+        return index
+
+    @staticmethod
+    def _load_index(channel: str) -> dict[str, SessionMeta]:
+        """索引的可写副本：供改字段后 _save_index 的调用方使用。"""
+        return {sid: entry.model_copy()
+                for sid, entry in SessionStore._cached_index(channel).items()}
 
     @staticmethod
     def _save_index(channel: str, index: dict[str, SessionMeta]) -> None:
+        """原子写回索引并刷新进程内缓存。"""
         path = SessionStore._index_path(channel)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {sid: e.model_dump(mode="json") for sid, e in index.items()}
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(path)
+        stamp = path.stat().st_mtime_ns
+        with _index_lock:
+            _index_cache[str(path)] = (stamp, dict(index))
 
     @staticmethod
     def _find_entry_by_session_id(channel: str, session_id: str) -> SessionMeta | None:
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
+        for entry in SessionStore._cached_index(channel).values():
             if entry.session_id == session_id:
                 return entry
         return None
+
+    @staticmethod
+    def _last_activity_at(channel: str, entry: SessionMeta) -> datetime:
+        """会话最后活跃时间：messages.jsonl 的 mtime，缺文件时退回索引值。
+
+        写路径不再为每次 turn 重写索引，活跃时间因此必须由消息文件本身
+        推导；索引里的 last_updated_at 只作为尚未落消息文件的会话的兜底。
+        """
+        if not entry.date:
+            return entry.last_updated_at
+        path = (current().sessions / channel / entry.date
+                / entry.session_id / "messages.jsonl")
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime)
+        except OSError:
+            return entry.last_updated_at
 
     # ------------------------------------------------------------------
     # Path helpers
@@ -159,16 +219,15 @@ class SessionStore:
         if not source_id:
             return str(uuid4())
 
-        index = SessionStore._load_index(channel)
+        index = SessionStore._cached_index(channel)
         if source_id in index:
-            entry = index[source_id]
-            entry.last_updated_at = datetime.now()
-            SessionStore._save_index(channel, index)
-            return entry.session_id
+            # 已有会话：活跃时间由 messages.jsonl 的 mtime 表达，无需写索引
+            return index[source_id].session_id
 
+        writable = SessionStore._load_index(channel)
         meta = SessionMeta(date=datetime.now().strftime("%Y-%m-%d"))
-        index[source_id] = meta
-        SessionStore._save_index(channel, index)
+        writable[source_id] = meta
+        SessionStore._save_index(channel, writable)
         return meta.session_id
 
     @staticmethod
@@ -190,11 +249,14 @@ class SessionStore:
 
         Each returned SessionMeta has source_id filled in from the index key.
         """
-        index = SessionStore._load_index(channel)
-        entries = []
+        index = SessionStore._cached_index(channel)
+        entries: list[SessionMeta] = []
         for sid, entry in index.items():
-            entry.source_id = sid
-            entries.append(entry)
+            # 活跃时间取自消息文件 mtime；索引条目本身不被修改（缓存共享）
+            entries.append(entry.model_copy(update={
+                "source_id": sid,
+                "last_updated_at": SessionStore._last_activity_at(channel, entry),
+            }))
         entries.sort(key=lambda e: e.last_updated_at, reverse=True)
         return entries
 
@@ -330,17 +392,16 @@ class SessionStore:
 
     @staticmethod
     def touch(channel: str, session_id: str) -> None:
-        """刷新会话的 last_updated_at（turn 边界调用一次即可）。
+        """刷新会话最后活跃时间（turn 边界调用一次即可）。
 
-        last_updated_at 只服务列表排序与 maintenance 的 24h 活跃过滤，
-        per-turn 粒度足够。
+        活跃时间只服务列表排序与 maintenance 的 24h 活跃过滤，由
+        messages.jsonl 的 mtime 表达。这里只做一次 O(1) 的 utime，
+        不再读改写整份 index.json——历史再长、会话再多也不放大写入。
         """
-        index = SessionStore._load_index(channel)
-        for entry in index.values():
-            if entry.session_id == session_id:
-                entry.last_updated_at = datetime.now()
-                SessionStore._save_index(channel, index)
-                return
+        try:
+            os.utime(SessionStore._session_file(channel, session_id))
+        except OSError:
+            return
 
     @staticmethod
     def load_compact(channel: str, session_id: str) -> CompactRecord | None:
@@ -679,3 +740,4 @@ class SessionStore:
         if migrated:
             logger.info("旧版压缩摘要迁移完成：%d 个会话 summary.json → compact.json", migrated)
         return migrated
+
