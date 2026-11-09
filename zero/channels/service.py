@@ -124,7 +124,8 @@ class ChannelService:
         """
         views = []
         for entry in SessionStore.list_sessions(self.channel):
-            if not SessionStore.has_messages(self.channel, entry.session_id):
+            if not SessionStore.has_messages(
+                    self.channel, entry.session_id, entry):
                 continue
             views.append(self._view(entry))
         return views
@@ -134,7 +135,8 @@ class ChannelService:
         for entry in SessionStore.list_sessions(self.channel):
             if entry.session_id != session_id:
                 continue
-            if not SessionStore.has_messages(self.channel, entry.session_id):
+            if not SessionStore.has_messages(
+                    self.channel, entry.session_id, entry):
                 return None
             return self._view(entry)
         return None
@@ -144,7 +146,8 @@ class ChannelService:
         derived = not title
         if derived:
             title = SessionStore.make_title(
-                SessionStore.first_user_message(self.channel, entry.session_id))
+                SessionStore.first_user_message(
+                    self.channel, entry.session_id, entry))
         return SessionView(
             session_id=entry.session_id,
             source_id=entry.source_id,

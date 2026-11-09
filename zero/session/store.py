@@ -49,10 +49,12 @@ logger = logging.getLogger(__name__)
 # 自动标题（首条用户消息截断）的最大长度
 TITLE_MAX_LEN = 30
 
-# 渠道索引的进程内缓存：index 文件路径 -> (mtime_ns, {source_id: SessionMeta})。
-# 只缓存解析结果，读方拿到的共享条目必须只读；需要修改的调用方走
-# _load_index() 拿副本。写索引后同步刷新缓存。
-_index_cache: dict[str, tuple[int, dict[str, SessionMeta]]] = {}
+# 渠道索引的进程内缓存：index 文件路径 ->
+# (mtime_ns, {source_id: SessionMeta}, {session_id: SessionMeta})。
+# 两个映射共享同一批条目，读方只读；需要修改的调用方走 _load_index() 拿副本。
+# 反向映射存在的原因：索引以 source_id 为 key，而绝大多数调用只持有 session_id。
+_index_cache: dict[str, tuple[int, dict[str, SessionMeta],
+                               dict[str, SessionMeta]]] = {}
 _index_lock = threading.Lock()
 
 
@@ -104,11 +106,12 @@ class SessionStore:
         return current().sessions / channel / "index.json"
 
     @staticmethod
-    def _cached_index(channel: str) -> dict[str, SessionMeta]:
-        """读取索引的共享缓存（只读视图）：按 index 文件 mtime 失效。
+    def _cached_maps(
+            channel: str,
+    ) -> tuple[dict[str, SessionMeta], dict[str, SessionMeta]]:
+        """索引缓存：返回 (source_id→entry, session_id→entry)，按文件 mtime 失效。
 
-        返回的 SessionMeta 与缓存共享，调用方不得修改；需要改字段的代码
-        走 _load_index() 拿副本。
+        两个映射与缓存共享条目，调用方不得修改；需要改字段走 _load_index()。
         """
         path = SessionStore._index_path(channel)
         key = str(path)
@@ -119,16 +122,22 @@ class SessionStore:
         with _index_lock:
             cached = _index_cache.get(key)
             if cached is not None and cached[0] == stamp:
-                return cached[1]
+                return cached[1], cached[2]
         if stamp < 0:
-            index: dict[str, SessionMeta] = {}
+            by_source: dict[str, SessionMeta] = {}
         else:
             with path.open("r", encoding="utf-8") as f:
                 raw = json.load(f)
-            index = {sid: SessionMeta.model_validate(e) for sid, e in raw.items()}
+            by_source = {sid: SessionMeta.model_validate(e) for sid, e in raw.items()}
+        by_session = {entry.session_id: entry for entry in by_source.values()}
         with _index_lock:
-            _index_cache[key] = (stamp, index)
-        return index
+            _index_cache[key] = (stamp, by_source, by_session)
+        return by_source, by_session
+
+    @staticmethod
+    def _cached_index(channel: str) -> dict[str, SessionMeta]:
+        """索引的 source_id → 条目视图（共享只读）。"""
+        return SessionStore._cached_maps(channel)[0]
 
     @staticmethod
     def _load_index(channel: str) -> dict[str, SessionMeta]:
@@ -148,14 +157,13 @@ class SessionStore:
         tmp.replace(path)
         stamp = path.stat().st_mtime_ns
         with _index_lock:
-            _index_cache[str(path)] = (stamp, dict(index))
+            _index_cache[str(path)] = (
+                stamp, dict(index),
+                {e.session_id: e for e in index.values()})
 
     @staticmethod
     def _find_entry_by_session_id(channel: str, session_id: str) -> SessionMeta | None:
-        for entry in SessionStore._cached_index(channel).values():
-            if entry.session_id == session_id:
-                return entry
-        return None
+        return SessionStore._cached_maps(channel)[1].get(session_id)
 
     @staticmethod
     def _last_activity_at(channel: str, entry: SessionMeta) -> datetime:
@@ -178,22 +186,23 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def session_dir(channel: str, session_id: str) -> Path:
+    def session_dir(channel: str, session_id: str,
+                    entry: SessionMeta | None = None) -> Path:
         """会话数据目录（messages.jsonl / compact.json / summary.json 所在处）。
 
         会话创建日期由 index 反查；不在 index 中（如创建时 source_id 为空、
-        或 subagent 等内存会话）时退化为按今天拼路径。
+        或 subagent 等内存会话）时退化为按今天拼路径。``entry`` 供已经持有
+        索引条目的调用方直接传入，省掉一次 session_id → 条目的查表。
         """
-        entry = SessionStore._find_entry_by_session_id(channel, session_id)
-        if entry is not None:
-            date = entry.date
-        else:
-            date = datetime.now().strftime("%Y-%m-%d")
+        if entry is None:
+            entry = SessionStore._find_entry_by_session_id(channel, session_id)
+        date = entry.date if entry is not None else datetime.now().strftime("%Y-%m-%d")
         return current().sessions / channel / date / session_id
 
     @staticmethod
-    def _session_file(channel: str, session_id: str) -> Path:
-        return SessionStore.session_dir(channel, session_id) / "messages.jsonl"
+    def _session_file(channel: str, session_id: str,
+                      entry: SessionMeta | None = None) -> Path:
+        return SessionStore.session_dir(channel, session_id, entry) / "messages.jsonl"
 
     @staticmethod
     def _compact_file(channel: str, session_id: str) -> Path:
@@ -324,11 +333,12 @@ class SessionStore:
                 return
 
     @staticmethod
-    def first_user_message(channel: str, session_id: str) -> str:
+    def first_user_message(channel: str, session_id: str,
+                           entry: SessionMeta | None = None) -> str:
         """Return the content of the session's first user message ("" if
         none). Stops at the first match without loading the whole file."""
         try:
-            path = SessionStore._session_file(channel, session_id)
+            path = SessionStore._session_file(channel, session_id, entry)
         except ValueError:
             return ""
         if not path.exists():
@@ -347,13 +357,21 @@ class SessionStore:
         return ""
 
     @staticmethod
-    def has_messages(channel: str, session_id: str) -> bool:
-        """True if the session has a non-empty messages file."""
+    def has_messages(channel: str, session_id: str,
+                     entry: SessionMeta | None = None) -> bool:
+        """True if the session has a non-empty messages file.
+
+        一次 stat 同时回答「存在」与「非空」，不再 exists 之后重复 stat。
+        ``entry`` 让已经持有索引条目的调用方跳过 session_id → 条目的查表。
+        """
         try:
-            path = SessionStore._session_file(channel, session_id)
+            path = SessionStore._session_file(channel, session_id, entry)
         except ValueError:
             return False
-        return path.exists() and path.stat().st_size > 0
+        try:
+            return path.stat().st_size > 0
+        except OSError:
+            return False
 
     @staticmethod
     def _append_json(channel: str, session_id: str, payload: str) -> None:
