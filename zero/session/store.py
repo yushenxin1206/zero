@@ -276,7 +276,9 @@ class SessionStore:
         _load_index / _save_index 内部；读路径只取缓存锁，不会反向拿写锁，
         因此不存在死锁环。
 
-        mutate 返回 (结果, 是否落盘)；返回 False 时不写（例如目标会话不存在）。
+        mutate 返回 (结果, 是否落盘)。第二个值为 False 表示没有实际变化
+        （目标会话不存在，或改完的值与原来相同），此时不写文件、不动 mtime、
+        也不刷新缓存。
         """
         with _channel_write_lock(channel), _index_file_lock(channel):
             index = SessionStore._load_index(channel)
@@ -365,11 +367,14 @@ class SessionStore:
 
     @staticmethod
     def set_title(channel: str, session_id: str, title: str) -> bool:
-        """Manually set/rename a session title. Returns True if updated."""
+        """Manually set/rename a session title. Returns True if found."""
         def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
             for entry in entries.values():
                 if entry.session_id == session_id:
-                    entry.title = title.strip()
+                    new_title = title.strip()
+                    if entry.title == new_title:
+                        return True, False  # 内容没变，不重写整份索引
+                    entry.title = new_title
                     return True, True
             return False, False
 
@@ -770,16 +775,24 @@ class SessionStore:
 
         索引不含活跃时间：活跃时间只由 messages.jsonl 推导，所以这次回写
         不会把会话重新标成「24h 活跃」，复盘任务不会自激。
-        Returns True if the session was found and updated.
+        字段值与磁盘上相同、或两个字段都没传时，不重写索引。
+        Returns True if the session was found.
         """
         def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
             for entry in entries.values():
                 if entry.session_id == session_id:
+                    changed = False
                     if title is not None:
-                        entry.title = title.strip()
+                        new_title = title.strip()
+                        if entry.title != new_title:
+                            entry.title = new_title
+                            changed = True
                     if description is not None:
-                        entry.description = description.strip()
-                    return True, True
+                        new_description = description.strip()
+                        if entry.description != new_description:
+                            entry.description = new_description
+                            changed = True
+                    return True, changed
             return False, False
 
         return SessionStore._write_index(channel, mutate)

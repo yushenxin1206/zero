@@ -1,4 +1,5 @@
 """P1-2：索引写入不随历史规模增长，活跃时间由消息文件推导。"""
+import json
 import time
 from unittest.mock import patch
 
@@ -74,3 +75,91 @@ def test_load_history_does_not_write_index():
     SessionStore.load_history(sid, "cli", repair_closed_turns=True,
                               active_turn_id="")
     assert index_path.stat().st_mtime_ns == before_mtime
+
+
+def _snapshot(channel: str = "cli"):
+    path = SessionStore._index_path(channel)
+    return path.read_text(encoding="utf-8"), path.stat().st_mtime_ns
+
+
+def _count_writes():
+    """上下文管理器：统计 _save_index 实际被调用的次数。"""
+    class Counter:
+        calls = 0
+
+        def __enter__(self):
+            self.real = SessionStore._save_index
+            counter = self
+
+            def counting(ch, index):
+                counter.calls += 1
+                counter.real(ch, index)
+
+            self._patch = patch.object(
+                SessionStore, "_save_index", staticmethod(counting))
+            self._patch.start()
+            return self
+
+        def __exit__(self, *exc):
+            self._patch.stop()
+
+    return Counter()
+
+
+def test_set_same_title_does_not_rewrite_index():
+    sid = SessionStore.create_session("cli", "src-same-title")
+    SessionStore.set_title("cli", sid, "标题 A")
+    before = _snapshot()
+
+    with _count_writes() as c:
+        # 只差首尾空白，规范化后与磁盘值相同
+        assert SessionStore.set_title("cli", sid, " 标题 A ") is True
+
+    assert c.calls == 0
+    assert _snapshot() == before
+
+
+def test_update_meta_with_same_values_does_not_rewrite_index():
+    sid = SessionStore.create_session("cli", "src-same-meta")
+    SessionStore.update_meta_by_summary("cli", sid, "标题", "描述")
+    before = _snapshot()
+
+    with _count_writes() as c:
+        assert SessionStore.update_meta_by_summary(
+            "cli", sid, "标题", "描述") is True
+
+    assert c.calls == 0
+    assert _snapshot() == before
+
+
+def test_update_meta_with_none_keeps_values_and_skips_write():
+    sid = SessionStore.create_session("cli", "src-none-meta")
+    SessionStore.update_meta_by_summary("cli", sid, "原标题", "原描述")
+    before = _snapshot()
+
+    with _count_writes() as c:
+        assert SessionStore.update_meta_by_summary("cli", sid) is True
+
+    assert c.calls == 0
+    assert _snapshot() == before
+    assert SessionStore.get_title("cli", sid) == "原标题"
+    entry = json.loads(before[0])["src-none-meta"]
+    assert entry["description"] == "原描述"
+
+
+def test_real_meta_changes_still_write():
+    sid = SessionStore.create_session("cli", "src-real-meta")
+    SessionStore.update_meta_by_summary("cli", sid, "旧标题", "旧描述")
+    before = _snapshot()
+
+    with _count_writes() as c:
+        assert SessionStore.update_meta_by_summary(
+            "cli", sid, "新标题", None) is True
+
+    assert c.calls == 1
+    after_text, _ = _snapshot()
+    assert after_text != before[0]
+    entry = json.loads(after_text)["src-real-meta"]
+    assert entry["title"] == "新标题"
+    # None 不覆盖已有描述
+    assert entry["description"] == "旧描述"
