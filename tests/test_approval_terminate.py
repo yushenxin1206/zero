@@ -69,7 +69,6 @@ async def run_case() -> dict:
     AgentRunner.__init__ = patched
     try:
         loop_task = asyncio.create_task(loop.run())
-        await asyncio.sleep(0.1)
         msg = MessageIn(channel="cli", session_id="s-approve-stop",
                         body=MessageBody(content="run cmd"))
         await bus.in_queue.enqueue(msg)

@@ -84,8 +84,8 @@ async def _consume_one_then_close(prov: OpenAI, resp: FakeResponse, do_close: bo
                 await ag.__anext__()
         except StopAsyncIteration:
             pass
-    # 让 finally 的 join/close 有足够时间生效
-    await asyncio.sleep(0.2)
+    # stream_chunks 的 finally 在返回前已同步 close 连接（内部 join 有超时
+    # 兜底），所以此处直接读事实，无需再等一段时间
     return got, resp.closed
 
 

@@ -45,24 +45,38 @@ def install_runner(monkeypatch, events, fail=None):
     monkeypatch.setattr(loop_mod, "AgentRunner", StubRunner)
 
 
-async def run_turn(caplog) -> MessageIn:
+class SummarySignal(logging.Handler):
+    """把「摘要行已发出」变成进程内事件，测试据此确定性等待，不轮询。"""
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.arrived = asyncio.Event()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.getMessage().startswith("turn status="):
+            self.arrived.set()
+
+
+async def run_turn() -> MessageIn:
     bus = MessageBus()
     loop = AgentLoop(msg_bus=bus, config=make_test_config())
-    loop_task = asyncio.create_task(loop.run())
-    await asyncio.sleep(0.05)
-    msg = MessageIn(
-        channel="cli", session_id=SESSION, body=MessageBody(content="hi"))
-    await bus.in_queue.enqueue(msg)
-    await asyncio.wait_for(bus.out_queue.dequeue(), 5)
-    # 等摘要真正落定再关 loop：否则取消可能落在 end_turn 之前，把状态
-    # 从 completed/error 改写成 cancelled（测试竞态，不是产品行为）
-    for _ in range(200):
-        if summary_records(caplog):
-            break
-        await asyncio.sleep(0.01)
-    loop_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await loop_task
+    signal = SummarySignal()
+    logger = logging.getLogger("zero.core.loop")
+    logger.addHandler(signal)
+    try:
+        loop_task = asyncio.create_task(loop.run())
+        msg = MessageIn(
+            channel="cli", session_id=SESSION, body=MessageBody(content="hi"))
+        await bus.in_queue.enqueue(msg)
+        await asyncio.wait_for(bus.out_queue.dequeue(), 5)
+        # 等摘要真正落定再关 loop：否则取消可能落在 end_turn 之前，把状态
+        # 从 completed/error 改写成 cancelled（测试竞态，不是产品行为）
+        await asyncio.wait_for(signal.arrived.wait(), 5)
+        loop_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await loop_task
+    finally:
+        logger.removeHandler(signal)
     return msg
 
 
@@ -95,7 +109,7 @@ def test_completed_turn_summary(monkeypatch, caplog):
                 "total_tokens": 15,
             }}),
     ])
-    msg = asyncio.run(run_turn(caplog))
+    msg = asyncio.run(run_turn())
 
     stat = summaries(caplog)
     assert stat["status"] == "completed"
@@ -115,7 +129,7 @@ def test_cancelled_turn_summary(monkeypatch, caplog):
         monkeypatch,
         [StreamEvent(kind="delta", content="partial")],
         fail=TurnCancelled())
-    asyncio.run(run_turn(caplog))
+    asyncio.run(run_turn())
 
     stat = summaries(caplog)
     assert stat["status"] == "cancelled"
@@ -128,7 +142,7 @@ def test_error_turn_summary_keeps_reason_on_one_line(monkeypatch, caplog):
     install_runner(monkeypatch, [
         StreamEvent(kind="error", content="HTTPError: 401 Unauthorized\nretry"),
     ])
-    asyncio.run(run_turn(caplog))
+    asyncio.run(run_turn())
 
     stat = summaries(caplog)
     assert stat["status"] == "error"
@@ -141,5 +155,5 @@ def test_summary_fields_always_present(monkeypatch, caplog, missing):
     """三个状态共用同一格式：字段缺失会在这里暴露。"""
     caplog.set_level(logging.INFO, logger="zero.core.loop")
     install_runner(monkeypatch, [StreamEvent(kind="done", content="ok")])
-    asyncio.run(run_turn(caplog))
+    asyncio.run(run_turn())
     assert missing in summaries(caplog)

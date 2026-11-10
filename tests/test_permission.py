@@ -190,8 +190,8 @@ def test_guard_basics():
                         ctx)
         assert d is not None and d.proceed is False, d
         assert "无人值守" in d.reason, d.reason
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "无人值守不应进面板"
+        assert bus.stream_queue.size == 0, "无人值守不应进面板"
+        assert not worker.done()
         worker.cancel()
 
     asyncio.run(main())
@@ -226,8 +226,8 @@ def test_guard_tiers():
                                   "write_paths": ["/etc/hosts"]}, ctx)
         assert d is not None and d.proceed is False, d
         assert "不可授予" in d.reason, d.reason
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "D 档不应进面板"
+        assert bus.stream_queue.size == 0, "D 档不应进面板"
+        assert not worker.done()
         worker.cancel()
 
         # G 档 + 「本会话允许」→ 放行并落会话扩权表
@@ -432,16 +432,16 @@ def test_file_tools_use_approval_gate():
                         {"file_path": str(envelope.HOME / ".ssh" / "id_rsa")}, ctx)
         assert d is not None and d.proceed is False, d
         assert "不可授予" in d.reason, d.reason
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "读方向 D 档不应进面板"
+        assert bus.stream_queue.size == 0, "读方向 D 档不应进面板"
+        assert not worker.done()
         worker.cancel()
 
         # read 包络内：放行，不弹面板
         worker = answer_next(bus, "s")
         assert await guard("read", {"file_path": "zero/permission/envelope.py"},
                            make_ctx()) is None
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "包络内不应进面板"
+        assert bus.stream_queue.size == 0, "包络内不应进面板"
+        assert not worker.done()
         worker.cancel()
 
         # write 到系统路径：D 档拒绝，不进面板
@@ -451,8 +451,8 @@ def test_file_tools_use_approval_gate():
                                   "content": "x"}, ctx)
         assert d is not None and d.proceed is False, d
         assert "不可授予" in d.reason, d.reason
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "写方向 D 档不应进面板"
+        assert bus.stream_queue.size == 0, "写方向 D 档不应进面板"
+        assert not worker.done()
         worker.cancel()
 
         # write 越界 + 无人值守：fail-closed
@@ -465,8 +465,8 @@ def test_file_tools_use_approval_gate():
         worker = answer_next(bus, "s")
         assert await guard("write", {"file_path": "zero-stageB-inside.txt",
                                      "content": "x"}, make_ctx()) is None
-        await asyncio.sleep(0.05)
-        assert not worker.done(), "包络内不应进面板"
+        assert bus.stream_queue.size == 0, "包络内不应进面板"
+        assert not worker.done()
         worker.cancel()
 
         # write 越界 + 「本会话允许」→ 放行 + 落表 + 工具端到端真能写出去

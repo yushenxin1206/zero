@@ -46,7 +46,6 @@ async def main() -> dict:
     AgentRunner.__init__ = patched_init
     try:
         loop_task = asyncio.create_task(loop.run())
-        await asyncio.sleep(0.1)
 
         msg = MessageIn(
             channel="cli", session_id="s-test-stop",
@@ -66,12 +65,8 @@ async def main() -> dict:
             channel="cli", session_id="s-test-stop", turn_id=msg.id))
         # 确定性等待 dispatcher 置位 stop_event，再放行 LLM 剩余流 →
         # runner 在流后安全点抛 TurnCancelled（真实场景流很慢无此竞态）
-        for _ in range(100):
-            if fake.stop_event is not None and fake.stop_event.is_set():
-                break
-            await asyncio.sleep(0.01)
-        assert fake.stop_event is not None and fake.stop_event.is_set(), \
-            "stop_event 未被置位"
+        await asyncio.wait_for(fake.stop_event.wait(), 5)
+        assert fake.stop_event.is_set(), "stop_event 未被置位"
         fake.gate.set()
 
         # 收尾 done 事件（cancelled 标记 + 部分回复）
@@ -251,7 +246,6 @@ class TestStopDuringSilentThinking(unittest.TestCase):
             AgentRunner.__init__ = patched_init
             try:
                 loop_task = asyncio.create_task(loop.run())
-                await asyncio.sleep(0.1)
 
                 # ---- turn 1：终止打断思考期 ----
                 msg1 = MessageIn(channel="cli", session_id="s-silence",
