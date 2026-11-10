@@ -35,7 +35,6 @@ Session-level files inside {session_dir}:
 import json
 import logging
 import os
-import tempfile
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -50,6 +49,7 @@ except ImportError:  # pragma: no cover - Windows 无 fcntl，退化为仅进程
 
 from zero.models import Message, MessageBody, MessageTool, CompactRecord
 from zero.session.models import SessionMeta, SessionSummary, TurnMarker
+from zero.utils.file import save_or_create_file
 
 logger = logging.getLogger(__name__)
 
@@ -191,20 +191,11 @@ class SessionStore:
     def _save_index(self, channel: str, index: dict[str, SessionMeta]) -> None:
         """原子写回索引并刷新进程内缓存（调用方必须已持有本渠道写锁）。"""
         path = self._index_path(channel)
-        path.parent.mkdir(parents=True, exist_ok=True)
         data = {sid: e.model_dump(mode="json") for sid, e in index.items()}
-        # 临时文件必须每次唯一：固定名在并发写时会互相踩，第二个 replace 报错
-        fd, tmp_name = tempfile.mkstemp(
-            dir=path.parent, prefix=".index-", suffix=".json.tmp")
-        tmp = Path(tmp_name)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                # 先拼成整串再写：json.dump 逐块写会慢一个数量级
-                f.write(json.dumps(data, ensure_ascii=False, indent=2))
-            tmp.replace(path)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
+        # 先拼成整串再写：json.dump 逐块写会慢一个数量级；原子替换由
+        # save_or_create_file 保证，临时文件每次唯一，并发写不会互相踩
+        save_or_create_file(
+            path, json.dumps(data, ensure_ascii=False, indent=2))
         stamp = path.stat().st_mtime_ns
         with _index_lock:
             _index_cache[str(path)] = (
@@ -497,11 +488,8 @@ class SessionStore:
 
     def save_compact(self, channel: str, session_id: str, record: CompactRecord) -> None:
         """Atomically persist a compression record (tmp file + replace)."""
-        path = self._compact_file(channel, session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(record.model_dump_json(), encoding="utf-8")
-        tmp.replace(path)
+        save_or_create_file(
+            self._compact_file(channel, session_id), record.model_dump_json())
 
     # 加载期占位 tool 结果的固定文案：既是给 LLM 的中性说明，也是
     # 加载期补写占位的固定文案。读取方不再靠文案识别，改用 synthetic 字段。
@@ -570,13 +558,10 @@ class SessionStore:
 
     def _write_records(self, session_id: str, channel: str,
                        records: list[Message | TurnMarker]) -> None:
-        """原子重写 messages.jsonl（tmp + replace），保留轮次标记。"""
-        path = self._session_file(channel, session_id)
-        tmp = path.with_suffix(".jsonl.tmp")
-        tmp.write_text(
-            "".join(r.model_dump_json() + "\n" for r in records),
-            encoding="utf-8")
-        tmp.replace(path)
+        """原子重写 messages.jsonl（唯一临时文件 + replace），保留轮次标记。"""
+        save_or_create_file(
+            self._session_file(channel, session_id),
+            "".join(r.model_dump_json() + "\n" for r in records))
 
     def _read_records(self, path: Path) -> list[Message | TurnMarker]:
         records: list[Message | TurnMarker] = []
@@ -724,11 +709,8 @@ class SessionStore:
 
     def save_summary(self, channel: str, session_id: str, summary: SessionSummary) -> None:
         """Atomically persist a session summary (tmp file + replace)."""
-        path = self._summary_file(channel, session_id)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(summary.model_dump_json(), encoding="utf-8")
-        tmp.replace(path)
+        save_or_create_file(
+            self._summary_file(channel, session_id), summary.model_dump_json())
 
     def update_meta_by_summary(
             self, channel: str,
@@ -761,60 +743,4 @@ class SessionStore:
             return False, False
 
         return self._write_index(channel, mutate)
-
-    def migrate_legacy_summaries(self) -> int:
-        """一次性迁移：旧版压缩摘要 summary.json → compact.json。
-
-        旧结构（SummaryRecord：content + covered_upto，content 包裹
-        <summary>...</summary> 标签）。能识别为旧结构且尚无 compact.json
-        的会话：重命名文件，并把 content 的标签确定性改写为 <compact>；
-        content 不匹配精确格式则只改名不改写并记日志。损坏的 JSON 同样
-        只改名保数据。
-
-        新版会话复盘 summary.json（SessionSummary）不会被误判：它没有
-        content 字段，直接跳过。返回迁移的会话数。
-        """
-        migrated = 0
-        root = self.root
-        if not root.exists():
-            return 0
-        for channel_dir in root.iterdir():
-            if not channel_dir.is_dir():
-                continue
-            for date_dir in channel_dir.iterdir():
-                if not date_dir.is_dir():
-                    continue
-                for session_dir in date_dir.iterdir():
-                    if not session_dir.is_dir():
-                        continue
-                    old = session_dir / "summary.json"
-                    new = session_dir / "compact.json"
-                    if not old.exists() or new.exists():
-                        continue
-                    try:
-                        raw = json.loads(old.read_text(encoding="utf-8"))
-                    except (OSError, json.JSONDecodeError):
-                        # 损坏文件：改名保留原数据，load_compact 会安全返回 None
-                        old.rename(new)
-                        migrated += 1
-                        continue
-                    if not (isinstance(raw, dict)
-                            and isinstance(raw.get("content"), str)
-                            and "covered_upto" in raw):
-                        # 新版 SessionSummary 或无法识别的结构 → 跳过
-                        continue
-                    content = raw["content"]
-                    if content.startswith("<summary>\n") and content.endswith("\n</summary>"):
-                        raw["content"] = ("<compact>\n"
-                                          + content[len("<summary>\n"):-len("\n</summary>")]
-                                          + "\n</compact>")
-                    else:
-                        logger.warning(
-                            "legacy summary content 不符合精确格式，仅改名不改写标签: %s", old)
-                    new.write_text(json.dumps(raw, ensure_ascii=False), encoding="utf-8")
-                    old.unlink(missing_ok=True)
-                    migrated += 1
-        if migrated:
-            logger.info("旧版压缩摘要迁移完成：%d 个会话 summary.json → compact.json", migrated)
-        return migrated
 

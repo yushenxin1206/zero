@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 
 from tests.support import current, make_store
+from zero.models import CompactRecord, MessageBody, MessageOut
+from zero.session.models import SessionSummary
 
 CHANNEL = "cli"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -121,3 +123,29 @@ def test_write_ignores_foreign_fixed_tmp_file():
     # 固定名的旧临时文件不被碰，唯一临时文件用完即删
     assert fixed_tmp.read_text(encoding="utf-8") == "garbage"
     assert list(_index_path().parent.glob(".index-*")) == []
+
+
+def test_session_files_ignore_foreign_fixed_tmp_names():
+    """消息/压缩/复盘与索引同构：唯一临时名，固定名被占也不影响写入。"""
+    store = make_store()
+    sid = store.create_session(CHANNEL, "tmp-collision")
+    message = MessageOut(
+        channel=CHANNEL, session_id=sid, body=MessageBody(content="hello"))
+    store.append(message)
+    session_dir = store.session_dir(CHANNEL, sid)
+    fixed = [session_dir / "messages.jsonl.tmp",
+             session_dir / "compact.json.tmp",
+             session_dir / "summary.json.tmp"]
+    for path in fixed:
+        path.write_text("garbage", encoding="utf-8")
+
+    store.save_compact(CHANNEL, sid, CompactRecord(
+        content="<compact>x</compact>", covered_upto=message.id))
+    store.save_summary(CHANNEL, sid, SessionSummary(
+        title="t", description="d", done=[], covered_upto=message.id))
+    store._write_records(sid, CHANNEL, [message])
+
+    assert [p.read_text(encoding="utf-8") for p in fixed] == ["garbage"] * 3
+    assert list(session_dir.glob(".*-*.tmp")) == []
+    assert store.load_compact(CHANNEL, sid).content == "<compact>x</compact>"
+    assert store.load_summary(CHANNEL, sid).title == "t"

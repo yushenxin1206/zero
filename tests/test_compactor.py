@@ -3,9 +3,8 @@ isolated storage via conftest).
 """
 import asyncio
 import json
-from pathlib import Path
 
-from tests.support import current, make_store
+from tests.support import make_store
 from zero.core.compactor import (
     COMPACT_FINAL_INSTRUCTION,
     COMPRESS_PROMPT,
@@ -413,73 +412,13 @@ def test_maybe_compress_chained():
 
 
 # ---------------------------------------------------------------------------
-# migrate_legacy_summaries
+# 复盘结果读写
 # ---------------------------------------------------------------------------
 
-def _write_legacy_summary(sid: str, content: str, covered: str) -> Path:
-    """直接在会话目录写入旧版 SummaryRecord 结构的 summary.json。"""
-    path = current().sessions / CHANNEL
-    for date_dir in path.iterdir():
-        target = date_dir / sid / "summary.json"
-        if target.parent.is_dir():
-            target.write_text(
-                json.dumps({"content": content, "covered_upto": covered,
-                            "created_at": "2026-01-01T00:00:00"},
-                           ensure_ascii=False),
-                encoding="utf-8")
-            return target
-    raise AssertionError(f"session dir not found for {sid}")
-
-
-def test_migrate_legacy_summary_exact_tags():
-    sid = fresh_session("src-legacy")
-    make_store().append(make_msg("user", "旧会话", session_id=sid))
-    last = make_msg("assistant", "回复", session_id=sid)
-    make_store().append(last)
-    legacy_path = _write_legacy_summary(
-        sid, "<summary>\n## Goal\n测试\n</summary>", last.id)
-
-    assert make_store().migrate_legacy_summaries() >= 1
-    assert not legacy_path.exists()
-    migrated = make_store().load_compact(CHANNEL, sid)
-    assert migrated is not None
-    assert migrated.content == "<compact>\n## Goal\n测试\n</compact>"
-    assert migrated.covered_upto == last.id
-    # 迁移后 load_history 正常合成
-    hist = make_store().load_history(sid, CHANNEL, include_compact=True)
-    assert hist[0].compact
-    # 二次迁移幂等
-    assert make_store().migrate_legacy_summaries() >= 0
-    assert make_store().load_compact(CHANNEL, sid) is not None
-
-
-def test_migrate_leaves_new_style_summary():
-    sid = fresh_session("src-newstyle")
-    make_store().append(make_msg("user", "新复盘", session_id=sid))
-    make_store().save_summary(CHANNEL, sid, SessionSummary(
-        title="t", description="d", done=["a"], covered_upto="x"))
-    before = make_store()._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
-    make_store().migrate_legacy_summaries()
-    after = make_store()._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
-    assert before == after
-    assert not make_store()._compact_file(CHANNEL, sid).exists()
-
-
-def test_migrate_inexact_tags_only_renames():
-    sid = fresh_session("src-partialfmt")
-    make_store().append(make_msg("user", "x", session_id=sid))
-    _write_legacy_summary(sid, "raw text without tags", "whatever")
-    make_store().migrate_legacy_summaries()
-    rec = make_store().load_compact(CHANNEL, sid)
-    assert rec is not None and rec.content == "raw text without tags"
-
-
-def test_migrate_broken_json_only_renames():
-    sid = fresh_session("src-broken")
-    make_store().append(make_msg("user", "y", session_id=sid))
-    broken = _write_legacy_summary(sid, "irrelevant", "x")
-    broken.write_text("{bad json", encoding="utf-8")
-    make_store().migrate_legacy_summaries()
-    assert not broken.exists()
-    assert (broken.parent / "compact.json").exists()
-    assert make_store().load_compact(CHANNEL, sid) is None
+def test_save_summary_roundtrip():
+    sid = fresh_session("src-summary")
+    make_store().append(make_msg("user", "复盘", session_id=sid))
+    summary = SessionSummary(
+        title="t", description="d", done=["a"], covered_upto="x")
+    make_store().save_summary(CHANNEL, sid, summary)
+    assert make_store().load_summary(CHANNEL, sid) == summary
