@@ -99,9 +99,6 @@ CHANNEL_WEB = "web"
 CHANNEL_FEISHU = "feishu"
 
 MessageSender = Literal["user", "assistant", "tool"]
-SENDER_USER: MessageSender = "user"
-SENDER_ASSISTANT: MessageSender = "assistant"
-SENDER_TOOL: MessageSender = "tool"
 MessageRecipient = Literal["assistant", "user"]
 # 一轮执行结束时 AgentLoop 对外回报的状态；跨 core / scheduler 使用，
 # 放在依赖叶子避免调度器反向 import core。
@@ -139,15 +136,20 @@ class Message(Base):
     timestamp: datetime = Field(default_factory=datetime.now)
 
     def to_openai(self) -> dict[str, Any] | None:
-        """转换为 OpenAI 协议消息 dict；未知 sender 无法映射时返回 None。"""
-        if self.sender == SENDER_USER:
+        """转换为 OpenAI 协议消息 dict；未知 sender 无法映射时返回 None。
+
+        sender 的三个取值与 OpenAI 的 role 本就一致，所以这里不做映射：
+        下面三个分支只是在组装各自的字段结构（如 tool_calls / tool_call_id），
+        不是词汇转换。这也是 sender 不需要再建一套常量层的原因。
+        """
+        if self.sender == "user":
             return {"role": "user", "content": self.body.content}
-        if self.sender == SENDER_ASSISTANT:
+        if self.sender == "assistant":
             msg: dict[str, Any] = {"role": "assistant", "content": self.body.content}
             if self.body.tool_calls:
                 msg["tool_calls"] = [tc.model_dump() for tc in self.body.tool_calls]
             return msg
-        if self.sender == SENDER_TOOL:
+        if self.sender == "tool":
             return {
                 "role": "tool",
                 "tool_call_id": self.body.tool_call_id,
@@ -157,19 +159,18 @@ class Message(Base):
 
 
 class MessageIn(Message):
-    sender: MessageSender = SENDER_USER
+    sender: MessageSender = "user"
     recipient: MessageRecipient = "assistant"
 
 
 class MessageOut(Message):
-    sender: MessageSender = SENDER_ASSISTANT
+    sender: MessageSender = "assistant"
     recipient: MessageRecipient = "user"
 
 
 class MessageTool(Message):
     """Tool execution result message, produced by agent during tool calls."""
-
-    sender: MessageSender = SENDER_TOOL
+    sender: MessageSender = "tool"
     recipient: MessageRecipient = "assistant"
 
 

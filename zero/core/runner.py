@@ -26,7 +26,6 @@ from zero.models import (
     EVENT_ERROR,
     EVENT_REASONING,
     EVENT_TOOL_CALL,
-    SENDER_TOOL,
     AgentRuntimeConfig,
     MessageBody,
     MessageOut,
@@ -394,7 +393,7 @@ class AgentRunner:
             id=str(uuid4()),
             session_id=self.context.session_id,
             channel=self.context.channel,
-            sender=SENDER_TOOL,
+            sender="tool",
             recipient="assistant",
             body=MessageBody(
                 content=content,

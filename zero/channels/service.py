@@ -18,8 +18,7 @@ from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.permission.envelope import PermissionState
-from zero.models import (
-    SENDER_ASSISTANT, SENDER_USER, Message, MessageBody, MessageIn, StopRequest)
+from zero.models import Message, MessageBody, MessageIn, StopRequest
 from zero.data_paths import DataPaths
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
@@ -191,7 +190,7 @@ class ChannelService:
         """Conversation messages a user can be shown (no tool traffic)."""
         return [
             m for m in self.history(session_id)
-            if m.sender in (SENDER_USER, SENDER_ASSISTANT) and m.body.content
+            if m.sender in ("user", "assistant") and m.body.content
         ]
 
     # ------------------------------------------------------------------
