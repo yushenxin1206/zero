@@ -31,6 +31,7 @@ from zero.models import (
     ToolCallFunction,
     ToolContext,
 )
+from zero.paths import Paths
 from zero.providers.base import LLMPayload
 from zero.providers.openai import OpenAI
 from zero.session.store import SessionStore
@@ -399,6 +400,7 @@ async def run_subagent(
         config: Config,
         hooks: Hooks,
         session_store: SessionStore,
+        paths: Paths,
         task: str = "default",
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
@@ -430,6 +432,7 @@ async def run_subagent(
     context = SubAgentContext(
         prompt,
         session_store=session_store,
+        paths=paths,
         tool_registry=tool_registry,
         tool_context=tool_context,
         system_prompt=system_prompt,

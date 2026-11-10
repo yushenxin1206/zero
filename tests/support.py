@@ -4,7 +4,7 @@ import json
 import time
 
 from zero.config import Config
-from zero.paths import current
+from zero.paths import Paths, current
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
@@ -12,6 +12,11 @@ from zero.session.store import SessionStore
 def make_store() -> SessionStore:
     """测试边界：按当前隔离根构造会话存储，与组合根的构造方式一致。"""
     return SessionStore(current().sessions)
+
+
+def make_paths() -> Paths:
+    """测试边界：当前隔离根的路径视图，喂给需要显式 Paths 的组件。"""
+    return current()
 
 
 def make_scheduler_store() -> SchedulerStore:

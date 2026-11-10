@@ -19,7 +19,7 @@ from zero.permission import envelope
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
-from zero.paths import current
+from zero.paths import Paths, current
 
 
 # 包安装目录（skills 等内置资源所在位置），与运行目录无关
@@ -81,15 +81,6 @@ def get_cwd() -> Path:
     return Path.cwd()
 
 
-def current_project_memory_path() -> Path:
-    """当前项目（运行目录）的项目级记忆文件路径。
-
-    独立成模块级函数（而非内联调用），便于测试把项目级记忆重定向到临时
-    目录，与用户级记忆（current().memory）的隔离方式一致。
-    """
-    return project_memory_path(get_cwd())
-
-
 class Context:
 
     # skills 清单的进程级缓存：(skills 目录 mtime, 最新 skill 文件 mtime) -> 渲染结果
@@ -104,13 +95,15 @@ class Context:
             session_id: str,
             channel: str,
             session_store: SessionStore,
+            paths: Paths,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
-        # 会话存储由组合根/上层上下文显式传入：本类不读进程级路径
+        # 会话存储与数据根由组合根/上层上下文显式传入：本类不读进程级路径
         self.session_store = session_store
+        self.paths = paths
         self.tool_registry = tool_registry
         self.tool_context = tool_context or ToolContext(
             channel=channel,
@@ -244,7 +237,7 @@ class Context:
         # 否则模型无从得知记忆位置，记忆功能永远无法冷启动。
         # 文件本身由模型按需用 write 工具创建（write 会自动建父目录），
         # 代码侧不做任何写入，避免 prompt 构建产生副作用。
-        memory_path = current().memory
+        memory_path = self.paths.memory
         memory = ""
         if memory_path.exists():
             memory = memory_path.read_text(encoding="utf-8").strip()
@@ -262,7 +255,8 @@ Long-term memory about the user (preferences, background, cross-project facts) i
         # 与 _memory 同构：项目级记忆存于运行目录，仍由模型按需维护，
         # 代码侧只读不写（prompt 构建零副作用）。文件不存在时渲染 (empty)，
         # 路径与更新协议保持可见以支持冷启动。
-        memory_path = current_project_memory_path()
+        memory_path = project_memory_path(
+            get_cwd(), override=self.paths.project_memory)
         memory = ""
         if memory_path.exists():
             memory = memory_path.read_text(encoding="utf-8").strip()
@@ -376,6 +370,7 @@ class SubAgentContext(Context):
             prompt: str,
             *,
             session_store: SessionStore,
+            paths: Paths,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
             system_prompt: str | None = None,
@@ -387,6 +382,7 @@ class SubAgentContext(Context):
             session_id=tc.session_id,
             channel=tc.channel,
             session_store=session_store,
+            paths=paths,
             tool_registry=tool_registry,
             tool_context=tc,
         )
@@ -468,7 +464,8 @@ if __name__ == "__main__":
     # 重新生成 docs/prompt.md（提示词文档快照，由代码生成，请勿手改）
     _ctx = Context(
         session_id="doc", channel="cli",
-        session_store=SessionStore(current().sessions))
+        session_store=SessionStore(current().sessions),
+        paths=current())
     _out = PKG_ROOT / "docs" / "prompt.md"
     _out.write_text(
         "<!-- 本文件由 `python core/context.py` 生成，请勿手改 -->\n\n"

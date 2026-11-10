@@ -63,19 +63,23 @@ def build_agent_loop(msg_bus: MessageBus,
                      tool_registry: ToolRegistry,
                      hooks: Hooks,
                      config: Config,
-                     session_store: SessionStore) -> AgentLoop:
+                     session_store: SessionStore,
+                     paths: Paths) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
+        paths=paths,
         tool_registry=tool_registry,
         hooks=hooks,
     )
 
 
 def build_maintenance_engine(
-        config: Config, session_store: SessionStore) -> MaintenanceEngine:
-    return MaintenanceEngine(config=config, session_store=session_store)
+        config: Config, session_store: SessionStore,
+        paths: Paths) -> MaintenanceEngine:
+    return MaintenanceEngine(
+        config=config, session_store=session_store, paths=paths)
 
 
 @dataclass
@@ -104,13 +108,14 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
+        paths=paths,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
         hooks=hooks,
     )
     registry.register(SubagentTool(subagent_manager))
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,
-        config=config, session_store=session_store)
+        config=config, session_store=session_store, paths=paths)
     return CoreRuntime(
         msg_bus=msg_bus,
         session_store=session_store,
@@ -120,7 +125,7 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
         subagent_manager=subagent_manager,
         agent_loop=agent_loop,
         scheduler=Scheduler(msg_bus=msg_bus, store=scheduler_store),
-        maintenance=build_maintenance_engine(config, session_store),
+        maintenance=build_maintenance_engine(config, session_store, paths),
     )
 
 
@@ -172,6 +177,7 @@ async def run(config: Config, paths: Paths, cli_only: bool = False):
     cli_channel = CLIChannel(
         msg_bus=core.msg_bus, session_store=core.session_store,
         scheduler_store=core.scheduler_store,
+        paths=paths,
         config=config, tool_registry=core.tool_registry)
     core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
@@ -206,7 +212,8 @@ def run_web_desktop(config: Config, paths: Paths):
 
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
-            scheduler_store=core.scheduler_store, config=config)
+            scheduler_store=core.scheduler_store, paths=paths,
+            config=config)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()
@@ -278,7 +285,7 @@ def main():
     # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
     # 显式 Config / Paths / Store，不再访问模块级单例。
     paths = configure()
-    config = load_config()
+    config = load_config(paths.config)
 
     # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich
     # 渲染），统一带密钥脱敏；绝对路径，任意目录启动都不会散落 debug.log

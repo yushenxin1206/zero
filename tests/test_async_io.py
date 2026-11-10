@@ -9,7 +9,7 @@ from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest
 from zero.session.store import SessionStore
-from tests.support import make_store, make_test_config
+from tests.support import make_paths, make_store, make_test_config
 
 
 class _EchoProvider:
@@ -41,7 +41,7 @@ def test_event_loop_stays_responsive_during_slow_session_write():
         bus = MessageBus()
         loop = AgentLoop(
             msg_bus=bus, config=make_test_config(), hooks=Hooks(),
-            session_store=make_store())
+            session_store=make_store(), paths=make_paths())
         ticks = 0
 
         async def heartbeat():
@@ -92,7 +92,7 @@ def test_stop_takes_effect_during_slow_write():
         bus = MessageBus()
         loop = AgentLoop(
             msg_bus=bus, config=make_test_config(), hooks=Hooks(),
-            session_store=make_store())
+            session_store=make_store(), paths=make_paths())
         loop_task = asyncio.create_task(loop.run())
         await asyncio.sleep(0.05)
 

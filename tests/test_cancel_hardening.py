@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
-from tests.support import make_scheduler_store, make_store, make_test_config
+from tests.support import make_paths, make_scheduler_store, make_store, make_test_config
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import Message, MessageBody, MessageOut, StopRequest
@@ -35,7 +35,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
 
         async def scenario() -> list:
             context = Ctx(session_id="s-hard", channel="cli",
-                          session_store=make_store())
+                          session_store=make_store(), paths=make_paths())
             runner = AgentRunner(config=make_test_config(),
                                  running_context=context, hooks=Hooks())
             runner.provider = ToolsProvider()
@@ -185,7 +185,7 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus, session_store=make_store(),
+            ch = CLIChannel(msg_bus=bus, session_store=make_store(), paths=make_paths(),
                        scheduler_store=make_scheduler_store())
             ch.service.session_id = "s-sigint"
             ch._active_turn_id = "turn-1"
@@ -208,7 +208,7 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus, session_store=make_store(),
+            ch = CLIChannel(msg_bus=bus, session_store=make_store(), paths=make_paths(),
                        scheduler_store=make_scheduler_store())
             ch.service.session_id = "s-sigint2"
             ch._active_turn_id = "turn-2"

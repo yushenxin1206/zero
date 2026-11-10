@@ -18,7 +18,7 @@ from rich.panel import Panel
 
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CLIChannel
-from tests.support import make_scheduler_store, make_store
+from tests.support import make_paths, make_scheduler_store, make_store
 
 
 class RecordingOutput(DummyOutput):
@@ -66,7 +66,7 @@ async def _read_once(ch, typed: str) -> str:
 
 
 def test_prompt_toolkit_input_path():
-    ch = CLIChannel(MessageBus(), session_store=make_store(),
+    ch = CLIChannel(MessageBus(), session_store=make_store(), paths=make_paths(),
                scheduler_store=make_scheduler_store())
 
     async def scenario():
@@ -83,7 +83,7 @@ def test_prompt_toolkit_input_path():
 
 
 def test_print_above_prompt_while_prompt_active():
-    ch = CLIChannel(MessageBus(), session_store=make_store(),
+    ch = CLIChannel(MessageBus(), session_store=make_store(), paths=make_paths(),
                scheduler_store=make_scheduler_store())
     ch.renderer.console = Console(file=io.StringIO(), highlight=False, width=100)
 

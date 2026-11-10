@@ -27,7 +27,7 @@ from zero.paths import current
 from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_store
+from tests.support import make_paths, make_store
 
 CHANNEL = "test"
 
@@ -144,7 +144,7 @@ def test_single_shot_with_tools(monkeypatch):
         "做点事",
         config=stub_config(),
         hooks=Hooks(),
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
     ))
@@ -179,7 +179,7 @@ def test_isolation_from_session_store(monkeypatch):
         "子任务",
         config=stub_config(),
         hooks=Hooks(),
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         tool_context=ToolContext(channel=CHANNEL, session_id=sid, turn_id="t1"),
@@ -202,7 +202,7 @@ def test_custom_system_prompt(monkeypatch):
         "翻译任务",
         config=stub_config(),
         hooks=Hooks(),
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         system_prompt="你是翻译代理，只输出译文。",
     ))
@@ -226,7 +226,7 @@ def test_error_raises(monkeypatch):
             "必败任务",
             config=stub_config(),
             hooks=Hooks(),
-            session_store=make_store(),
+            session_store=make_store(), paths=make_paths(),
             # 根配置：运行时配置在 AgentRunner 内按 task 解析
         ))
         raise AssertionError("run_subagent 应当抛 RuntimeError")
@@ -253,7 +253,7 @@ def test_compression_gate(monkeypatch):
         "任务",
         config=stub_config(),
         hooks=Hooks(),
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
     ))
     assert spy["calls"] == 0, "子 agent 不应触发上下文压缩"
@@ -262,7 +262,7 @@ def test_compression_gate(monkeypatch):
     registry = make_registry(EchoTool())
     context = Context(
         session_id=str(uuid4()), channel=CHANNEL, tool_registry=registry,
-        session_store=make_store())
+        session_store=make_store(), paths=make_paths())
     runner = AgentRunner(
         config=stub_config(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
@@ -307,7 +307,7 @@ def test_tool_context_inherited(monkeypatch):
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         hooks=chain,
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         tool_context=parent_tc,
     ))
     assert tool.contexts[0].turn_id == "turn-42"
@@ -341,7 +341,7 @@ def test_hooks_apply_to_subagent(monkeypatch):
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         hooks=chain,
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
     ))
     assert not tool.ran
     assert reply == "被否决后的回复"
@@ -365,7 +365,7 @@ def test_empty_reply_raises(monkeypatch):
     try:
         asyncio.run(run_subagent(
             "写一篇作文", config=stub_config(), hooks=Hooks(),
-            session_store=make_store()))
+            session_store=make_store(), paths=make_paths()))
         raise AssertionError("空正文应抛 RuntimeError")
     except RuntimeError as e:
         assert "空正文" in str(e) or "截断" in str(e), \
@@ -414,7 +414,7 @@ def test_manager_stamps_subagent_origin(monkeypatch):
     manager = SubagentManager(
         msg_bus=bus,
         config=stub_config(),
-        session_store=make_store(),
+        session_store=make_store(), paths=make_paths(),
         tool_registry=make_registry(tool),
         hooks=HookChain(),
     )

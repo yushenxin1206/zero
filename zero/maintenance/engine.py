@@ -11,19 +11,19 @@ import json
 import logging
 
 from zero.config import Config
-from zero.paths import current
 from zero.models import AgentRuntimeConfig
 from zero.providers.openai import OpenAI
 from zero.scheduler import cron
 
 from zero.maintenance.memory import run_memory
 from zero.maintenance.session_summary import run_session_summary
+from zero.paths import Paths
 from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# 运行态（路径随 current() 惰性结算，不 import 时冻结）
+# 运行态（状态文件路径由构造函数注入的 Paths 决定）
 # ---------------------------------------------------------------------------
 
 # 启动补跑延迟（秒）：错过的最近槽位在启动 60s 后补跑
@@ -36,13 +36,15 @@ _SLOT_SCAN_MINUTES = 24 * 60
 class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
-    def __init__(self, config: Config, session_store: SessionStore):
+    def __init__(self, config: Config, session_store: SessionStore,
+                 paths: Paths):
         """入参是根配置：两个维护任务各按自己的任务名解析运行时配置
         （模型/provider 可与主对话不同），并各构造独立 provider client。
         维护任务是进程级常量，不跟会话级模型切换走，故只解析一次。"""
         self._maintenance = config.maintenance
-        # 会话复盘/记忆沉淀读取的会话存储，由组合根显式传入
+        # 会话复盘/记忆沉淀读取的会话存储与状态文件路径，由组合根显式传入
         self._session_store = session_store
+        self._paths = paths
         summary = config.resolve_runtime('session_summary')
         memory = config.resolve_runtime('memory')
         self._summary_provider = OpenAI(summary.llm_runtime.provider)
@@ -114,7 +116,7 @@ class MaintenanceEngine:
     # ------------------------------------------------------------------
 
     def _load_state(self) -> dict:
-        state_file = current().maintenance_state
+        state_file = self._paths.maintenance_state
         if not state_file.exists():
             return {}
         try:
@@ -125,7 +127,7 @@ class MaintenanceEngine:
 
     def _save_state(self, state: dict) -> None:
         try:
-            state_file = current().maintenance_state
+            state_file = self._paths.maintenance_state
             state_file.parent.mkdir(parents=True, exist_ok=True)
             state_file.write_text(
                 json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")

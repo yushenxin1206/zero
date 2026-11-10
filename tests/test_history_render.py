@@ -8,7 +8,7 @@ from rich.console import Console
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CHANNEL, CLIChannel
 from zero.models import MessageBody, MessageIn, MessageOut, MessageTool
-from tests.support import make_scheduler_store, make_store
+from tests.support import make_paths, make_scheduler_store, make_store
 
 PROMPT_CHAR = chr(0x203A)  # ›
 ESCAPED = chr(92) + "u203a"  # literal backslash + u203a
@@ -24,7 +24,7 @@ def test_history_render_has_no_escapes_and_filters_tools():
                                    body=MessageBody(content="助手回复内容")))
 
     buf = io.StringIO()
-    ch = CLIChannel(MessageBus(), session_store=make_store(),
+    ch = CLIChannel(MessageBus(), session_store=make_store(), paths=make_paths(),
                     scheduler_store=make_scheduler_store(), console=Console(
         file=buf, highlight=False, width=100))
     ch.service.session_id = sid

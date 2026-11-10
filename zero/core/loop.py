@@ -18,6 +18,7 @@ from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
     MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext)
+from zero.paths import Paths
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
@@ -83,14 +84,16 @@ class AgentLoop:
             msg_bus: MessageBus,
             config: Config,
             session_store: SessionStore,
+            paths: Paths,
             tool_registry: ToolRegistry | None = None,
             *,
             hooks: Hooks,
     ):
         self.msg_bus = msg_bus
         self.config = config
-        # 会话存储由组合根创建并注入：本类不读进程级路径
+        # 会话存储与数据根由组合根创建并注入：本类不读进程级路径
         self.session_store = session_store
+        self.paths = paths
         self.tool_registry = tool_registry
         # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
         self.hooks = hooks
@@ -189,6 +192,7 @@ class AgentLoop:
             session_id=msg_in.session_id,
             channel=msg_in.channel,
             session_store=self.session_store,
+            paths=self.paths,
             tool_registry=self.tool_registry,
             tool_context=tool_context,
         )

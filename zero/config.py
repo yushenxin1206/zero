@@ -29,15 +29,14 @@ HOME = Path.home()
 PROJECT_ZERO_DIRNAME = ".zero"
 
 
-def project_memory_path(cwd: Path) -> Path:
+def project_memory_path(cwd: Path, *, override: Path | None = None) -> Path:
     """项目级记忆文件路径：<cwd>/.zero/memory/memory.md。
 
-    与用户级记忆（``current().memory``）区分：后者是跨项目的用户偏好
+    与用户级记忆（``Paths.memory``）区分：后者是跨项目的用户偏好
     与背景，前者是当前项目的持久事实与约定。cwd 由调用方传入（通常
     core/context.get_cwd()），避免本模块反向依赖 core。显式配置了
-    ``Paths.project_memory`` 时以它为准（测试/嵌入式宿主用）。
+    ``Paths.project_memory`` 时由调用方作为 override 传入（测试/嵌入式宿主用）。
     """
-    override = current().project_memory
     if override is not None:
         return override
     return cwd / PROJECT_ZERO_DIRNAME / "memory" / "memory.md"

@@ -22,7 +22,7 @@ from zero.core.runner import AgentRunner
 from zero.models import ToolContext
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_store
+from tests.support import make_paths, make_store
 
 CHANNEL = "test"
 TRUNC_SUFFIX = "...truncated"
@@ -86,7 +86,7 @@ def make_runner(hooks: Hooks, tool: EchoTool, session_id: str) -> AgentRunner:
     registry = ToolRegistry()
     registry.register(tool)
     context = Context(session_id=session_id, channel=CHANNEL,
-                      tool_registry=registry, session_store=make_store())
+                      tool_registry=registry, session_store=make_store(), paths=make_paths())
     runner = AgentRunner(
         config=stub_config(),
         running_context=context,
