@@ -7,7 +7,7 @@ CreateScheduledTask tool is a thin wrapper around this module.
 """
 from datetime import datetime, timedelta
 
-from zero.scheduler.models import ScheduleTask
+from zero.scheduler.models import ScheduleTask, ScheduleType
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -15,7 +15,7 @@ from zero.scheduler.store import SchedulerStore
 def create_task(
     *,
     instruction: str,
-    schedule_type: str,
+    schedule_type: ScheduleType,
     channel: str,
     session_id: str,
     channel_session_id: str = "",

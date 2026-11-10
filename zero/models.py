@@ -23,14 +23,6 @@ class Base(BaseModel):
     """Base model with camelCase alias generation."""
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
-    def get(self, name: str) -> Any:
-        """Safely retrieve a field by name with error handling."""
-        try:
-            return getattr(self, name)
-        except AttributeError as e:
-            raise AttributeError(
-                f"'{name}' not found in {type(self).__name__}. Available: {list(self.model_fields.keys())}") from e
-
 
 # ---------------------------------------------------------------------------
 # Message models
@@ -91,14 +83,18 @@ class Origin(Base):
     task_id: str | None = None
 
 
+MessageSender = Literal["user", "assistant", "tool"]
+MessageRecipient = Literal["assistant", "user"]
+
+
 class Message(Base):
     id: str = Field(default_factory=lambda: str(uuid4()))
     # 外键，必须显式给：默认生成 uuid 会让漏传 session_id 的消息静默落进
     # 一个随机新会话，而不是在构造时报错。
     session_id: str
     channel: str = ""
-    sender: str
-    recipient: str
+    sender: MessageSender
+    recipient: MessageRecipient
     subject: str | None = None
     body: MessageBody
     # 触发本轮的消息来源（用户输入 / 定时任务）
@@ -140,19 +136,19 @@ class Message(Base):
 
 
 class MessageIn(Message):
-    sender: str = "user"
-    recipient: str = "assistant"
+    sender: MessageSender = "user"
+    recipient: MessageRecipient = "assistant"
 
 
 class MessageOut(Message):
-    sender: str = "assistant"
-    recipient: str = "user"
+    sender: MessageSender = "assistant"
+    recipient: MessageRecipient = "user"
 
 
 class MessageTool(Message):
     """Tool execution result message, produced by agent during tool calls."""
-    sender: str = "tool"
-    recipient: str = "assistant"
+    sender: MessageSender = "tool"
+    recipient: MessageRecipient = "assistant"
 
 
 class StopRequest(Base):

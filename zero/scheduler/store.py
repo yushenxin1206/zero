@@ -8,7 +8,7 @@ one ScheduleTask per line, keyed by task id.
 from datetime import datetime
 
 from zero.paths import current
-from zero.scheduler.models import ScheduleTask
+from zero.scheduler.models import ScheduleTask, TaskStatus
 
 
 class SchedulerStore:
@@ -62,7 +62,9 @@ class SchedulerStore:
         return due
 
     @staticmethod
-    def update_status(task_id: str, status: str, last_run_at: datetime | None = None) -> None:
+    def update_status(
+            task_id: str, status: TaskStatus,
+            last_run_at: datetime | None = None) -> None:
         tasks = SchedulerStore._load_tasks()
         task = tasks.get(task_id)
         if task is None:

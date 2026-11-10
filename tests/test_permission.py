@@ -13,6 +13,7 @@
  10. 覆盖漏接检测：带 *_path 参数的工具必须在 HANDLED_TOOLS 里
  11. 失败语义：守卫内部异常 → 拒绝（fail-closed）
 """
+import ast
 import asyncio
 import os
 import subprocess
@@ -23,6 +24,7 @@ from uuid import uuid4
 
 import pytest
 
+import zero.channels as channels_pkg
 from zero.paths import current
 from zero.permission import envelope, seatbelt
 
@@ -35,6 +37,43 @@ from zero.tools.write import Write
 
 DARWIN_ONLY = pytest.mark.skipif(
     sys.platform != "darwin", reason="Seatbelt / launchd 仅 macOS")
+
+# 无人值守渠道：不能就地弹审批面板，也不放行网络。新增渠道必须显式归类
+# （加入 ATTENDED_CHANNELS 或这里），否则下面的覆盖测试会失败。
+UNATTENDED_CHANNELS = frozenset({"feishu"})
+
+
+def _declared_channel_names() -> set[str]:
+    """扫描 zero/channels 下所有顶层 ``CHANNEL = "..."`` 声明。"""
+    root = Path(channels_pkg.__file__).parent
+    names: set[str] = set()
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in tree.body:
+            if not isinstance(node, ast.Assign):
+                continue
+            targets = node.targets
+            if (any(isinstance(t, ast.Name) and t.id == "CHANNEL"
+                    for t in targets)
+                    and isinstance(node.value, ast.Constant)
+                    and isinstance(node.value.value, str)):
+                names.add(node.value.value)
+    return names
+
+
+def test_every_channel_is_capability_classified():
+    declared = _declared_channel_names()
+    assert declared, "未扫描到任何渠道的 CHANNEL 声明"
+    assert declared == envelope.ATTENDED_CHANNELS | UNATTENDED_CHANNELS, (
+        "渠道能力未归类：新增渠道必须加入 envelope.ATTENDED_CHANNELS，"
+        "或本测试的 UNATTENDED_CHANNELS")
+
+
+def test_unattended_channels_never_prompt_or_network():
+    for name in UNATTENDED_CHANNELS:
+        ctx = ToolContext(channel=name)
+        assert not envelope.attended(ctx), name
+        assert not envelope.current_envelope(ctx).network, name
 
 
 def make_ctx(channel: str = "cli", kind: str = "user") -> HookContext:
