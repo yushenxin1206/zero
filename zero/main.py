@@ -19,7 +19,7 @@ from zero.tools.shell import Shell
 from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
-from zero.data_paths import DataPaths, default_root
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
@@ -295,7 +295,7 @@ def main():
 
     # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
     # 显式 Config / DataPaths / Store，不再访问模块级单例。
-    data_paths = DataPaths(default_root())
+    data_paths = DataPaths.default()
     config = load_config(data_paths.config)
 
     # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich

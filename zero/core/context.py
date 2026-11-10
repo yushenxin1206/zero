@@ -19,7 +19,7 @@ from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
-from zero.data_paths import DataPaths, default_root
+from zero.data_paths import DataPaths
 
 
 # 包安装目录（skills 等内置资源所在位置），与运行目录无关
@@ -467,7 +467,7 @@ class SubAgentContext(Context):
 
 if __name__ == "__main__":
     # 重新生成 docs/prompt.md（提示词文档快照，由代码生成，请勿手改）
-    data_paths = DataPaths(default_root())
+    data_paths = DataPaths.default()
     _ctx = Context(
         session_id="doc", channel="cli",
         session_store=SessionStore(data_paths.sessions),

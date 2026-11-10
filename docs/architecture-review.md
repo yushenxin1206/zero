@@ -139,7 +139,7 @@
 > **落地状态（2026-11）**：第一步与第二步都已完成，下面的"现象/改进方案"保留为
 > 整改前快照。
 >
-> - `zero.data_paths` 只保留纯路径推导（`DataPaths` / `default_root()`）：
+> - `zero.data_paths` 只保留纯路径推导（`DataPaths` / `DataPaths.default()`）：
 >   没有 `current()`、`configure()` 或进程级全局根；组合根与 CLI 入口显式
 >   构造 `DataPaths` 并向下传，`test_data_paths_module_has_no_process_global`
 >   守住这条约束。
