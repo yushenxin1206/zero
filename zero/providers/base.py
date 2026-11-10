@@ -115,11 +115,3 @@ class Provider(ABC):
         表示无终止语义，行为与普通流一致。
         """
         pass
-
-    @abstractmethod
-    async def chat_with_llm(
-            self,
-            payload: LLMPayload,
-            max_retries: int = 3,
-    ):
-        pass

@@ -193,24 +193,6 @@ class OpenAI(Provider):
         finally:
             stop_task.cancel()
 
-    async def chat_with_llm(
-            self,
-            payload: LLMPayload,
-            max_retries: int = 3,
-    ):
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json"
-        }
-
-        payload.llm_call_options.stream = False
-
-        resp = self._request_with_retry(
-            self.api_base, headers, payload.payload_dict, max_retries=max_retries,
-        )
-        return resp.json()
-
 
 if __name__ == '__main__':
     pass
