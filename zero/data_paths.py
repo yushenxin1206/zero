@@ -1,12 +1,9 @@
-"""进程数据根目录的唯一来源：显式配置，惰性读取。
+"""数据根的路径视图：纯推导，无 IO、无全局状态。
 
-本模块只做路径算术：不读文件、不建目录、不实例化 Config。
-进程启动时由 ``main()`` 调 ``configure()``；测试由 pytest fixture 调
-``configure(tmp_path)``。组合根与进程边界（CLI / 工具 / 子命令）通过
-``current()`` 取一次路径，再把 ``DataPaths`` 显式传给核心对象；核心域不在
-调用点回读进程根。
-
-同进程多实例不依赖隐式全局：直接构造 ``DataPaths`` 并注入即可。
+``DataPaths`` 只做路径算术：不读文件、不建目录、不实例化 Config，也不持有
+“当前根”这类可变状态。数据根由组合根或测试显式构造并向下注入；CLI 入口
+按 ``default_root()`` 自行构造一份。同进程多实例直接构造各自的
+``DataPaths``，互不影响。
 """
 
 from __future__ import annotations
@@ -63,22 +60,3 @@ class DataPaths:
     @property
     def maintenance_state(self) -> Path:
         return self.maintenance / "state.json"
-
-
-_global_paths = DataPaths(default_root())
-
-
-def configure(root: Path | None = None, *,
-              project_memory: Path | None = None) -> DataPaths:
-    """设置进程级数据根。由 ``main()`` 或测试 fixture 显式调用。"""
-    global _global_paths
-    _global_paths = DataPaths(
-        Path(root) if root is not None else default_root(),
-        project_memory=project_memory,
-    )
-    return _global_paths
-
-
-def current() -> DataPaths:
-    """当前进程配置的数据根。只供 CLI 入口与测试边界使用。"""
-    return _global_paths

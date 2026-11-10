@@ -24,10 +24,9 @@ from uuid import uuid4
 
 import pytest
 
-from tests.support import make_scheduler_store, make_store
+from tests.support import current, make_scheduler_store, make_store
 
 import zero.channels as channels_pkg
-from zero.data_paths import current
 from zero.permission import envelope, seatbelt
 from zero.permission.envelope import PermissionState
 

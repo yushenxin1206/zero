@@ -139,19 +139,19 @@
 > **落地状态（2026-11）**：第一步与第二步都已完成，下面的"现象/改进方案"保留为
 > 整改前快照。
 >
-> - `zero.data_paths.configure()` 在组合根显式调用；`DataPaths` 作为普通参数
->   向下传，`current()` 只保留在 CLI 入口（`zero-permission`、`python -m
->   zero.config`），并有 `tests/test_architecture.py::test_current_is_boundary_only`
->   守住。
+> - `zero.data_paths` 只保留纯路径推导（`DataPaths` / `default_root()`）：
+>   没有 `current()`、`configure()` 或进程级全局根；组合根与 CLI 入口显式
+>   构造 `DataPaths` 并向下传，`test_data_paths_module_has_no_process_global`
+>   守住这条约束。
 > - `SessionStore` / `SchedulerStore` 改为实例类，构造时接收路径，由
 >   `main.build_core()` 创建并注入 `AgentLoop`、`Context`、`ChannelService`、
 >   `MaintenanceEngine`、`Scheduler` 等。
 > - 权限层的 `_probe_cache` / `_network_probe_cache` / `_session_roots` 收进
 >   `PermissionState`，`guard` / `Shell` / `Context` 显式接收；`seatbelt` 的
 >   profiles 目录改为显式参数。
-> - `tests/conftest.py` 的 `isolated_state` 通过 `configure()` 隔离数据根，
->   测试不再 monkeypatch 模块常量；同进程多实例直接构造 `DataPaths` 注入，
->   旧的 `scope()` 已移除。
+> - `tests/conftest.py` 的 `isolated_state` 每例登记一个隔离 `DataPaths` 并
+>   由测试 helper 读取，不再 monkeypatch 模块常量；同进程多实例直接构造
+>   `DataPaths` 注入，旧的 `scope()` 已移除。
 
 **现象**
 

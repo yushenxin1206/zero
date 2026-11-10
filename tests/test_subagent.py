@@ -23,11 +23,10 @@ from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner, run_subagent
 from zero.models import MessageBody, MessageIn, ToolContext
-from zero.data_paths import current
 from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_data_paths, make_permission, make_store
+from tests.support import current, make_data_paths, make_permission, make_store
 
 CHANNEL = "test"
 

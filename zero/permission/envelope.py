@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zero.config import HOME
-from zero.data_paths import DataPaths, current
+from zero.data_paths import DataPaths, default_root
 from zero.permission import seatbelt
 from zero.session.store import SessionStore
 
@@ -440,8 +440,10 @@ def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "check"
 
-    # CLI 是进程边界：按当前数据根自建状态对象，不依赖任何已注入的组合根
-    state = PermissionState(current(), SessionStore(current().sessions))
+    # CLI 是进程边界：按默认数据根自建状态对象，不依赖任何已注入的组合根
+    data_paths = DataPaths(default_root())
+    state = PermissionState(
+        data_paths, SessionStore(data_paths.sessions))
 
     if cmd == "check":
         ok = state.available()

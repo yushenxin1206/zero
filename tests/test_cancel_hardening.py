@@ -10,11 +10,10 @@ import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
-from tests.support import make_data_paths, make_permission, make_scheduler_store, make_store, make_test_config
+from tests.support import current, make_data_paths, make_permission, make_scheduler_store, make_store, make_test_config
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import Message, MessageBody, MessageOut, StopRequest
-from zero.data_paths import current
 from zero.session.models import TurnMarker
 
 

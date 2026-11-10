@@ -6,8 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from zero.data_paths import current
-from tests.support import make_store
+from tests.support import current, make_store
 
 CHANNEL = "cli"
 REPO_ROOT = Path(__file__).resolve().parents[1]

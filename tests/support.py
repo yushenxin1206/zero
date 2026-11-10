@@ -4,10 +4,27 @@ import json
 import time
 
 from zero.config import Config
-from zero.data_paths import DataPaths, current
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
+
+# 测试边界自己的“当前根”：由 conftest 的 autouse fixture 每例登记。
+# 生产代码没有这层全局状态，DataPaths 一律显式构造/注入。
+_data_paths: DataPaths | None = None
+
+
+def set_data_paths(data_paths: DataPaths) -> None:
+    """登记本用例的数据根。只由 tests/conftest.py 调用。"""
+    global _data_paths
+    _data_paths = data_paths
+
+
+def current() -> DataPaths:
+    """本用例的数据根。"""
+    if _data_paths is None:
+        raise RuntimeError("测试数据根未初始化：检查 isolated_state fixture")
+    return _data_paths
 
 
 def make_store() -> SessionStore:

@@ -19,7 +19,7 @@ from zero.models import (
     ProviderConfig,
     ProviderConfigs,
 )
-from zero.data_paths import current
+from zero.data_paths import DataPaths, default_root
 from zero.utils.file import save_or_create_file
 
 HOME = Path.home()
@@ -184,8 +184,13 @@ def load_config(path: Path) -> Config:
     return Config()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """``python -m zero.config``：默认只打印模板，``--write`` 才落盘。"""
+def main(argv: list[str] | None = None, *,
+         data_paths: DataPaths | None = None) -> int:
+    """``python -m zero.config``：默认只打印模板，``--write`` 才落盘。
+
+    ``data_paths`` 由调用方提供；命令行入口按 ``default_root()`` 构造，
+    测试传入隔离根。
+    """
     parser = argparse.ArgumentParser(
         prog='python -m zero.config',
         description='打印配置模板；默认不写任何文件。')
@@ -198,7 +203,8 @@ def main(argv: list[str] | None = None) -> int:
         print(render_template())
         return 0
     try:
-        target = write_template(current().config)
+        target = write_template(
+            (data_paths or DataPaths(default_root())).config)
     except ConfigWriteError as exc:
         print(f'未写入：{exc}', file=sys.stderr)
         return 1

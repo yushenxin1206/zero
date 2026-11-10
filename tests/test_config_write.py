@@ -2,9 +2,10 @@
 import json
 from pathlib import Path
 
+from tests.support import current
+
 from zero import config as config_module
 from zero.config import Config, load_config, render_template
-from zero.data_paths import current
 
 # 精简配置：compact 只覆盖 temperature，其余字段靠继承 default / 模型默认值
 MINIMAL = {
@@ -52,7 +53,7 @@ def test_template_command_never_touches_existing_config(capsys):
     assert "agentRuntimes" in capsys.readouterr().out
     assert _snapshot(target) == before
 
-    assert config_module.main(["--write"]) == 1
+    assert config_module.main(["--write"], data_paths=current()) == 1
     assert "已存在" in capsys.readouterr().err
     assert _snapshot(target) == before
 
@@ -61,7 +62,7 @@ def test_template_write_creates_only_new_file():
     target = current().config
     assert not target.exists()
 
-    assert config_module.main(["--write"]) == 0
+    assert config_module.main(["--write"], data_paths=current()) == 0
     assert target.exists()
     # 模板是完整默认值，所以加载后必然能解析出结构
     loaded = load_config(target)
