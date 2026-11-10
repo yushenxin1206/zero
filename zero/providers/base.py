@@ -3,6 +3,7 @@ Base provider
 """
 
 import asyncio
+import time
 import requests
 
 from abc import ABC, abstractmethod
@@ -11,6 +12,20 @@ from typing import Any, AsyncIterator
 from pydantic import Field
 
 from zero.models import Base, LLMCallOptions, ProviderConfig
+
+# 429 未带 Retry-After 时的退避基数（秒），按 2^attempt 递增；上限防止厂商
+# 给出超大值把一轮对话卡死。
+_RETRY_BACKOFF_SECONDS = 1.0
+_RETRY_AFTER_CAP_SECONDS = 30.0
+
+
+def _retry_after_seconds(resp: requests.Response, attempt: int) -> float:
+    """429 的等待时长：优先厂商的 Retry-After（秒），否则指数退避。"""
+    try:
+        seconds = float(resp.headers.get('Retry-After', ''))
+    except ValueError:
+        seconds = _RETRY_BACKOFF_SECONDS * (2 ** attempt)
+    return min(max(seconds, 0.0), _RETRY_AFTER_CAP_SECONDS)
 
 
 class LLMPayload(Base):
@@ -44,17 +59,39 @@ class Provider(ABC):
             timeout: int = 60,
             stream: bool = False,
     ) -> requests.Response:
+        """发请求，只重试「再试一次可能成功」的失败。
+
+        可重试：超时 / 连接失败（网络层抖动）、5xx（服务端临时故障）、
+        429（厂商明确要求稍后重试，按 Retry-After 等待后重试——它不属于
+        客户端配置错误，不能和其余 4xx 一起立刻放弃）。
+        不可重试：其余 4xx（401/403/404/422…）说明密钥、权限、端点或参数
+        就是错的，把同一请求再打三遍只会重复同一个错误并拖慢报错；URL
+        语法错误 / 缺少 scheme 同理，立即抛。
+        """
         last_exc: requests.exceptions.RequestException | None = None
-        for _ in range(max_retries):
+        for attempt in range(max_retries):
             try:
                 resp = requests.post(
                     url, headers=headers, json=json_data,
                     timeout=timeout, stream=stream,
                 )
-                resp.raise_for_status()
-                return resp
-            except requests.exceptions.RequestException as e:
+            except (requests.exceptions.Timeout,
+                    requests.exceptions.ConnectionError) as e:
                 last_exc = e
+                continue
+            if resp.status_code == 429 and attempt < max_retries - 1:
+                resp.close()
+                time.sleep(_retry_after_seconds(resp, attempt))
+                continue
+            try:
+                resp.raise_for_status()
+            except requests.exceptions.HTTPError as e:
+                resp.close()
+                if resp.status_code < 500:
+                    raise  # 4xx（429 的次数已用尽也走这里）：重试没有意义
+                last_exc = e
+                continue
+            return resp
         raise last_exc  # type: ignore[misc]
 
     @abstractmethod
