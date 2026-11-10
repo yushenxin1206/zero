@@ -8,9 +8,12 @@ one ScheduleTask per line, keyed by task id.
 构造时接收任务文件路径，不读进程级路径；由组合根（main）创建并注入。
 """
 from datetime import datetime
+import logging
 from pathlib import Path
 
 from zero.scheduler.models import RunOutcome, ScheduleTask, TaskStatus
+
+logger = logging.getLogger(__name__)
 
 # once 任务执行结果 → 终态。显式标注键值类型：内联字典会被推断成
 # dict[str, str]，取出来是无法赋给 TaskStatus（Literal）的裸 str。
@@ -104,10 +107,17 @@ class SchedulerStore:
 
         进程在轮次中途崩溃时，once 会停留在 running，重启后仍会被
         find_due 捞出重跑（at-least-once），不会永久卡住。
+
+        写盘失败时任务同样停留在 running：同一份存储写不进去，再写一条
+        "失败"标记大概率也不会成功，所以这里不做假回写，只让异常向上抛，
+        由调用方带 task id 记录错误日志。这是本兜底唯一的可见痕迹。
         """
         tasks = self._load_tasks()
         task = tasks.get(task_id)
         if task is None:
+            logger.warning(
+                "定时任务 %s 不存在，忽略本轮结果回写（outcome=%s）",
+                task_id, outcome)
             return
         task.last_status = outcome
         task.last_error = "" if outcome == "ok" else error

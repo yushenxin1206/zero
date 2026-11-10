@@ -111,6 +111,16 @@ class Scheduler:
         task_id = origin.task_id
         self._in_flight.discard(task_id)
         outcome = _RUN_OUTCOME.get(status, "failed")
-        await asyncio.to_thread(
-            self.store.finish_run, task_id, outcome=outcome,
-            error="" if outcome == "ok" else error)
+        try:
+            await asyncio.to_thread(
+                self.store.finish_run, task_id, outcome=outcome,
+                error="" if outcome == "ok" else error)
+        except Exception:  # noqa: BLE001 - 回写失败只留痕，不能影响轮次
+            # 读写失败（文件不可读、JSON 损坏、写入/替换失败）都会走到这里。
+            # 不重试、不写"失败"标记：同一份存储刚写失败，重试几乎必然再失败，
+            # 那会变成一个看着像兜底、实际永远不生效的分支。任务会停在
+            # running，重启后按到期重跑；本进程内只能靠这条日志区分它与
+            # "真的还在跑"。
+            logger.exception(
+                "定时任务 %s 状态回写失败：期望 %s；任务将停留在 running，"
+                "重启后按到期重跑", task_id, outcome)

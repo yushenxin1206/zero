@@ -1,5 +1,6 @@
 """定时任务完成态：派发只置 running，轮次真正结束才回写终态。"""
 import asyncio
+import logging
 from datetime import datetime, timedelta
 
 from zero.bus.queue import MessageBus
@@ -85,3 +86,30 @@ def test_running_task_is_not_dispatched_twice(tmp_path):
     asyncio.run(scheduler._dispatch(task, now))
     asyncio.run(scheduler._dispatch(task, now))
     assert scheduler.msg_bus.in_queue.queue.qsize() == 1
+
+
+def test_finish_turn_logs_write_failure(tmp_path, caplog, monkeypatch):
+    """写盘失败无法落任何标记：任务停在 running，至少留下带 task id 的日志。"""
+    store = _store(tmp_path)
+    task = _task(store)
+    scheduler = Scheduler(MessageBus(), store)
+    asyncio.run(scheduler._dispatch(task, datetime.now()))
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(store, "finish_run", fail)
+    with caplog.at_level(logging.ERROR, logger="zero.scheduler.engine"):
+        asyncio.run(scheduler.finish_turn(_finished(task), "completed", ""))
+
+    assert any(
+        task.id in record.getMessage() and "回写失败" in record.getMessage()
+        for record in caplog.records)
+    assert store.get(task.id).status == "running"
+
+
+def test_finish_run_missing_task_logs_warning(tmp_path, caplog):
+    store = _store(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="zero.scheduler.store"):
+        store.finish_run("missing", outcome="ok")
+    assert "不存在" in caplog.text
