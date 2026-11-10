@@ -65,21 +65,25 @@ class SecretFilter(logging.Filter):
 
 
 def setup_logging(
-        root: Path,
+        log_dir: Path,
         *,
         console_level: int = logging.ERROR,
         max_bytes: int = MAX_BYTES,
         backup_count: int = BACKUP_COUNT,
 ) -> None:
-    """装配 root logger：文件 DEBUG + 控制台 ERROR，重复调用不叠 handler。"""
-    root.mkdir(parents=True, exist_ok=True)
+    """装配 root logger：文件 DEBUG + 控制台 ERROR，重复调用不叠 handler。
+
+    ``log_dir`` 由调用方从 ``DataPaths.logs`` 取得，本函数只负责在缺失时
+    创建目录并写入 ``debug.log``（轮转备份由 handler 放在同目录）。
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger()
     for handler in logger.handlers[:]:
         handler.close()
         logger.removeHandler(handler)
 
     file_handler = RotatingFileHandler(
-        root / "debug.log", maxBytes=max_bytes,
+        log_dir / "debug.log", maxBytes=max_bytes,
         backupCount=backup_count, encoding="utf-8")
     file_handler.setLevel(logging.DEBUG)
     file_handler.setFormatter(logging.Formatter(FILE_FORMAT))

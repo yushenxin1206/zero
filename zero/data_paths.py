@@ -30,6 +30,10 @@ class DataPaths:
         return self.root / "config.json"
 
     @property
+    def logs(self) -> Path:
+        return self.root / "logs"
+
+    @property
     def memory(self) -> Path:
         return self.root / "memory.md"
 

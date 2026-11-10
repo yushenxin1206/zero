@@ -79,4 +79,4 @@ uv run python -m zero.config --write   # 仅在配置文件不存在时写入模
 }
 ```
 
-长期记忆存放在 `~/.zero/memory.md`，运行日志写入 `~/.zero/debug.log`（不污染终端界面）。
+长期记忆存放在 `~/.zero/memory.md`，运行日志写入 `~/.zero/logs/debug.log`（不污染终端界面）。

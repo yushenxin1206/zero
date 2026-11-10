@@ -449,7 +449,7 @@
 
 **现象**
 
-- 只有 `~/.zero/debug.log` 一个全局文件，日志不带结构化的 `turn_id`/`session_id`。
+- 只有 `~/.zero/logs/debug.log` 一个全局文件，日志不带结构化的 `turn_id`/`session_id`。
 - 无延迟/工具失败率/token 用量/压缩次数聚合；`MessageBody.token_usage` 存了但没人汇总。
 - ★ 补充：一次性定时任务在**派发入队时**即标记 done（[engine.py:80](../zero/scheduler/engine.py#L80)），turn 失败无重试、无感知——结果静默丢失。
 

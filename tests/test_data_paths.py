@@ -52,6 +52,11 @@ assert not hasattr(zero.config, "default_config")
     assert "Do not" not in result.stderr
 
 
+def test_logs_dir_is_derived_from_root(tmp_path):
+    """日志目录是数据根下的派生视图，调用点不再自己拼字符串。"""
+    assert DataPaths(tmp_path).logs == tmp_path / "logs"
+
+
 def test_two_data_roots_do_not_interfere(tmp_path):
     """同一进程内两个数据根：会话、配置、记忆各写各的。
 

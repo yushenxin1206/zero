@@ -302,8 +302,9 @@ def main():
     config = load_config(data_paths.config)
 
     # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich
-    # 渲染），统一带密钥脱敏；绝对路径，任意目录启动都不会散落 debug.log
-    setup_logging(data_paths.root)
+    # 渲染），统一带密钥脱敏；日志固定落在数据根的 logs 目录，任意目录启动
+    # 都不会散落 debug.log
+    setup_logging(data_paths.logs)
 
     try:
         if args.web:

@@ -4,6 +4,7 @@
 """
 import inspect
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -35,18 +36,23 @@ def flush(root: logging.Logger) -> None:
         handler.flush()
 
 
+def log_dir(root) -> Path:
+    """与 DataPaths.logs 同构：日志目录固定是数据根下的 logs/。"""
+    return root / "logs"
+
+
 def test_rotates_by_size(tmp_path, isolated_root):
-    setup_logging(tmp_path, max_bytes=200, backup_count=1)
+    setup_logging(log_dir(tmp_path), max_bytes=200, backup_count=1)
     logger = logging.getLogger("zero.test.rotation")
     for _ in range(20):
         logger.info("%s", "x" * 60)
-    assert (tmp_path / "debug.log").exists()
-    assert (tmp_path / "debug.log.1").exists()
-    assert (tmp_path / "debug.log").stat().st_size < 200 * 2
+    assert (log_dir(tmp_path) / "debug.log").exists()
+    assert (log_dir(tmp_path) / "debug.log.1").exists()
+    assert (log_dir(tmp_path) / "debug.log").stat().st_size < 200 * 2
 
 
 def test_redacts_secrets(tmp_path, isolated_root):
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
     logger = logging.getLogger("zero.test.secrets")
     key = "sk-abcdefgh12345678"
 
@@ -56,7 +62,7 @@ def test_redacts_secrets(tmp_path, isolated_root):
     logger.error("bare key leaked=%s", key)
     flush(isolated_root)
 
-    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    text = (log_dir(tmp_path) / "debug.log").read_text(encoding="utf-8")
     assert key not in text
     assert "Bearer ***" in text
     assert 'apiKey="***"' in text
@@ -64,7 +70,7 @@ def test_redacts_secrets(tmp_path, isolated_root):
 
 
 def test_handler_levels_and_format(tmp_path, isolated_root):
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
     handlers = isolated_root.handlers
     file_handler = next(h for h in handlers if isinstance(h, RotatingFileHandler))
     console_handler = next(
@@ -76,7 +82,7 @@ def test_handler_levels_and_format(tmp_path, isolated_root):
 
 
 def test_console_only_outputs_errors(tmp_path, isolated_root, capsys):
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
     logger = logging.getLogger("zero.test.console")
     logger.warning("warning stays in file")
     error_line = inspect.currentframe().f_lineno + 1
@@ -88,29 +94,29 @@ def test_console_only_outputs_errors(tmp_path, isolated_root, capsys):
 
 def test_log_includes_source_location(tmp_path, isolated_root):
     """文件行带 logger 名:行号，可直接定位到发出日志的代码。"""
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
     logger = logging.getLogger("zero.test.location")
     info_line = inspect.currentframe().f_lineno + 1
     logger.info("locate me")
     flush(isolated_root)
 
-    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    text = (log_dir(tmp_path) / "debug.log").read_text(encoding="utf-8")
     assert f"zero.test.location:{info_line}: locate me" in text
 
 
 def test_third_party_debug_noise_is_suppressed(tmp_path, isolated_root):
     """第三方库的 DEBUG 噪音不进文件；本项目 DEBUG 照常保留。"""
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
     logging.getLogger("markdown_it.rules_block.hr").debug("entering hr")
     logging.getLogger("zero.test.noise").debug("project detail")
     flush(isolated_root)
 
-    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    text = (log_dir(tmp_path) / "debug.log").read_text(encoding="utf-8")
     assert "entering hr" not in text
     assert "project detail" in text
 
 
 def test_setup_is_idempotent(tmp_path, isolated_root):
-    setup_logging(tmp_path)
-    setup_logging(tmp_path)
+    setup_logging(log_dir(tmp_path))
+    setup_logging(log_dir(tmp_path))
     assert len(isolated_root.handlers) == 2
