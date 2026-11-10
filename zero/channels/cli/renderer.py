@@ -24,6 +24,7 @@ from prompt_toolkit.shortcuts import print_formatted_text
 
 from zero.channels.service import ChannelService, SessionView
 from zero.models import ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, Message
+from zero.scheduler.models import SCHEDULED_TASK_PREFIX
 
 if TYPE_CHECKING:
     from zero.channels.cli.background import BackgroundRecord
@@ -330,7 +331,7 @@ class CliRenderer:
         if rec.origin.kind == ORIGIN_SCHEDULER and rec.origin.task_id:
             task = self.service.task(rec.origin.task_id)
             if task is not None:
-                instruction = task.instruction.removeprefix("[Scheduled Task]")
+                instruction = task.instruction.removeprefix(SCHEDULED_TASK_PREFIX)
                 subtitle_parts.append(escape(self.clip(instruction, 40)))
         subtitle = " · ".join(subtitle_parts) or None
         print_above = lambda renderable: self.print_above_prompt(  # noqa: E731

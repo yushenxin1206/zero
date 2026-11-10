@@ -20,8 +20,8 @@ from zero.channels.cli.prompt import COMMANDS
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.scheduler.models import (
-    TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED, TASK_PENDING, TASK_RUNNING,
-    TaskStatus)
+    SCHEDULED_TASK_PREFIX, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
+    TASK_PENDING, TASK_RUNNING, TaskStatus)
 
 # alias -> canonical command (canonical names defined in prompt.COMMANDS)
 _COMMAND_ALIASES = {
@@ -196,7 +196,7 @@ class CliCommands:
 
         for task in tasks:
             style = status_style.get(task.status, "")
-            instruction = task.instruction.removeprefix("[Scheduled Task]")
+            instruction = task.instruction.removeprefix(SCHEDULED_TASK_PREFIX)
             table.add_row(
                 f"[{style}]{task.status}[/{style}]" if style else task.status,
                 task.schedule_type + (f" {task.cron}" if task.cron else ""),

@@ -20,6 +20,9 @@ TASK_COMPLETED: TaskStatus = "completed"
 TASK_FAILED: TaskStatus = "failed"
 TASK_CANCELLED: TaskStatus = "cancelled"
 
+# 定时任务指令的固定来源标记：创建时写入 instruction，展示前由渠道剥离
+SCHEDULED_TASK_PREFIX = "[Scheduled Task]"
+
 
 class ScheduleTask(Base):
     """A persisted scheduled task to be executed by the Scheduler engine."""

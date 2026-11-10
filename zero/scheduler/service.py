@@ -8,8 +8,8 @@ CreateScheduledTask tool is a thin wrapper around this module.
 from datetime import datetime, timedelta
 
 from zero.scheduler.models import (
-    SCHEDULE_ONCE, SCHEDULE_RECURRING, TASK_CANCELLED, TASK_COMPLETED,
-    TASK_FAILED, TASK_PENDING, ScheduleTask, ScheduleType)
+    SCHEDULE_ONCE, SCHEDULE_RECURRING, SCHEDULED_TASK_PREFIX, TASK_CANCELLED,
+    TASK_COMPLETED, TASK_FAILED, TASK_PENDING, ScheduleTask, ScheduleType)
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -59,7 +59,7 @@ def create_task(
     task = ScheduleTask(
         channel=channel,
         session_id=session_id,
-        instruction=f'[Scheduled Task]{instruction}',
+        instruction=f'{SCHEDULED_TASK_PREFIX}{instruction}',
         schedule_type=schedule_type,
         trigger_at=trigger_at,
         cron=cron,

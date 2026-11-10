@@ -44,11 +44,12 @@ from zero.bus.queue import BusQueueFull, MessageBus
 from zero.channels.base import BusChannel
 from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.models import CHANNEL_WEB, MessageOut, StreamEvent
 from zero.data_paths import DataPaths
+from zero.models import CHANNEL_WEB, MessageOut, StreamEvent
 from zero.permission.envelope import PermissionState
-from zero.session.store import SessionStore
+from zero.scheduler.models import SCHEDULED_TASK_PREFIX
 from zero.scheduler.store import SchedulerStore
+from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +207,7 @@ class WebChannel(BusChannel):
             "cron": t.cron,
             "triggerAt": _dt(t.trigger_at),
             "lastRunAt": _dt(t.last_run_at),
-            "instruction": t.instruction.removeprefix("[Scheduled Task]"),
+            "instruction": t.instruction.removeprefix(SCHEDULED_TASK_PREFIX),
         } for t in self.service.tasks()]
 
     # 会话列表/历史/任务快照都要读索引与 JSONL：统一在线程池构建，
