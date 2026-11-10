@@ -307,10 +307,10 @@ class CLIChannel(BusChannel):
                         reason_acc = ""
                         if event.content and not acc:
                             acc = event.content
-                        if u := (event.metadata or {}).get("token_usage"):
-                            usage = u
+                        if event.token_usage is not None:
+                            usage = event.token_usage
                         done = True
-                        if (event.metadata or {}).get("cancelled"):
+                        if event.cancelled:
                             cancelled = True
                     # 节流重绘：Live 每次重绘都要「擦除整帧 + 重画整帧」，若每个
                     # token 都刷（可达几十次/秒）终端会持续闪烁。仅在：回合终结、

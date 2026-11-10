@@ -16,7 +16,7 @@ from zero.bus.queue import MessageBus
 from zero.core import loop as loop_mod
 from zero.core.cancellation import TurnCancelled
 from zero.core.loop import AgentLoop
-from zero.models import MessageBody, MessageIn, StreamEvent
+from zero.models import MessageBody, MessageIn, StreamEvent, TokenUsage
 from tests.support import make_test_config
 
 SESSION = "s-summary"
@@ -103,11 +103,10 @@ def test_completed_turn_summary(monkeypatch, caplog):
     install_runner(monkeypatch, [
         StreamEvent(kind="tool_call", content="read(path='a')"),
         StreamEvent(kind="delta", content="hello"),
-        StreamEvent(kind="done", content="hello", metadata={
-            "token_usage": {
-                "prompt_tokens": 10, "completion_tokens": 5,
-                "total_tokens": 15,
-            }}),
+        StreamEvent(
+            kind="done", content="hello",
+            token_usage=TokenUsage(
+                prompt_tokens=10, completion_tokens=5, total_tokens=15)),
     ])
     msg = asyncio.run(run_turn())
 

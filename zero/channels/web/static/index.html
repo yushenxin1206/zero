@@ -949,9 +949,8 @@
       case "done": {
         active = ensureActive(ev.turnId);
         if (ev.content && !active.hasText()) appendText(active, ev.content);
-        const meta = ev.metadata || {};
-        if (meta.cancelled) addMarker(active, "已终止（以上为已生成内容）");
-        if (meta.token_usage) addUsage(active, meta.token_usage);
+        if (ev.cancelled) addMarker(active, "已终止（以上为已生成内容）");
+        if (ev.tokenUsage) addUsage(active, ev.tokenUsage);
         finalize(ev.turnId, {});
         break;
       }

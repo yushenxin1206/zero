@@ -111,7 +111,7 @@ class TestApprovalTerminate(unittest.TestCase):
         # 终止信号切达 cancelled 收尾，而非 error
         self.assertIsNone(r["err_ev"], "TurnCancelled 不应被吞成 error")
         self.assertIsNotNone(r["done_ev"])
-        self.assertTrue(r["done_ev"].metadata.get("cancelled"))
+        self.assertTrue(r["done_ev"].cancelled)
         # 最终 MessageOut 走取消路径（不落盘部分回复）
         # 历史协议合法：每个 assistant.tool_calls.id 都有配对 tool 结果
         tool_ids = {m.body.tool_call_id for m in r["history"]

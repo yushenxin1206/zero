@@ -107,7 +107,7 @@ class TestTurnStop(unittest.TestCase):
         self.assertEqual(result["first_delta"], "部分回复-")
         # 收尾 done：带 cancelled 标记 + 已生成的部分回复
         self.assertEqual(result["done_ev"].kind, "done")
-        self.assertTrue(result["done_ev"].metadata.get("cancelled"))
+        self.assertTrue(result["done_ev"].cancelled)
         self.assertTrue(result["done_ev"].content.startswith("部分回复-"))
         # 流内安全点：取消在下一 chunk 边界即生效，未产出的 "更多内容"
         # 不再被消费——最终 MessageOut = 已产出的部分回复
@@ -290,7 +290,7 @@ class TestStopDuringSilentThinking(unittest.TestCase):
         # 终止打断挂起的思考期（3s 静默），不等流自然结束
         self.assertLess(r["stop_elapsed"], 1.5,
                         f"stop 未打断思考期: {r['stop_elapsed']:.2f}s")
-        self.assertTrue(r["done1"].metadata.get("cancelled"))
+        self.assertTrue(r["done1"].cancelled)
         self.assertEqual(r["out1"].body.content, "部分")
         # 下一轮正常处理（用户报障：此前卡 thinking 永无输出）
         self.assertEqual(r["out2"].body.content, "部分完整")

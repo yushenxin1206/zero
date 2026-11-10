@@ -113,6 +113,9 @@ class Message(Base):
     # 仅第三方插件/未来扩展使用的透传口袋；核心代码（core/ channels/
     # scheduler/ 内置 plugins）一律不读不写
     metadata: dict[str, Any] = Field(default_factory=dict)
+    # 加载期合成的上下文压缩消息。仅由 SessionStore.apply_compact 置 True，
+    # 渲染方据此与真实用户发言区分样式；不落盘。
+    compact: bool = False
     # 加载期补写的「工具结果缺失」占位。真实消息恒为 False；读取方据此
     # 区分占位与真实结果，不靠正文文案匹配。
     synthetic: bool = False
@@ -207,6 +210,10 @@ class StreamEvent(Base):
     kind: str = "delta"
     content: str = ""
     origin: Origin = Field(default_factory=Origin)
+    # 仅 done 事件携带：本轮模型调用的 token 用量（厂商未上报则 None）
+    token_usage: TokenUsage | None = None
+    # 仅 done 事件携带：本轮因用户终止而提前收尾（content 为已生成片段）
+    cancelled: bool = False
     # 仅第三方插件扩展使用；核心代码不读不写
     metadata: dict[str, Any] = Field(default_factory=dict)
 

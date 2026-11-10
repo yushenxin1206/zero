@@ -234,7 +234,7 @@ def test_load_history_synthesis():
         CompactRecord(content="<compact>摘要</compact>", covered_upto=m2.id))
     hist = SessionStore.load_history(sid, CHANNEL)
     assert len(hist) == 2
-    assert hist[0].sender == "user" and hist[0].metadata.get("kind") == "compact"
+    assert hist[0].sender == "user" and hist[0].compact
     assert "<compact>摘要</compact>" in hist[0].body.content
     assert hist[1].id == m3.id
     # include_compact=False → 全量
@@ -262,7 +262,7 @@ def test_maybe_compress_over_threshold():
     rec = SessionStore.load_compact(CHANNEL, sid)
     assert rec is not None and "<compact>" in rec.content
     hist = SessionStore.load_history(sid, CHANNEL)
-    assert hist[0].sender == "user" and hist[0].metadata.get("kind") == "compact"
+    assert hist[0].sender == "user" and hist[0].compact
     assert hist[1].sender != "tool"  # 尾部首条不是 tool → 无孤儿 tool
     assert len(hist) == 4  # [压缩, user, assistant(带tool_calls), tool]
 
@@ -447,7 +447,7 @@ def test_migrate_legacy_summary_exact_tags():
     assert migrated.covered_upto == last.id
     # 迁移后 load_history 正常合成
     hist = SessionStore.load_history(sid, CHANNEL, include_compact=True)
-    assert hist[0].metadata.get("kind") == "compact"
+    assert hist[0].compact
     # 二次迁移幂等
     assert SessionStore.migrate_legacy_summaries() >= 0
     assert SessionStore.load_compact(CHANNEL, sid) is not None

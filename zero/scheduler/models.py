@@ -3,7 +3,6 @@ Scheduler-specific data models.
 """
 
 from datetime import datetime
-from typing import Any
 from uuid import uuid4
 
 from pydantic import Field
@@ -23,8 +22,6 @@ class ScheduleTask(Base):
     status: str = "pending"  # pending | running | done | failed | cancelled
     # 渠道侧会话标识（飞书 chat_id、cli source_id），结果回投寻址用
     channel_session_id: str = ""
-    # 已废弃：旧版本整包保存的渠道路由信息，仅为兼容历史数据保留读取
-    metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     last_run_at: datetime | None = None

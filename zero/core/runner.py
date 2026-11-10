@@ -208,10 +208,7 @@ class AgentRunner:
                 yield StreamEvent(
                     kind="done",
                     content=content,
-                    metadata=(
-                        {"token_usage": usage.model_dump(by_alias=True)}
-                        if usage else {}
-                    ),
+                    token_usage=usage,
                 )
                 return
 

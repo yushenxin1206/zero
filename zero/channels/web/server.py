@@ -169,7 +169,7 @@ class WebChannel(BusChannel):
             "id": msg.id,
             "role": msg.sender,
             "content": msg.body.content or "",
-            "compact": (msg.metadata or {}).get("kind") == "compact",
+            "compact": msg.compact,
         } for msg in self.service.display_history(session_id)]
 
     def _state_sync(self) -> dict[str, Any]:

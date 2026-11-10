@@ -243,7 +243,7 @@ class CliRenderer:
 
     def print_message_line(self, message: Message, max_len: int = 600) -> None:
         # 压缩摘要（load_history 合成的消息）：独立样式，避免被误读为用户发言
-        if message.metadata.get("kind") == "compact":
+        if message.compact:
             self.console.print(
                 f"[dim magenta]compact ›[/dim magenta] "
                 f"{self.clip(message.body.content or '', max_len)}")

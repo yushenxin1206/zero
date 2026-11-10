@@ -227,10 +227,7 @@ class AgentLoop:
                     reply_text += event.content
                 elif event.kind == "done":
                     reply_text = event.content or reply_text
-                    usage_data = (event.metadata or {}).get(
-                        "token_usage")
-                    if isinstance(usage_data, dict):
-                        final_usage = TokenUsage(**usage_data)
+                    final_usage = event.token_usage
                 elif event.kind == "tool_call":
                     stat.tools += 1
                 elif event.kind == "error":
@@ -289,7 +286,7 @@ class AgentLoop:
         final_event = StreamEvent(
             kind="done",
             content=partial,
-            metadata={"cancelled": True},
+            cancelled=True,
             channel=msg_in.channel,
             session_id=msg_in.session_id,
             turn_id=msg_in.id,

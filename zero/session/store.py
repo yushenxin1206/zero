@@ -105,14 +105,14 @@ def _index_file_lock(channel: str) -> Iterator[None]:
 
 def compact_message(
         rec: CompactRecord, session_id: str, channel: str) -> Message:
-    """合成承载压缩记录的 user 消息（metadata.kind == "compact"）。"""
+    """合成承载压缩记录的 user 消息（compact=True）。"""
     return Message(
         session_id=session_id,
         channel=channel,
         sender="user",
         recipient="assistant",
         body=MessageBody(content=rec.content),
-        metadata={"kind": "compact"},
+        compact=True,
     )
 
 

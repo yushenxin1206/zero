@@ -57,12 +57,7 @@ class Scheduler:
                 channel=task.channel,
                 body=MessageBody(content=task.instruction),
                 origin=Origin(kind="scheduler", task_id=task.id),
-                # 旧任务数据可能没有 channel_session_id，回落到废弃的
-                # metadata.chat_id 兼容
-                channel_session_id=(
-                    task.channel_session_id
-                    or (task.metadata or {}).get("chat_id", "")
-                ),
+                channel_session_id=task.channel_session_id,
             )
         )
 

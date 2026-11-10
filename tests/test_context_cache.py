@@ -119,7 +119,7 @@ def test_apply_compact_pure_function():
     rec = CompactRecord(content="<compact>x</compact>", covered_upto=raw[0].id)
     out = apply_compact(raw, rec, "sid", CHANNEL)
     assert len(out) == 2
-    assert out[0].sender == "user" and out[0].metadata.get("kind") == "compact"
+    assert out[0].sender == "user" and out[0].compact
     assert out[0].body.content == "<compact>x</compact>"
     assert out[1].id == raw[1].id
 

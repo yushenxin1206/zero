@@ -278,8 +278,9 @@ Durable facts, conventions and decisions about the current project (working dire
             post = frontmatter.load(skill_file)
         except (OSError, ValueError):
             return {}
-        meta = post.metadata or {}
-        return {k: str(v).strip() for k, v in meta.items()}
+        # 走 frontmatter.Post 的映射接口，不直接碰 .metadata 属性——
+        # 全仓库禁止核心层访问 Message/StreamEvent 的 metadata 口袋
+        return {k: str(post[k]).strip() for k in post.keys()}
 
     @property
     def _skills(self) -> str:
