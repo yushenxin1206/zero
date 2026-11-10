@@ -20,6 +20,7 @@ from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
 from zero.paths import Paths, configure
+from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 from zero.utils.log_setup import setup_logging
 
@@ -31,14 +32,15 @@ log = logging.getLogger(__name__)
 SUBAGENT_EXCLUDED_TOOLS = frozenset({"subagent"})
 
 
-def build_tool_registry(session_store: SessionStore) -> ToolRegistry:
+def build_tool_registry(session_store: SessionStore,
+                        scheduler_store: SchedulerStore) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(Read())
     registry.register(Write())
     registry.register(Edit())
     registry.register(Shell(session_store=session_store))
-    registry.register(CreateScheduledTask())
-    registry.register(CancelScheduledTask())
+    registry.register(CreateScheduledTask(store=scheduler_store))
+    registry.register(CancelScheduledTask(store=scheduler_store))
     return registry
 
 
@@ -81,6 +83,7 @@ class CoreRuntime:
     """一个进程内的核心组件组合；CLI / web 两种启动方式共用。"""
     msg_bus: MessageBus
     session_store: SessionStore
+    scheduler_store: SchedulerStore
     tool_registry: ToolRegistry
     hooks: Hooks
     subagent_manager: SubagentManager
@@ -92,7 +95,8 @@ class CoreRuntime:
 def build_core(config: Config, paths: Paths) -> CoreRuntime:
     msg_bus = MessageBus()
     session_store = SessionStore(paths.sessions)
-    registry = build_tool_registry(session_store)
+    scheduler_store = SchedulerStore(paths.tasks)
+    registry = build_tool_registry(session_store, scheduler_store)
     hooks = build_hooks(msg_bus, session_store)
     # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
     # 同一条链——permission.guard 对子 agent 的需审批命令直接 fail-closed
@@ -110,11 +114,12 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
     return CoreRuntime(
         msg_bus=msg_bus,
         session_store=session_store,
+        scheduler_store=scheduler_store,
         tool_registry=registry,
         hooks=hooks,
         subagent_manager=subagent_manager,
         agent_loop=agent_loop,
-        scheduler=Scheduler(msg_bus=msg_bus),
+        scheduler=Scheduler(msg_bus=msg_bus, store=scheduler_store),
         maintenance=build_maintenance_engine(config, session_store),
     )
 
@@ -166,6 +171,7 @@ async def run(config: Config, paths: Paths, cli_only: bool = False):
 
     cli_channel = CLIChannel(
         msg_bus=core.msg_bus, session_store=core.session_store,
+        scheduler_store=core.scheduler_store,
         config=config, tool_registry=core.tool_registry)
     core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
@@ -200,7 +206,7 @@ def run_web_desktop(config: Config, paths: Paths):
 
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
-            config=config)
+            scheduler_store=core.scheduler_store, config=config)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()

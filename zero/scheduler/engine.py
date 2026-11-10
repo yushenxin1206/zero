@@ -27,8 +27,10 @@ POLL_INTERVAL_SECONDS = 10
 
 class Scheduler:
 
-    def __init__(self, msg_bus: MessageBus):
+    def __init__(self, msg_bus: MessageBus, store: SchedulerStore):
         self.msg_bus = msg_bus
+        # 任务存储由组合根显式注入；轮询/回写都走这个实例
+        self.store = store
         self._running = False
 
     async def run(self) -> None:
@@ -37,7 +39,7 @@ class Scheduler:
         while self._running:
             try:
                 now = datetime.now()
-                for task in SchedulerStore.find_due(now):
+                for task in self.store.find_due(now):
                     await self._dispatch(task, now)
             except Exception:
                 logger.exception("Scheduler poll iteration failed")
@@ -50,7 +52,7 @@ class Scheduler:
         logger.info("Dispatching scheduled task id=%s type=%s at %s", task.id, task.schedule_type, now.isoformat())
 
         # 标记为正在执行并投递触发消息
-        SchedulerStore.update_status(task.id, "running")
+        self.store.update_status(task.id, "running")
         await self.msg_bus.in_queue.enqueue(
             MessageIn(
                 session_id=task.session_id,
@@ -67,8 +69,9 @@ class Scheduler:
                 next_trigger = next_run(task.cron, now)
             except ValueError as e:
                 logger.warning("Recurring task %s invalid cron: %s", task.id, e)
-                SchedulerStore.update_status(task.id, "failed")
+                self.store.update_status(task.id, "failed")
                 return
-            SchedulerStore.reschedule(task.id, trigger_at=next_trigger, last_run_at=now)
+            self.store.reschedule(
+                task.id, trigger_at=next_trigger, last_run_at=now)
         else:
-            SchedulerStore.update_status(task.id, "done", last_run_at=now)
+            self.store.update_status(task.id, "done", last_run_at=now)

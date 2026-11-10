@@ -55,6 +55,7 @@ class ChannelService:
         *,
         msg_bus: MessageBus,
         session_store: SessionStore,
+        scheduler_store: SchedulerStore,
         config: Config | None = None,
         tool_registry: ToolRegistry | None = None,
         source_prefix: str | None = None,
@@ -68,6 +69,7 @@ class ChannelService:
         self.session_id = ""
         # 会话存储由 channel 组合根显式传入；绑定文件与 session 同根
         self.session_store = session_store
+        self.scheduler_store = scheduler_store
         self._binding_path = (
             session_store.root / channel / f".{channel}_current.json")
 
@@ -191,7 +193,7 @@ class ChannelService:
     def tasks(self, *, all_sessions: bool = False) -> list[ScheduleTask]:
         """This channel's tasks for the current session (or all sessions)."""
         tasks = [
-            t for t in SchedulerStore.load_all()
+            t for t in self.scheduler_store.load_all()
             if t.channel == self.channel
             and (all_sessions or t.session_id == self.session_id)
         ]
@@ -201,7 +203,7 @@ class ChannelService:
 
     def task(self, task_id: str) -> ScheduleTask | None:
         """Look up a single scheduled task by id."""
-        return SchedulerStore.get(task_id)
+        return self.scheduler_store.get(task_id)
 
     # ------------------------------------------------------------------
     # Models

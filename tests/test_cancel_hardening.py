@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
-from tests.support import make_store, make_test_config
+from tests.support import make_scheduler_store, make_store, make_test_config
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import Message, MessageBody, MessageOut, StopRequest
@@ -185,7 +185,8 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus, session_store=make_store())
+            ch = CLIChannel(msg_bus=bus, session_store=make_store(),
+                       scheduler_store=make_scheduler_store())
             ch.service.session_id = "s-sigint"
             ch._active_turn_id = "turn-1"
             ch._sigint_stop_turn("turn-1")
@@ -207,7 +208,8 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus, session_store=make_store())
+            ch = CLIChannel(msg_bus=bus, session_store=make_store(),
+                       scheduler_store=make_scheduler_store())
             ch.service.session_id = "s-sigint2"
             ch._active_turn_id = "turn-2"
             abort = threading.Event()

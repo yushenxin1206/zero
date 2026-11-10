@@ -21,15 +21,15 @@ from zero.bus.queue import MessageBus
 from zero.channels.cli import CHANNEL, CLIChannel
 from zero.models import MessageBody, MessageOut, Origin, StreamEvent
 from zero.scheduler.models import ScheduleTask
-from zero.scheduler.store import SchedulerStore
-from tests.support import make_store
+from tests.support import make_scheduler_store, make_store
 
 
 async def run_with_channel(scenario):
     """Start a CLI channel + bus dispatchers, then run one scenario."""
     bus = MessageBus()
     buf = io.StringIO()
-    ch = CLIChannel(bus, session_store=make_store(), console=Console(
+    ch = CLIChannel(bus, session_store=make_store(),
+                    scheduler_store=make_scheduler_store(), console=Console(
         file=buf, highlight=False, width=100))
     dispatchers = [
         asyncio.create_task(bus.run_out_dispatcher()),
@@ -56,7 +56,7 @@ def test_scheduled_task_result_renders_once(monkeypatch):
             instruction="[Scheduled Task]每天总结科技新闻",
             schedule_type="once",
         )
-        SchedulerStore.create(task)
+        make_scheduler_store().create(task)
         origin = Origin(kind="scheduler", task_id=task.id)
         for kind, content in [("delta", "今日"), ("delta", "要闻"),
                               ("done", "今日要闻汇总")]:
@@ -128,7 +128,7 @@ def test_tasks_listing():
         instruction="[Scheduled Task]每天总结科技新闻",
         schedule_type="once",
     )
-    SchedulerStore.create(task)
+    make_scheduler_store().create(task)
 
     async def scenario(bus, ch, buf):
         ch.service.session_id = "sess-sched"

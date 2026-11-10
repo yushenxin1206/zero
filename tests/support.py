@@ -5,12 +5,18 @@ import time
 
 from zero.config import Config
 from zero.paths import current
+from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
 
 def make_store() -> SessionStore:
     """测试边界：按当前隔离根构造会话存储，与组合根的构造方式一致。"""
     return SessionStore(current().sessions)
+
+
+def make_scheduler_store() -> SchedulerStore:
+    """测试边界：按当前隔离根构造调度任务存储。"""
+    return SchedulerStore(current().tasks)
 
 
 def make_test_config() -> Config:

@@ -13,6 +13,7 @@ from zero.scheduler.store import SchedulerStore
 
 
 def create_task(
+    store: SchedulerStore,
     *,
     instruction: str,
     schedule_type: ScheduleType,
@@ -63,17 +64,19 @@ def create_task(
         status="pending",
         channel_session_id=channel_session_id,
     )
-    SchedulerStore.create(task)
+    store.create(task)
     return task
 
 
-def cancel_task(*, task_id: str, session_id: str) -> ScheduleTask:
+def cancel_task(
+        store: SchedulerStore, *, task_id: str,
+        session_id: str) -> ScheduleTask:
     """取消一个尚未终结（done/failed/cancelled）的定时任务。
 
     仅允许取消属于 session_id 的任务；找不到或状态不允许时抛出 ValueError，
     由调用方（如工具层）决定如何呈现错误。
     """
-    task = SchedulerStore.get(task_id)
+    task = store.get(task_id)
     if task is None:
         raise ValueError(f"Scheduled task not found: {task_id!r}")
     if task.session_id != session_id:
@@ -81,6 +84,6 @@ def cancel_task(*, task_id: str, session_id: str) -> ScheduleTask:
     if task.status in ("done", "failed", "cancelled"):
         raise ValueError(f"Scheduled task {task_id!r} is already {task.status}, cannot cancel.")
 
-    SchedulerStore.update_status(task_id, "cancelled")
+    store.update_status(task_id, "cancelled")
     task.status = "cancelled"
     return task

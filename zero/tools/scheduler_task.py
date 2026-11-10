@@ -9,10 +9,15 @@ that has not finished yet.
 """
 from zero.models import ToolContext
 from zero.scheduler.service import cancel_task, create_task
+from zero.scheduler.store import SchedulerStore
 from zero.tools.base import Tool
 
 
 class CreateScheduledTask(Tool):
+
+    def __init__(self, *, store: SchedulerStore):
+        # 任务存储由组合根注入，工具只做参数解析与结果格式化
+        self.store = store
 
     @property
     def name(self):
@@ -70,6 +75,7 @@ class CreateScheduledTask(Tool):
 
         try:
             task = create_task(
+                self.store,
                 instruction=instruction,
                 schedule_type=kwargs.get("schedule_type", "once"),
                 channel=context.channel,
@@ -94,6 +100,9 @@ class CreateScheduledTask(Tool):
 
 
 class CancelScheduledTask(Tool):
+
+    def __init__(self, *, store: SchedulerStore):
+        self.store = store
 
     @property
     def name(self):
@@ -129,7 +138,8 @@ class CancelScheduledTask(Tool):
             return {"success": False, "error": "Missing required argument: task_id."}
 
         try:
-            task = cancel_task(task_id=task_id, session_id=context.session_id)
+            task = cancel_task(
+                self.store, task_id=task_id, session_id=context.session_id)
         except ValueError as e:
             return {"success": False, "error": str(e)}
 

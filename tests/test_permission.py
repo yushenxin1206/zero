@@ -24,7 +24,7 @@ from uuid import uuid4
 
 import pytest
 
-from tests.support import make_store
+from tests.support import make_scheduler_store, make_store
 
 import zero.channels as channels_pkg
 from zero.paths import current
@@ -564,7 +564,7 @@ def test_guard_covers_all_file_tools():
     """
     from zero.main import build_tool_registry
 
-    registry = build_tool_registry(make_store())
+    registry = build_tool_registry(make_store(), make_scheduler_store())
     covered = 0
     missing: list[str] = []
     for schema in registry.schemas():

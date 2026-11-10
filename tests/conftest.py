@@ -14,6 +14,7 @@ TMPDIR root and invalidate the assertions.
 import pytest
 
 from zero.paths import configure, current
+from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
 
@@ -31,3 +32,9 @@ def isolated_state(tmp_path):
 def session_store(isolated_state):
     """测试边界：按当前隔离根构造会话存储，和组合根的构造方式一致。"""
     return SessionStore(current().sessions)
+
+
+@pytest.fixture
+def scheduler_store(isolated_state):
+    """测试边界：按当前隔离根构造调度任务存储。"""
+    return SchedulerStore(current().tasks)
