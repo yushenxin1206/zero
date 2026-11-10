@@ -15,13 +15,54 @@ logger = logging.getLogger(__name__)
 _STOPPED = object()
 
 
+class _StreamConnection:
+    """单条流的响应句柄：close 可从任意线程打断阻塞读。
+
+    每次 ``stream_chunks`` 调用各持一个实例，取消只关闭自己那条连接。
+    provider 实例本身不保存任何流状态，因此同一实例可以并行多条流。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._resp: Any = None
+        self._closed = False
+
+    def attach(self, resp) -> bool:
+        """登记响应句柄；句柄已关闭时立即关闭响应并返回 False。"""
+        with self._lock:
+            if self._closed:
+                resp.close()
+                return False
+            self._resp = resp
+            return True
+
+    def detach(self) -> None:
+        with self._lock:
+            self._resp = None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            resp, self._resp = self._resp, None
+        if resp is not None:
+            try:
+                resp.close()
+            except Exception:  # noqa: BLE001 - close 失败无妨，线程将自然退出
+                logger.debug("close streaming response failed", exc_info=True)
+
+
 class OpenAI(Provider):
 
-    def _stream_conn(self, payload: LLMPayload, cancel_event: threading.Event | None = None):
+    def _stream_conn(
+            self,
+            payload: LLMPayload,
+            conn: _StreamConnection,
+            cancel_event: threading.Event | None = None,
+    ):
         """Blocking SSE reader, runs in a worker thread (see stream_chunks).
 
         cancel_event：置位时在下一条 SSE 行边界退出。阻塞读本身无法被
-        事件打断，真正的打断靠 stream_chunks 侧调用 resp.close() 关闭
+        事件打断，真正的打断靠 stream_chunks 侧调用 conn.close() 关闭
         连接（这里在 finally 中也兜底关闭）。
         """
         headers = {
@@ -38,9 +79,9 @@ class OpenAI(Provider):
         resp = self._request_with_retry(
             self.api_base, headers, payload.payload_dict, stream=True,
         )
-        # 暴露给 stream_chunks 的取消路径：取消时从消费者线程 close 连接，
-        # 打断本线程的阻塞读
-        self._stream_resp = resp
+        # 句柄登记到本次调用的连接上：取消路径只会关它自己这条流
+        if not conn.attach(resp):
+            return
         try:
             for line in resp.iter_lines():
                 if cancel_event is not None and cancel_event.is_set():
@@ -78,17 +119,8 @@ class OpenAI(Provider):
                 if usage := j.get("usage"):
                     yield "usage", usage
         finally:
-            self._stream_resp = None
+            conn.detach()
             resp.close()
-
-    def _close_stream_resp(self) -> None:
-        """取消路径：关闭正在流式读取的响应连接以打断阻塞读线程。"""
-        resp = getattr(self, "_stream_resp", None)
-        if resp is not None:
-            try:
-                resp.close()
-            except Exception:  # noqa: BLE001 - close 失败无妨，线程将自然退出
-                logger.debug("close streaming response failed", exc_info=True)
 
     async def stream_chunks(
             self,
@@ -112,10 +144,11 @@ class OpenAI(Provider):
         loop = asyncio.get_running_loop()
         queue: asyncio.Queue = asyncio.Queue()
         cancel_event = threading.Event()   # 通知 producer 停止阻塞读
+        conn = _StreamConnection()         # 本次流的连接句柄，取消只关自己
 
         def producer():
             try:
-                for item in self._stream_conn(payload, cancel_event):
+                for item in self._stream_conn(payload, conn, cancel_event):
                     asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
             except Exception as e:  # noqa: BLE001 - surface any failure to consumer
@@ -138,7 +171,7 @@ class OpenAI(Provider):
             # （超时兜底，不无限阻塞）。否则取消后残留读线程/连接泄漏，
             # 新一轮 stream 会卡在旧连接的阻塞读上、永久无产出
             cancel_event.set()
-            self._close_stream_resp()
+            conn.close()
             thread.join(timeout=0.5)
 
     @staticmethod

@@ -10,8 +10,10 @@ aclose() 只关 async 生成器、不关连接，producer 线程残留在 iter_l
 3. 干净路径（消费到结束）同样正常
 """
 import asyncio
+import json
 import threading
 import unittest
+from collections import deque
 
 from zero.providers.base import LLMPayload
 from zero.providers.openai import OpenAI
@@ -90,7 +92,6 @@ async def _consume_one_then_close(prov: OpenAI, resp: FakeResponse, do_close: bo
 
 
 class TestProviderCancelReleases(unittest.TestCase):
-
     def test_aclose_closes_connection_and_thread(self):
         async def run():
             resp = FakeResponse(block_after_first=True)
@@ -112,6 +113,78 @@ class TestProviderCancelReleases(unittest.TestCase):
         got, closed = asyncio.run(run())
         self.assertEqual(got, ("content", "chunk-1"))
         self.assertTrue(closed)
+
+
+def _sse_content(text: str) -> bytes:
+    payload = json.dumps({"choices": [{"delta": {"content": text}}]})
+    return f"data: {payload}\n".encode()
+
+
+class ReleasableResponse:
+    """可放行的 SSE 响应：吐首条后阻塞，release() 后继续，close() 则终止。"""
+
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.closed = False
+        self._released = threading.Event()
+        self._woken = threading.Event()
+
+    def release(self) -> None:
+        self._released.set()
+
+    def close(self) -> None:
+        self.closed = True
+        self._woken.set()
+
+    def iter_lines(self):
+        yield _sse_content(f"{self.tag}-1")
+        while not self._released.is_set() and not self.closed:
+            self._woken.wait(timeout=0.01)
+        if self.closed:
+            return
+        yield _sse_content(f"{self.tag}-2")
+        yield b"data: [DONE]"
+
+
+class TestConcurrentStreams(unittest.TestCase):
+    """同一 provider 实例并行两条流：取消一条不得影响另一条。
+
+    修复前 ``_stream_resp`` 是实例属性，第二条流会覆盖第一条的句柄；
+    ``aclose()`` 第一条时关掉的是第二条的连接。
+    """
+
+    def test_closing_one_stream_keeps_the_other_alive(self):
+        async def run():
+            resp_a = ReleasableResponse("A")
+            resp_b = ReleasableResponse("B")
+            responses = deque([resp_a, resp_b])
+            prov = OpenAI(ProviderConfig(api_base="http://fake", api_key="k"))
+            prov._request_with_retry = lambda *a, **k: responses.popleft()
+
+            ag_a = prov.stream_chunks(
+                LLMPayload(messages=[{"role": "user", "content": "a"}]))
+            ag_b = prov.stream_chunks(
+                LLMPayload(messages=[{"role": "user", "content": "b"}]))
+            # 先 A 后 B：实例属性此时已被 B 覆盖，正是旧实现的失手点
+            self.assertEqual(await ag_a.__anext__(), ("content", "A-1"))
+            self.assertEqual(await ag_b.__anext__(), ("content", "B-1"))
+
+            await ag_a.aclose()
+
+            self.assertTrue(resp_a.closed, "取消的流必须关闭自己的连接")
+            self.assertFalse(resp_b.closed, "取消 A 不得关闭 B 的连接")
+
+            resp_b.release()
+            rest = []
+            while True:
+                try:
+                    rest.append(
+                        await asyncio.wait_for(ag_b.__anext__(), 2))
+                except StopAsyncIteration:
+                    break
+            return rest
+
+        self.assertEqual(asyncio.run(run()), [("content", "B-2")])
 
 
 if __name__ == "__main__":
