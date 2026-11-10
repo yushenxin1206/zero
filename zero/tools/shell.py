@@ -9,6 +9,10 @@ from typing import Any
 from zero.permission.envelope import PermissionState
 from zero.tools.base import Tool
 
+# shell 超时（秒）：schema 描述/上限与执行默认值共用一个来源
+DEFAULT_TIMEOUT = 60
+MAX_TIMEOUT = 600
+
 # 内核沙箱拒绝的 stderr 特征（macOS：Operation not permitted）
 _DENIED_MARKERS = ("Operation not permitted", "sandbox-exec:")
 
@@ -65,10 +69,11 @@ class Shell(Tool):
                     "type": "integer",
                     "description": (
                         "Timeout in seconds. Increase for long-running commands "
-                        "like compilation or installation (default 60, max 600)."
+                        f"like compilation or installation (default {DEFAULT_TIMEOUT}, "
+                        f"max {MAX_TIMEOUT})."
                     ),
                     "minimum": 1,
-                    "maximum": 600,
+                    "maximum": MAX_TIMEOUT,
                 },
             },
             "required": ["command"],
@@ -77,7 +82,7 @@ class Shell(Tool):
     async def run(self, context=None, **kwargs):
         command = kwargs["command"]
         working_dir = kwargs.get("working_dir")
-        timeout = kwargs.get("timeout", 60)
+        timeout = kwargs.get("timeout", DEFAULT_TIMEOUT)
 
         if working_dir:
             working_dir = os.path.expanduser(working_dir)
