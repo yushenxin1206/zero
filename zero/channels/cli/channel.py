@@ -37,7 +37,7 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.models import MessageOut, StreamEvent
+from zero.models import MessageOut, StreamEvent, TokenUsage
 from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
@@ -242,7 +242,7 @@ class CLIChannel(BusChannel):
         acc = ""
         reason_acc = ""   # 本轮实时思考文本（仅展示，不参与最终回复、不落盘）
         status = ""
-        usage: dict | None = None
+        usage: TokenUsage | None = None
         last_render = 0.0  # 上次实际重绘的 monotonic 时刻（节流用）
         # vertical_overflow="ellipsis"：帧高度裁剪到终端高度以内，保证重绘时
         # 擦除的行数始终与屏幕一致（"visible" 下帧高于终端会擦除错位、叠出
@@ -359,9 +359,9 @@ class CLIChannel(BusChannel):
                 self._active_turn_id = ""
             if usage:
                 self.console.print(
-                    f"[dim]tokens: {usage.get('promptTokens', 0)} in / "
-                    f"{usage.get('completionTokens', 0)} out / "
-                    f"{usage.get('totalTokens', 0)} total[/dim]"
+                    f"[dim]tokens: {usage.prompt_tokens} in / "
+                    f"{usage.completion_tokens} out / "
+                    f"{usage.total_tokens} total[/dim]"
                 )
             self.console.print()
         # 终止提示：已生成片段已在 Live 终帧展示，这里补一行状态
