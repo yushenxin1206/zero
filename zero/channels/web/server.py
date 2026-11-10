@@ -40,7 +40,7 @@ from urllib.parse import parse_qs, urlsplit
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
-from zero.bus.queue import MessageBus
+from zero.bus.queue import BusQueueFull, MessageBus
 from zero.channels.base import BusChannel
 from zero.channels.service import ChannelService
 from zero.config import Config
@@ -332,7 +332,16 @@ class WebChannel(BusChannel):
         text = str(data.get("text") or "").strip()
         if not text:
             return
-        msg = await self.service.submit(text)
+        try:
+            msg = await self.service.submit(text)
+        except BusQueueFull:
+            # 队列拒绝必须在 ack 之前变成可见错误：不能回 queued 让前端
+            # 以为这轮已提交，然后永远等不到输出。
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "系统繁忙：消息队列已满，本条未发送，请稍后重试",
+            })
+            return
         await self._send(ws, {
             "type": "queued",
             "turnId": msg.id,

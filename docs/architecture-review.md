@@ -508,6 +508,14 @@
 
 **验收标准**：超限场景历史里不出现伪造的 assistant 回答；队列满时行为可预测。**代价**：低。
 
+**落地状态（已完成）**
+
+- [queue.py](../zero/bus/queue.py)：四条队列全部有界（in 64 / out 256 / stream 1024 / stop 16），新增 `BusQueueFull`；三种入队语义显式化——`enqueue` 等待（背压）、`enqueue_nowait` 拒绝、`enqueue_latest` 丢最旧。dispatcher 到 channel 的路由队列用 `enqueue_latest`：慢 channel 不能反压核心，丢最旧会记 error；终稿已落盘，流式以最终 `done` 为准。
+- 各入口的满队列策略：CLI/Web/飞书 fail-fast 并当场提示；Scheduler 不置 running、下一轮重试；subagent 回投等待（结果不可再生）。
+- [runner.py](../zero/core/runner.py)：`max_iterations` 耗尽改为 `error` 事件，子 agent 路径经 `run_subagent` 自动转 `RuntimeError`。
+- [loop.py](../zero/core/loop.py)：失败轮不再把 `[error] ...` 落盘为 assistant 正文，仅投递错误通知并 `end_turn(status="error")`；重载后该轮只保留用户消息。
+- 测试：`tests/test_bus.py`（拒绝/背压/丢最旧）、runner 超限事件、失败轮历史断言。
+
 ---
 
 ## 5. 建议执行顺序（按 ROI）

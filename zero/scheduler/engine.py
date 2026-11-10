@@ -14,7 +14,7 @@ import asyncio
 import logging
 from datetime import datetime
 
-from zero.bus.queue import MessageBus
+from zero.bus.queue import BusQueueFull, MessageBus
 from zero.models import MessageBody, MessageIn, Origin
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.cron import next_run
@@ -51,17 +51,24 @@ class Scheduler:
     async def _dispatch(self, task: ScheduleTask, now: datetime) -> None:
         logger.info("Dispatching scheduled task id=%s type=%s at %s", task.id, task.schedule_type, now.isoformat())
 
-        # 标记为正在执行并投递触发消息
-        self.store.update_status(task.id, "running")
-        await self.msg_bus.in_queue.enqueue(
-            MessageIn(
-                session_id=task.session_id,
-                channel=task.channel,
-                body=MessageBody(content=task.instruction),
-                origin=Origin(kind="scheduler", task_id=task.id),
-                channel_session_id=task.channel_session_id,
+        # 先入队再置 running：入队被拒时任务保持原状态，下一轮轮询自然重试。
+        # 反过来会留下「running 但从未派发」的僵尸任务，且本轮 cron 已推进，
+        # 这次触发就永久丢了。
+        try:
+            self.msg_bus.in_queue.enqueue_nowait(
+                MessageIn(
+                    session_id=task.session_id,
+                    channel=task.channel,
+                    body=MessageBody(content=task.instruction),
+                    origin=Origin(kind="scheduler", task_id=task.id),
+                    channel_session_id=task.channel_session_id,
+                )
             )
-        )
+        except BusQueueFull:
+            logger.warning(
+                "入站队列已满，定时任务 %s 本轮未派发，下轮重试", task.id)
+            return
+        self.store.update_status(task.id, "running")
 
         if task.schedule_type == "recurring":
             # 推进到 cron 的下一次触发，任务回到 pending 继续参与调度

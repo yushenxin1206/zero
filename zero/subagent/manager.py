@@ -144,6 +144,8 @@ class SubagentManager:
         ToolContext，AgentLoop 处理后把最终回复送回父会话；origin 标记为
         subagent 并带上子任务 id，供 channel 端区分后台结果来源。
         """
+        # 等待空位而不是 fail-fast：子任务结果不可再生，丢了主对话永远
+        # 等不到回投；这是后台协程，背压等待不会卡住任何用户交互。
         await self.msg_bus.in_queue.enqueue(
             MessageIn(
                 session_id=tool_context.session_id,

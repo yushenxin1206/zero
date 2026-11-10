@@ -257,24 +257,17 @@ class AgentLoop:
             return
 
         stat.tokens = final_usage
-        content = reply_text
-
-        # 出错时把原因以 [error] 标签接在正文后一并落盘。空正文
-        # 不再直接丢弃：否则历史里只剩一条悬空的用户消息，下一
-        # 轮模型无从得知为何没有回复；部分截断也借此标明"这半句
-        # 被剪断了"，避免被当成完整答复。
-        if saw_error is not None:
+        failed = saw_error is not None
+        if failed:
             stat.status = "error"
             stat.error = saw_error
-            note = f"[error] {saw_error}"
-            content = (
-                f"{content}\n\n{note}" if content.strip() else note)
 
         msg_out = MessageOut(
             session_id=msg_in.session_id,
             channel=msg_in.channel,
             body=MessageBody(
-                content=content,
+                # 失败轮只发一条错误通知，不携带残缺正文
+                content=f"[error] {saw_error}" if failed else reply_text,
                 token_usage=final_usage,
             ),
             origin=msg_in.origin,
@@ -283,14 +276,21 @@ class AgentLoop:
             turn_id=msg_in.id,
             channel_session_id=msg_in.channel_session_id,
         )
-        await asyncio.to_thread(
-            self.session_store.append, msg_out)
+        if not failed:
+            # 失败轮不落盘为 assistant 正文：错误是系统事实，不是模型说过的
+            # 话。落盘会让下一轮模型把系统提示当成自己的历史发言，也会让
+            # 子 agent 把超限/截断误当有效结果。重载后该轮只保留用户消息。
+            await asyncio.to_thread(
+                self.session_store.append, msg_out)
+        # 仍投递 MessageOut：只渲染终稿的通道（飞书）靠它看到失败原因；
+        # CLI/Web 已在 error 流事件上展示过，按 turn 去重不会重复渲染。
         await self.msg_bus.out_queue.enqueue(msg_out)
         # 本轮最后一条消息之后闭合事务；缺这一行的轮次就是
         # 崩溃残留，加载时整轮丢弃而不是补占位。
         await asyncio.to_thread(
             self.session_store.end_turn,
-            msg_in.channel, msg_in.session_id, msg_in.id)
+            msg_in.channel, msg_in.session_id, msg_in.id,
+            status="error" if failed else "ok")
 
     async def _finish_cancelled(self, msg_in: MessageIn, partial: str = ""):
         """取消收尾：广播 cancelled done 事件、回最终 MessageOut、闭合轮次。

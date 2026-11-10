@@ -142,6 +142,23 @@ def test_finish_stop_is_normal():
     assert normal[-1].content == "完整的答复", "正常轮次的 done 正文不正确"
 
 
+def test_max_iterations_is_error_not_done():
+    """迭代超限是失败，不能伪装成 done（否则会被当终稿落盘/回投）。"""
+    runner = make_runner([
+        ("tool_calls", {
+            "index": 0, "id": "call-1",
+            "function": {"name": "noop", "arguments": "{}"},
+        }),
+    ])
+    runner.runtime_config.max_iterations = 1
+
+    events = collect(runner)
+    assert [e.kind for e in events] == ["tool_call", "error"], \
+        f"超限应产出 error，实际 {[e.kind for e in events]}"
+    assert not [e for e in events if e.kind == "done"], "超限不应产出 done"
+    assert "max_iterations=1" in events[-1].content, "报错应带超限原因"
+
+
 # ---------------------------------------------------------------------------
 # C1. CLI 渲染：帧组合、占位与尾部裁剪
 # ---------------------------------------------------------------------------

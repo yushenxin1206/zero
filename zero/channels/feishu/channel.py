@@ -23,7 +23,7 @@ from lark_oapi.api.im.v1 import (
     CreateMessageResponse,
 )
 
-from zero.bus.queue import MessageBus, MessageOutQueue
+from zero.bus.queue import BusQueueFull, MessageBus, MessageOutQueue
 from zero.models import (
     FeishuConfig, MessageBody, MessageIn, MessageOut, StreamEvent)
 from zero.session.store import SessionStore
@@ -155,14 +155,24 @@ class FeishuChannel:
             # Push to bus from WS thread → asyncio loop
             if self.msg_bus and self._loop and self._loop.is_running():
                 asyncio.run_coroutine_threadsafe(
-                    self.msg_bus.in_queue.enqueue(msg_in),
-                    self._loop,
-                )
+                    self._submit(msg_in, chat_id), self._loop)
             else:
                 logger.warning("MessageBus or event loop not available, message dropped")
 
         except Exception:
             logger.exception("Error handling Feishu message event")
+
+    async def _submit(self, msg_in: MessageIn, chat_id: str) -> None:
+        """把入站消息投递到总线；队列满时直接在该会话里回执。
+
+        在事件循环线程执行（WS 回调用 run_coroutine_threadsafe 调度）。
+        拒绝必须让用户看见，否则飞书侧只会表现为「发了没反应」。
+        """
+        try:
+            self.msg_bus.in_queue.enqueue_nowait(msg_in)
+        except BusQueueFull:
+            logger.warning("Feishu 入站队列已满，拒绝 chat_id=%s", chat_id)
+            await self.send_text(chat_id, "系统繁忙：消息队列已满，请稍后重试")
 
     # ------------------------------------------------------------------
     # Start / Stop

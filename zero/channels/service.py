@@ -260,9 +260,13 @@ class ChannelService:
         )
 
     async def submit(self, text: str) -> MessageIn:
-        """Enqueue a user turn and return the message that identifies it."""
+        """Enqueue a user turn and return the message that identifies it.
+
+        Raises ``BusQueueFull`` when the bus is saturated: the caller must
+        surface the rejection instead of pretending the turn was accepted.
+        """
         message = self.make_input(text)
-        await self.msg_bus.in_queue.enqueue(message)
+        self.msg_bus.in_queue.enqueue_nowait(message)
         return message
 
     async def request_stop(self, turn_id: str) -> None:

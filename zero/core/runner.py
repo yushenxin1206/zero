@@ -258,8 +258,19 @@ class AgentRunner:
                         )
                 raise
 
-        logger.warning("Agent runner exceeded max_iterations=%d", self.runtime_config.max_iterations)
-        yield StreamEvent(kind="done", content="Agent runner exceeded max_iterations.")
+        logger.warning(
+            "Agent runner exceeded max_iterations=%d",
+            self.runtime_config.max_iterations)
+        # 超限是失败，不是一种「回答」：不能发 done，否则会被当成正常终稿
+        # 落盘、渲染，甚至被子 agent 当成有效结果回投。error 事件让 channel
+        # 展示失败、让 run_subagent 抛 RuntimeError。
+        yield StreamEvent(
+            kind="error",
+            content=(
+                "agent 循环达到最大迭代次数"
+                f"（max_iterations={self.runtime_config.max_iterations}），"
+                "本轮未完成，未产出最终回复"),
+        )
 
     @staticmethod
     def _accumulate_tool_call(acc: dict[int, dict], raw: dict) -> None:

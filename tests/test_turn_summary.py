@@ -152,6 +152,22 @@ def test_error_turn_summary_keeps_reason_on_one_line(monkeypatch, caplog):
     assert "\n" not in stat["error"]
 
 
+def test_error_turn_is_not_persisted_as_assistant(monkeypatch, caplog):
+    """失败轮只投递错误通知，不把错误写成模型说过的话。"""
+    caplog.set_level(logging.INFO, logger="zero.core.loop")
+    install_runner(monkeypatch, [
+        StreamEvent(
+            kind="error",
+            content="agent 循环达到最大迭代次数（max_iterations=1）"),
+    ])
+    msg = asyncio.run(run_turn())
+
+    history = make_store().load_history(SESSION, "cli")
+    assert [m.sender for m in history] == ["user"], \
+        "失败轮不应在历史里留下 assistant 正文"
+    assert history[0].id == msg.id
+
+
 @pytest.mark.parametrize("missing", ["channel", "session"])
 def test_summary_fields_always_present(monkeypatch, caplog, missing):
     """三个状态共用同一格式：字段缺失会在这里暴露。"""

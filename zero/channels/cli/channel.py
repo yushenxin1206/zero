@@ -29,6 +29,7 @@ import time
 from rich.console import Console
 from rich.live import Live
 
+from zero.bus.queue import BusQueueFull
 from zero.channels.base import BusChannel
 from zero.channels.cli.approval import CliApproval
 from zero.channels.cli.background import CliBackground
@@ -155,10 +156,16 @@ class CLIChannel(BusChannel):
                 continue
 
             msg = self.service.make_input(text)
-            # 先入激活 turn 再入队，保证 listener 不会把本轮最早的事件
-            # 误判成后台 turn
+            # 入队是同步的（满了立即失败）：先入队再登记活跃 turn，中间没有
+            # 让出事件循环的 await，listener 不可能提前看到本轮事件。
+            # 队列满是可见的拒绝，不能假装已提交然后无回应。
+            try:
+                self.msg_bus.in_queue.enqueue_nowait(msg)
+            except BusQueueFull:
+                self.console.print(
+                    "[red]系统繁忙：消息队列已满，本条未发送，请稍后重试[/red]")
+                continue
             self._active_turn_id = msg.id
-            await self.msg_bus.in_queue.enqueue(msg)
             # 流式中 Ctrl+C 由 _render_turn 捕获并转为终止请求；空闲时
             # Ctrl+C（prompt_async 抛 KeyboardInterrupt）走上面的退出分支
             await self._render_turn(msg.id)
