@@ -17,7 +17,7 @@ from rich.table import Table
 
 from zero.channels.cli.input import CliInput
 from zero.channels.cli.prompt import COMMANDS
-from zero.channels.cli.renderer import CliRenderer
+from zero.channels.cli.renderer import SESSION_LIST_LIMIT, CliRenderer
 from zero.channels.service import ChannelService
 from zero.models import SHORT_ID_LEN
 from zero.scheduler.models import (
@@ -76,7 +76,7 @@ class CliCommands:
             if choice in ("n", "new"):
                 self.service.new_session()
                 return True
-            if choice.isdigit() and 1 <= int(choice) <= min(len(sessions), 20):
+            if choice.isdigit() and 1 <= int(choice) <= min(len(sessions), SESSION_LIST_LIMIT):
                 entry = sessions[int(choice) - 1]
                 self.service.bind(entry.source_id, entry.session_id)
                 return True

@@ -37,6 +37,9 @@ TRUNCATED = "...truncated"
 _FRAME_RESERVED_LINES = 3
 _FRAME_MIN_LINES = 6
 
+# 会话选择器展示/可选的最大条目数（renderer 展示与 commands 校验共用）
+SESSION_LIST_LIMIT = 20
+
 
 class CliRenderer:
     """rich-based presentation layer for one terminal channel."""
@@ -234,7 +237,7 @@ class CliRenderer:
         table.add_column("最近更新")
         table.add_column("标题")
         table.add_column("会话 ID", style="dim")
-        for i, s in enumerate(sessions[:20], 1):
+        for i, s in enumerate(sessions[:SESSION_LIST_LIMIT], 1):
             marker = " [bold green]← 当前[/]" if s.session_id == current_id else ""
             title = (f"[dim]{escape(s.title)}[/dim]" if s.title_is_derived
                      else escape(s.title)) if s.title else "[dim]-[/dim]"
