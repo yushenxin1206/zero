@@ -43,6 +43,14 @@ SESSION_LIST_LIMIT = 20
 # 任务指令展示宽度：任务表与后台结果副标题保持一致
 TASK_INSTRUCTION_MAX = 40
 
+# 面板最小宽度；实际宽度为终端宽度减 1（给滚动条/边缘留一格）
+PANEL_MIN_WIDTH = 20
+
+
+def panel_width(console_width: int) -> int:
+    """审批面板与渲染面板共用的宽度规则。"""
+    return max(PANEL_MIN_WIDTH, console_width - 1)
+
 
 class CliRenderer:
     """rich-based presentation layer for one terminal channel."""
@@ -66,7 +74,7 @@ class CliRenderer:
         终端对 emoji 的单元格宽度计算与 rich 不一致，右边框贴边时
         容易看起来"没有闭合"。
         """
-        kwargs.setdefault("width", max(20, self.console.width - 1))
+        kwargs.setdefault("width", panel_width(self.console.width))
         return Panel(renderable, **kwargs)
 
     def assistant_panel(self, text: str):

@@ -14,13 +14,14 @@ import sys
 import threading
 import time
 
+from pydantic import ValidationError
 from rich.console import Console
 from rich.live import Live
 from rich.markup import escape
 from rich.panel import Panel
-from pydantic import ValidationError
 
 from zero.bus.queue import ApprovalBroker
+from zero.channels.cli.renderer import panel_width
 from zero.models import APPROVAL_TIMEOUT_SECONDS, ApprovalRequest, StreamEvent
 
 logger = logging.getLogger(__name__)
@@ -112,7 +113,7 @@ class CliApproval:
         return ""
 
     def _panel(self, body: str, **kwargs) -> Panel:
-        kwargs.setdefault("width", max(20, self.console.width - 1))
+        kwargs.setdefault("width", panel_width(self.console.width))
         kwargs.setdefault("title_align", "left")
         kwargs.setdefault("border_style", "yellow")
         return Panel(body, **kwargs)
