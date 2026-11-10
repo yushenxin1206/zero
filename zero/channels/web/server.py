@@ -46,6 +46,7 @@ from zero.channels.service import ChannelService
 from zero.config import Config
 from zero.models import MessageOut, StreamEvent
 from zero.paths import Paths
+from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
 from zero.scheduler.store import SchedulerStore
 
@@ -61,11 +62,13 @@ class WebChannel(BusChannel):
 
     def __init__(self, msg_bus: MessageBus, session_store: SessionStore,
                  scheduler_store: SchedulerStore, paths: Paths,
+                 permission: PermissionState,
                  config: Config | None = None):
         super().__init__(msg_bus)
         self.service = ChannelService(
             CHANNEL, msg_bus=msg_bus, session_store=session_store,
-            scheduler_store=scheduler_store, paths=paths, config=config)
+            scheduler_store=scheduler_store, paths=paths,
+            permission=permission, config=config)
         self.web_config = config.channels.web if config is not None else None
 
         self._clients: set[ServerConnection] = set()

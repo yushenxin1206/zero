@@ -5,10 +5,14 @@ macOS 内核沙箱后端（Seatbelt / sandbox-exec）。
 提供一次性执行。
 
 **本模块不 import ``envelope``**——包络以 duck typing 传入（需要
-``deny_read()`` / ``write_roots()`` / ``network`` 三个成员），因此依赖方向是
+``deny_read`` / ``write_roots()`` / ``network`` 三个成员），因此依赖方向是
 ``envelope → seatbelt`` 单向，不会成环。
 
-非 macOS 上本模块的逻辑仍可调用，只是 ``envelope.available()`` 会返回 False。
+非 macOS 上本模块的逻辑仍可调用，只是 ``PermissionState.available()`` 会返回
+False。
+
+profiles 目录由调用方显式传入（通常是 ``PermissionState.paths.profiles``）：
+本模块不读进程级路径，也不在 import 时冻结任何数据根。
 """
 
 from __future__ import annotations
@@ -21,17 +25,10 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from zero.paths import current
-
 logger = logging.getLogger(__name__)
 
 SEATBELT_EXEC = Path("/usr/bin/sandbox-exec")
 PROBE_MARK = ".seatbelt-probe"  # 探针标记，落在 profiles 目录内（不污染用户仓库）
-
-
-def _profiles_dir() -> Path:
-    """沙箱 profile 的临时目录，随当前数据根结算（不 import 时冻结）。"""
-    return current().profiles
 
 
 class SeatbeltError(Exception):
@@ -49,12 +46,12 @@ def _quote(path: Path) -> str:
     return f'"{s}"'
 
 
-def _probe_mark() -> Path:
+def _probe_mark(profiles_dir: Path) -> Path:
     """探针标记的真实路径。恒定为 deny 项，是"deny 真的生效"的判据。"""
-    return Path(os.path.realpath(_profiles_dir() / PROBE_MARK))
+    return Path(os.path.realpath(profiles_dir / PROBE_MARK))
 
 
-def render_profile(env: Any) -> str:
+def render_profile(env: Any, profiles_dir: Path) -> str:
     """包络 → SBPL 文本。字面量插值，cat 出来即最终语义，可直接审计。"""
     out = [
         "(version 1)",
@@ -84,9 +81,9 @@ def render_profile(env: Any) -> str:
         "(allow file-read*)",
         "(deny file-read*",
     ]
-    for p in env.deny_read():
+    for p in env.deny_read:
         out.append(f"  (subpath {_quote(p)})")
-    out.append(f"  (subpath {_quote(_probe_mark())})")
+    out.append(f"  (subpath {_quote(_probe_mark(profiles_dir))})")
     out.append(")")
     out.append("")
 
@@ -113,13 +110,14 @@ def render_profile(env: Any) -> str:
 # 包裹
 # ---------------------------------------------------------------------------
 
-def wrap(argv: list[str], profile_text: str) -> tuple[list[str], Path]:
+def wrap(argv: list[str], profile_text: str,
+         profiles_dir: Path) -> tuple[list[str], Path]:
     """把 argv 包进 sandbox-exec。返回 (新 argv, profile 路径)，调用方负责 unlink。
 
     profiles 目录 0700 且不在写集合内 → 沙箱内进程改不了它（deny default 兜底）。
     不加 /bin/sh -c，保持"无 shell 语义"不变。
     """
-    profiles = _profiles_dir()
+    profiles = profiles_dir
     profiles.mkdir(parents=True, exist_ok=True)
     try:
         os.chmod(profiles, 0o700)
@@ -131,12 +129,12 @@ def wrap(argv: list[str], profile_text: str) -> tuple[list[str], Path]:
     return [str(SEATBELT_EXEC), "-f", name, *argv], Path(name)
 
 
-def run_isolated(profile_text: str,
-                 argv: list[str]) -> subprocess.CompletedProcess:
+def run_isolated(profile_text: str, argv: list[str],
+                 profiles_dir: Path) -> subprocess.CompletedProcess:
     """在给定 profile 下一次性执行 argv（自检探针用）。profile 用完即删。"""
     path: Path | None = None
     try:
-        wrapped, path = wrap(argv, profile_text)
+        wrapped, path = wrap(argv, profile_text, profiles_dir)
         return subprocess.run(wrapped, capture_output=True, timeout=15)
     except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
         logger.warning("探针执行失败 %s：%s", argv, e)

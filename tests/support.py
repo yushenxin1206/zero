@@ -5,6 +5,7 @@ import time
 
 from zero.config import Config
 from zero.paths import Paths, current
+from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
@@ -22,6 +23,11 @@ def make_paths() -> Paths:
 def make_scheduler_store() -> SchedulerStore:
     """测试边界：按当前隔离根构造调度任务存储。"""
     return SchedulerStore(current().tasks)
+
+
+def make_permission() -> PermissionState:
+    """测试边界：按当前隔离根构造权限状态（探针、扩权表、策略文件）。"""
+    return PermissionState(current(), SessionStore(current().sessions))
 
 
 def make_test_config() -> Config:

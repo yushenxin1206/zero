@@ -17,6 +17,7 @@ from uuid import uuid4
 from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
+from zero.permission.envelope import PermissionState
 from zero.models import Message, MessageBody, MessageIn, StopRequest
 from zero.paths import Paths
 from zero.scheduler.models import ScheduleTask
@@ -58,6 +59,7 @@ class ChannelService:
         session_store: SessionStore,
         scheduler_store: SchedulerStore,
         paths: Paths,
+        permission: PermissionState,
         config: Config | None = None,
         tool_registry: ToolRegistry | None = None,
         source_prefix: str | None = None,
@@ -73,6 +75,8 @@ class ChannelService:
         self.session_store = session_store
         self.scheduler_store = scheduler_store
         self.paths = paths
+        # 切换模型时要重建 Context（含环境段），权限状态随之显式传入
+        self.permission = permission
         self._binding_path = (
             session_store.root / channel / f".{channel}_current.json")
 
@@ -237,7 +241,8 @@ class ChannelService:
         return await switch_model(
             config=self.config, channel=self.channel,
             session_id=self.session_id, new_model=name,
-            session_store=self.session_store, paths=self.paths, tools=tools)
+            session_store=self.session_store, paths=self.paths,
+            permission=self.permission, tools=tools)
 
     # ------------------------------------------------------------------
     # Turns

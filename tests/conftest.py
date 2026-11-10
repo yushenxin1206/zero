@@ -14,6 +14,7 @@ TMPDIR root and invalidate the assertions.
 import pytest
 
 from zero.paths import configure, current
+from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
@@ -38,3 +39,9 @@ def session_store(isolated_state):
 def scheduler_store(isolated_state):
     """测试边界：按当前隔离根构造调度任务存储。"""
     return SchedulerStore(current().tasks)
+
+
+@pytest.fixture
+def permission(isolated_state):
+    """测试边界：按当前隔离根构造权限状态。"""
+    return PermissionState(current(), SessionStore(current().sessions))

@@ -15,7 +15,7 @@ from xml.sax.saxutils import escape
 import frontmatter
 
 from zero.models import Message, MessageBody, CompactRecord, ToolContext
-from zero.permission import envelope
+from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
@@ -96,14 +96,17 @@ class Context:
             channel: str,
             session_store: SessionStore,
             paths: Paths,
+            permission: PermissionState,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
-        # 会话存储与数据根由组合根/上层上下文显式传入：本类不读进程级路径
+        # 会话存储、数据根与权限状态由组合根/上层上下文显式传入：
+        # 本类不读进程级路径
         self.session_store = session_store
         self.paths = paths
+        self.permission = permission
         self.tool_registry = tool_registry
         self.tool_context = tool_context or ToolContext(
             channel=channel,
@@ -215,7 +218,7 @@ class Context:
                        or self.session_store.session_dir(
                            self.channel, self.session_id))
         # 沙箱是否真的在跑以探针为准（可用时包络内免审批，否则每条 shell 走审批）
-        sandbox_note = (SHELL_SANDBOX_NOTE if envelope.available()
+        sandbox_note = (SHELL_SANDBOX_NOTE if self.permission.available()
                         else SHELL_APPROVAL_NOTE)
         return f"""\
 ## Environment
@@ -371,6 +374,7 @@ class SubAgentContext(Context):
             *,
             session_store: SessionStore,
             paths: Paths,
+            permission: PermissionState,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
             system_prompt: str | None = None,
@@ -383,6 +387,7 @@ class SubAgentContext(Context):
             channel=tc.channel,
             session_store=session_store,
             paths=paths,
+            permission=permission,
             tool_registry=tool_registry,
             tool_context=tc,
         )
@@ -465,7 +470,9 @@ if __name__ == "__main__":
     _ctx = Context(
         session_id="doc", channel="cli",
         session_store=SessionStore(current().sessions),
-        paths=current())
+        paths=current(),
+        permission=PermissionState(
+            current(), SessionStore(current().sessions)))
     _out = PKG_ROOT / "docs" / "prompt.md"
     _out.write_text(
         "<!-- 本文件由 `python core/context.py` 生成，请勿手改 -->\n\n"

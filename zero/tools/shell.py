@@ -6,8 +6,7 @@ import os
 import shlex
 from typing import Any
 
-from zero.permission import envelope, seatbelt
-from zero.session.store import SessionStore
+from zero.permission.envelope import PermissionState
 from zero.tools.base import Tool
 
 # 内核沙箱拒绝的 stderr 特征（macOS：Operation not permitted）
@@ -28,9 +27,9 @@ _NETWORK_HINT = (
 
 class Shell(Tool):
 
-    def __init__(self, *, session_store: SessionStore):
-        # 沙箱包络需要会话目录，存储由组合根显式注入
-        self.session_store = session_store
+    def __init__(self, *, permission: PermissionState):
+        # 包络、探针缓存与 profiles 目录都在权限状态对象里，由组合根注入
+        self.permission = permission
 
     @property
     def name(self):
@@ -92,11 +91,11 @@ class Shell(Tool):
         argv: list[str] = []
         if not is_windows:
             argv = shlex.split(command)
-            if envelope.available() and not envelope.matches_unsandbox(argv):
-                env = envelope.current_envelope(
-                    context, session_store=self.session_store)
-                profile = seatbelt.render_profile(env)
-                argv, profile_path = seatbelt.wrap(argv, profile)
+            if (self.permission.available()
+                    and not self.permission.matches_unsandbox(argv)):
+                env = self.permission.envelope(context)
+                profile = self.permission.render_profile(env)
+                argv, profile_path = self.permission.wrap(argv, profile)
 
         try:
             if is_windows:

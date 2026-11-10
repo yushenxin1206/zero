@@ -9,7 +9,7 @@ import contextlib
 
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
-from tests.support import make_paths, make_store
+from tests.support import make_paths, make_permission, make_store
 from zero.models import (
     AgentRuntimeConfig,
     CompactConfig,
@@ -132,7 +132,7 @@ def test_snapshot_semantics():
     """turn 内不感知外部写入，record() 立即反映。"""
     sid = fresh_session("src-snapshot")
     make_store().append(make_msg("user", "第一条", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths())
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths(), permission=make_permission())
 
     assert [m["role"] for m in ctx.messages] == ["system", "user"]
 
@@ -145,14 +145,14 @@ def test_snapshot_semantics():
     assert len(ctx.messages) == 3
     assert ctx.messages[-1] == {"role": "assistant", "content": "回复"}
     # record 也写入磁盘（新 Context 能看到：system + 3 条消息）
-    assert len(Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths()).messages) == 4
+    assert len(Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths(), permission=make_permission()).messages) == 4
 
 
 def test_compaction_view_rebuild():
     """压缩回写后无需重读盘即可合成 [压缩] + 尾部。"""
     sid = fresh_session("src-compact-view")
     seed_big(sid)
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths())
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths(), permission=make_permission())
     assert asyncio.run(
         make_compactor(FakeProvider()).maybe_compress(ctx)) is True
 
@@ -169,7 +169,7 @@ def test_per_turn_single_read():
     """模拟完整 turn（N 次迭代）只读一次盘。"""
     sid = fresh_session("src-turn-count")
     make_store().append(make_msg("user", "任务", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths())
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), paths=make_paths(), permission=make_permission())
     comp = make_compactor(FakeProvider())
 
     with count_reads() as counter:
@@ -184,7 +184,7 @@ def test_per_turn_single_read():
 
 def test_subagent_isolation():
     """子 agent 纯内存上下文不触盘。"""
-    sub = SubAgentContext("子任务", session_store=make_store(), paths=make_paths())
+    sub = SubAgentContext("子任务", session_store=make_store(), paths=make_paths(), permission=make_permission())
     with count_reads() as counter:
         _ = sub.messages
         sub.record(make_msg("assistant", "子回复"))

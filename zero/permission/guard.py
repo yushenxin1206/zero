@@ -6,9 +6,9 @@
     G  可授予       → 审批面板
     D  不可授予     → 结构化拒绝，**永不进面板**
 
-审批状态只有两处——会话级扩权表（``envelope``）与 ``~/.zero/profile.json``
-（用户资产）。没有 TTL、没有轮次表：要长期放行就落 profile.json，
-其余随会话消失。
+审批状态只有两处——会话级扩权表（``PermissionState`` 内存表）与
+``~/.zero/profile.json``（用户资产）。没有 TTL、没有轮次表：要长期放行就落
+profile.json，其余随会话消失。
 
 无人值守渠道（scheduler / subagent / 非交互渠道）一律 fail-closed：
 只放行 P 档，G 档拒绝并引导用户预置 ``zero-permission add-root``。
@@ -24,7 +24,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import ApprovalOption, ApprovalRequest, StreamEvent
 from zero.permission import envelope
-from zero.session.store import SessionStore
+from zero.permission.envelope import PermissionState
 
 logger = logging.getLogger(__name__)
 
@@ -122,11 +122,11 @@ class PermissionGuard:
 
     def __init__(
             self, msg_bus: MessageBus | None = None, *,
-            session_store: SessionStore,
+            permission: PermissionState,
     ):
         self.msg_bus = msg_bus
-        # 包络推导会话目录需要会话存储，由组合根显式传入
-        self.session_store = session_store
+        # 探针缓存、会话扩权表与策略文件路径都在权限状态对象里，由组合根注入
+        self.permission = permission
 
     def _attended(self, ctx: HookContext) -> bool:
         """有人能回答审批吗？非交互渠道与后台来源都算无人值守。
@@ -190,7 +190,7 @@ class PermissionGuard:
     # ------------------------------------------------------------------
 
     def _check_read(self, path: str, ctx: HookContext) -> ToolCallDecision | None:
-        verdict = envelope.check_readable(path, ctx)
+        verdict = self.permission.check_readable(path, ctx)
         if verdict.ok:
             return None
         return ToolCallDecision(
@@ -213,8 +213,7 @@ class PermissionGuard:
         refused: list[str] = []
         pending: list[str] = []
         for raw in paths:
-            verdict = envelope.check_writable(
-                raw, ctx, session_store=self.session_store)
+            verdict = self.permission.check_writable(raw, ctx)
             if verdict.ok:
                 continue                          # 已在包络内，无需申请
             if verdict.tier == envelope.D:
@@ -240,12 +239,12 @@ class PermissionGuard:
         )
         if answer == "s":
             for p in pending:
-                envelope.grant_write_root(p, ctx, "session")
+                self.permission.grant_write_root(p, ctx, "session")
             return ToolCallDecision(
                 note=f"用户已批准扩权（本会话）：{'、'.join(pending)}")
         if answer == "a":
             for p in pending:
-                envelope.grant_write_root(p, ctx, "always")
+                self.permission.grant_write_root(p, ctx, "always")
             return ToolCallDecision(
                 note=f"用户已批准扩权（总是）：{'、'.join(pending)}")
         return ToolCallDecision(
@@ -262,14 +261,14 @@ class PermissionGuard:
         argv = shlex.split(command) if command else []
 
         # ---- 沙箱不可用：没有「包络内免审批」，每次都要问（fail-closed）----
-        if not envelope.available():
+        if not self.permission.available():
             if not self._attended(ctx):
                 return ToolCallDecision(proceed=False, reason=_DEGRADED_UNATTENDED)
             answer = await request(
                 self.msg_bus, ctx,
                 title="shell 命令审批（内核沙箱不可用）",
                 summary=command,
-                detail=envelope.unavailable_reason(),
+                detail=self.permission.unavailable_reason(),
                 options=_YN,
             )
             if answer == "y":
@@ -279,7 +278,7 @@ class PermissionGuard:
                 proceed=False, reason="permission: 用户拒绝（内核沙箱不可用）")
 
         # ---- 脱离沙箱白名单：强制审批，不给「总是」----
-        if envelope.matches_unsandbox(argv):
+        if self.permission.matches_unsandbox(argv):
             if not self._attended(ctx):
                 return ToolCallDecision(
                     proceed=False, reason=_UNATTENDED_UNSANDBOX)
@@ -308,9 +307,9 @@ class PermissionGuard:
 
 def install(
         hooks, msg_bus: MessageBus | None = None, *,
-        session_store: SessionStore,
+        permission: PermissionState,
 ) -> PermissionGuard:
     """组合根入口。msg_bus 不传则所有审批一律 fail-closed。"""
-    guard = PermissionGuard(msg_bus, session_store=session_store)
+    guard = PermissionGuard(msg_bus, permission=permission)
     hooks.on_before_tool_call(guard)
     return guard

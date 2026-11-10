@@ -111,10 +111,11 @@ class HookChain(Hooks):
 ## 5. 组合根
 
 ```python
-def build_hooks(msg_bus: MessageBus) -> Hooks:
+def build_hooks(msg_bus: MessageBus,
+                permission: PermissionState) -> Hooks:
     chain = HookChain()
     from zero.permission.guard import install
-    install(chain, msg_bus)
+    install(chain, msg_bus, permission=permission)
     assert chain.handlers_for("before_tool_call"), \
         "permission guard 未注册到 hook 链：shell 权限将 fail-open"
     return chain

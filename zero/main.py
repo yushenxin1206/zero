@@ -20,6 +20,7 @@ from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
 from zero.paths import Paths, configure
+from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 from zero.utils.log_setup import setup_logging
@@ -33,18 +34,20 @@ SUBAGENT_EXCLUDED_TOOLS = frozenset({"subagent"})
 
 
 def build_tool_registry(session_store: SessionStore,
-                        scheduler_store: SchedulerStore) -> ToolRegistry:
+                        scheduler_store: SchedulerStore,
+                        permission: PermissionState) -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(Read())
     registry.register(Write())
     registry.register(Edit())
-    registry.register(Shell(session_store=session_store))
+    registry.register(Shell(permission=permission))
     registry.register(CreateScheduledTask(store=scheduler_store))
     registry.register(CancelScheduledTask(store=scheduler_store))
     return registry
 
 
-def build_hooks(msg_bus: MessageBus, session_store: SessionStore) -> Hooks:
+def build_hooks(msg_bus: MessageBus,
+                permission: PermissionState) -> Hooks:
     """组合根：构建 hook 链并挂上权限守卫。
 
     守卫装不上（import 失败、install 提前返回）时 hook 链为空，shell
@@ -52,8 +55,8 @@ def build_hooks(msg_bus: MessageBus, session_store: SessionStore) -> Hooks:
     """
     chain = HookChain()
     from zero.permission.guard import install
-    # msg_bus 供 CLI 就地审批路由；session_store 供包络推导会话目录
-    install(chain, msg_bus, session_store=session_store)
+    # msg_bus 供 CLI 就地审批路由；permission 提供探针、扩权表与策略文件
+    install(chain, msg_bus, permission=permission)
     assert chain.handlers_for("before_tool_call"), \
         "permission guard 未注册到 hook 链：shell 权限将 fail-open"
     return chain
@@ -64,12 +67,14 @@ def build_agent_loop(msg_bus: MessageBus,
                      hooks: Hooks,
                      config: Config,
                      session_store: SessionStore,
-                     paths: Paths) -> AgentLoop:
+                     paths: Paths,
+                     permission: PermissionState) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
         paths=paths,
+        permission=permission,
         tool_registry=tool_registry,
         hooks=hooks,
     )
@@ -88,6 +93,7 @@ class CoreRuntime:
     msg_bus: MessageBus
     session_store: SessionStore
     scheduler_store: SchedulerStore
+    permission: PermissionState
     tool_registry: ToolRegistry
     hooks: Hooks
     subagent_manager: SubagentManager
@@ -100,8 +106,9 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
     msg_bus = MessageBus()
     session_store = SessionStore(paths.sessions)
     scheduler_store = SchedulerStore(paths.tasks)
-    registry = build_tool_registry(session_store, scheduler_store)
-    hooks = build_hooks(msg_bus, session_store)
+    permission = PermissionState(paths, session_store)
+    registry = build_tool_registry(session_store, scheduler_store, permission)
+    hooks = build_hooks(msg_bus, permission)
     # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
     # 同一条链——permission.guard 对子 agent 的需审批命令直接 fail-closed
     subagent_manager = SubagentManager(
@@ -109,17 +116,20 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
         config=config,
         session_store=session_store,
         paths=paths,
+        permission=permission,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
         hooks=hooks,
     )
     registry.register(SubagentTool(subagent_manager))
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,
-        config=config, session_store=session_store, paths=paths)
+        config=config, session_store=session_store, paths=paths,
+        permission=permission)
     return CoreRuntime(
         msg_bus=msg_bus,
         session_store=session_store,
         scheduler_store=scheduler_store,
+        permission=permission,
         tool_registry=registry,
         hooks=hooks,
         subagent_manager=subagent_manager,
@@ -177,7 +187,7 @@ async def run(config: Config, paths: Paths, cli_only: bool = False):
     cli_channel = CLIChannel(
         msg_bus=core.msg_bus, session_store=core.session_store,
         scheduler_store=core.scheduler_store,
-        paths=paths,
+        paths=paths, permission=core.permission,
         config=config, tool_registry=core.tool_registry)
     core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
@@ -213,7 +223,7 @@ def run_web_desktop(config: Config, paths: Paths):
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
             scheduler_store=core.scheduler_store, paths=paths,
-            config=config)
+            permission=core.permission, config=config)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()
