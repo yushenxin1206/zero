@@ -4,7 +4,7 @@ from pathlib import Path
 
 from zero import config as config_module
 from zero.config import Config, load_config, render_template
-from zero.paths import current
+from zero.data_paths import current
 
 # 精简配置：compact 只覆盖 temperature，其余字段靠继承 default / 模型默认值
 MINIMAL = {

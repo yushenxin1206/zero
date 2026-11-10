@@ -58,7 +58,7 @@ _UNATTENDED_UNSANDBOX = (
     "如需长期放行请用户执行 zero-permission add-unsandbox 后重试"
 )
 _UNATTENDED_EXPAND = (
-    "permission: 该操作申请写入包络外路径（{paths}），但当前渠道无人值守，"
+    "permission: 该操作申请写入包络外路径（{targets}），但当前渠道无人值守，"
     "操作未执行。请用户执行 zero-permission add-root <path> 后重试"
 )
 
@@ -203,7 +203,7 @@ class PermissionGuard:
     # ------------------------------------------------------------------
 
     async def _request_expand(
-            self, paths: list[str], ctx: HookContext, *, title: str,
+            self, targets: list[str], ctx: HookContext, *, title: str,
     ) -> ToolCallDecision | None:
         """返回 None/note 决策 = 放行；返回 decision(proceed=False) = 拒绝。
 
@@ -212,7 +212,7 @@ class PermissionGuard:
         """
         refused: list[str] = []
         pending: list[str] = []
-        for raw in paths:
+        for raw in targets:
             verdict = self.permission.check_writable(raw, ctx)
             if verdict.ok:
                 continue                          # 已在包络内，无需申请
@@ -229,7 +229,7 @@ class PermissionGuard:
         if not self._attended(ctx):
             return ToolCallDecision(
                 proceed=False,
-                reason=_UNATTENDED_EXPAND.format(paths="、".join(pending)))
+                reason=_UNATTENDED_EXPAND.format(targets="、".join(pending)))
         answer = await request(
             self.msg_bus, ctx,
             title=title,

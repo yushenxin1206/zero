@@ -18,7 +18,7 @@ from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
     MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext)
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -85,7 +85,7 @@ class AgentLoop:
             msg_bus: MessageBus,
             config: Config,
             session_store: SessionStore,
-            paths: Paths,
+            data_paths: DataPaths,
             permission: PermissionState,
             tool_registry: ToolRegistry | None = None,
             *,
@@ -95,7 +95,7 @@ class AgentLoop:
         self.config = config
         # 会话存储、数据根与权限状态由组合根创建并注入：本类不读进程级路径
         self.session_store = session_store
-        self.paths = paths
+        self.data_paths = data_paths
         self.permission = permission
         self.tool_registry = tool_registry
         # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
@@ -195,7 +195,7 @@ class AgentLoop:
             session_id=msg_in.session_id,
             channel=msg_in.channel,
             session_store=self.session_store,
-            paths=self.paths,
+            data_paths=self.data_paths,
             permission=self.permission,
             tool_registry=self.tool_registry,
             tool_context=tool_context,

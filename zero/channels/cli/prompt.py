@@ -19,10 +19,10 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
-from zero.paths import current
+from zero.data_paths import current
 
 # 命令使用频次落盘路径在调用时结算（而不是 import 时），
-# 便于测试/嵌入方用 paths.configure() 重定向数据根。
+# 便于测试/嵌入方用 data_paths.configure() 重定向数据根。
 def stats_path() -> Path:
     return current().sessions / "cli" / ".cli_stats.json"
 

@@ -15,7 +15,7 @@ from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_paths, make_permission, make_store, make_test_config, wait_turn_closed
+from tests.support import make_data_paths, make_permission, make_store, make_test_config, wait_turn_closed
 
 
 class _DummyTool(Tool):
@@ -54,7 +54,7 @@ async def run_case() -> dict:
 
     loop = AgentLoop(msg_bus=bus, config=cfg,
                      tool_registry=registry, hooks=CancellingHooks(),
-                     session_store=make_store(), paths=make_paths(), permission=make_permission())
+                     session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
 
     from zero.core.runner import AgentRunner
     orig = AgentRunner.__init__

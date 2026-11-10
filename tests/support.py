@@ -4,7 +4,7 @@ import json
 import time
 
 from zero.config import Config
-from zero.paths import Paths, current
+from zero.data_paths import DataPaths, current
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
@@ -15,8 +15,8 @@ def make_store() -> SessionStore:
     return SessionStore(current().sessions)
 
 
-def make_paths() -> Paths:
-    """测试边界：当前隔离根的路径视图，喂给需要显式 Paths 的组件。"""
+def make_data_paths() -> DataPaths:
+    """测试边界：当前隔离根的路径视图，喂给需要显式 DataPaths 的组件。"""
     return current()
 
 

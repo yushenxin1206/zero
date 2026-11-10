@@ -5,7 +5,7 @@ import asyncio
 import json
 from pathlib import Path
 
-from zero.paths import current
+from zero.data_paths import current
 from tests.support import make_store
 from zero.core.compactor import (
     COMPACT_FINAL_INSTRUCTION,

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from zero.config import load_config
-from zero.paths import current, scope
+from zero.data_paths import current, scope
 from zero.utils.file import save_or_create_file
 from tests.support import make_store
 

@@ -21,7 +21,7 @@ from zero.core.hooks import Hooks
 from zero.core.runner import run_subagent
 from zero.models import (
     MessageBody, MessageIn, Origin, StreamEvent, ToolContext)
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -40,7 +40,7 @@ class SubagentManager:
             msg_bus: MessageBus,
             config: Config,
             session_store: SessionStore,
-            paths: Paths,
+            data_paths: DataPaths,
             permission: PermissionState,
             tool_registry: ToolRegistry,
             *,
@@ -51,7 +51,7 @@ class SubagentManager:
         self.config = config
         # 子 agent 的上下文同样显式携带会话存储（由组合根注入）
         self.session_store = session_store
-        self.paths = paths
+        self.data_paths = data_paths
         self.permission = permission
         # 子 agent 工具集（主对话全量剔除 subagent 后的子集）
         self.tool_registry = tool_registry
@@ -96,7 +96,7 @@ class SubagentManager:
                     prompt,
                     config=self.config,
                     session_store=self.session_store,
-                    paths=self.paths,
+                    data_paths=self.data_paths,
                     permission=self.permission,
                     task="subagent",
                     tool_registry=self.tool_registry,

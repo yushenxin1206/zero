@@ -19,7 +19,7 @@ from zero.tools.shell import Shell
 from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
-from zero.paths import Paths, configure
+from zero.data_paths import DataPaths, configure
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
@@ -67,13 +67,13 @@ def build_agent_loop(msg_bus: MessageBus,
                      hooks: Hooks,
                      config: Config,
                      session_store: SessionStore,
-                     paths: Paths,
+                     data_paths: DataPaths,
                      permission: PermissionState) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
-        paths=paths,
+        data_paths=data_paths,
         permission=permission,
         tool_registry=tool_registry,
         hooks=hooks,
@@ -82,9 +82,9 @@ def build_agent_loop(msg_bus: MessageBus,
 
 def build_maintenance_engine(
         config: Config, session_store: SessionStore,
-        paths: Paths) -> MaintenanceEngine:
+        data_paths: DataPaths) -> MaintenanceEngine:
     return MaintenanceEngine(
-        config=config, session_store=session_store, paths=paths)
+        config=config, session_store=session_store, data_paths=data_paths)
 
 
 @dataclass
@@ -102,11 +102,11 @@ class CoreRuntime:
     maintenance: MaintenanceEngine
 
 
-def build_core(config: Config, paths: Paths) -> CoreRuntime:
+def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
     msg_bus = MessageBus()
-    session_store = SessionStore(paths.sessions)
-    scheduler_store = SchedulerStore(paths.tasks)
-    permission = PermissionState(paths, session_store)
+    session_store = SessionStore(data_paths.sessions)
+    scheduler_store = SchedulerStore(data_paths.tasks)
+    permission = PermissionState(data_paths, session_store)
     registry = build_tool_registry(session_store, scheduler_store, permission)
     hooks = build_hooks(msg_bus, permission)
     # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
@@ -115,7 +115,7 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
-        paths=paths,
+        data_paths=data_paths,
         permission=permission,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
         hooks=hooks,
@@ -123,7 +123,7 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
     registry.register(SubagentTool(subagent_manager))
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,
-        config=config, session_store=session_store, paths=paths,
+        config=config, session_store=session_store, data_paths=data_paths,
         permission=permission)
     return CoreRuntime(
         msg_bus=msg_bus,
@@ -135,7 +135,8 @@ def build_core(config: Config, paths: Paths) -> CoreRuntime:
         subagent_manager=subagent_manager,
         agent_loop=agent_loop,
         scheduler=Scheduler(msg_bus=msg_bus, store=scheduler_store),
-        maintenance=build_maintenance_engine(config, session_store, paths),
+        maintenance=build_maintenance_engine(
+            config, session_store, data_paths),
     )
 
 
@@ -172,12 +173,12 @@ def start_feishu(msg_bus: MessageBus, config: Config,
     return asyncio.create_task(_guard(channel.start(), "feishu"))
 
 
-async def run(config: Config, paths: Paths, cli_only: bool = False):
+async def run(config: Config, data_paths: DataPaths, cli_only: bool = False):
     """
     启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
     共享同一个 MessageBus / AgentLoop / Scheduler。
     """
-    core = build_core(config, paths)
+    core = build_core(config, data_paths)
     background = start_background(core)
     if not cli_only:
         if (feishu := start_feishu(
@@ -187,7 +188,7 @@ async def run(config: Config, paths: Paths, cli_only: bool = False):
     cli_channel = CLIChannel(
         msg_bus=core.msg_bus, session_store=core.session_store,
         scheduler_store=core.scheduler_store,
-        paths=paths, permission=core.permission,
+        data_paths=data_paths, permission=core.permission,
         config=config, tool_registry=core.tool_registry)
     core_task = asyncio.create_task(core.agent_loop.run())
     cli_task = asyncio.create_task(cli_channel.start())
@@ -205,7 +206,7 @@ async def run(config: Config, paths: Paths, cli_only: bool = False):
             log.error("%s task failed", task_names.get(t, "unknown"), exc_info=exc)
 
 
-def run_web_desktop(config: Config, paths: Paths):
+def run_web_desktop(config: Config, data_paths: DataPaths):
     """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。"""
     from zero.channels.web.shell import run_desktop
 
@@ -214,7 +215,7 @@ def run_web_desktop(config: Config, paths: Paths):
     async def backend(holder: dict):
         from zero.channels.web.server import WebChannel
 
-        core = build_core(config, paths)
+        core = build_core(config, data_paths)
         background = start_background(core)
         if (feishu := start_feishu(
                 core.msg_bus, config, core.session_store)) is not None:
@@ -222,7 +223,7 @@ def run_web_desktop(config: Config, paths: Paths):
 
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
-            scheduler_store=core.scheduler_store, paths=paths,
+            scheduler_store=core.scheduler_store, data_paths=data_paths,
             permission=core.permission, config=config)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
@@ -293,19 +294,19 @@ def main():
     args = parse_args()
 
     # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
-    # 显式 Config / Paths / Store，不再访问模块级单例。
-    paths = configure()
-    config = load_config(paths.config)
+    # 显式 Config / DataPaths / Store，不再访问模块级单例。
+    data_paths = configure()
+    config = load_config(data_paths.config)
 
     # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich
     # 渲染），统一带密钥脱敏；绝对路径，任意目录启动都不会散落 debug.log
-    setup_logging(paths.root)
+    setup_logging(data_paths.root)
 
     try:
         if args.web:
-            run_web_desktop(config, paths)
+            run_web_desktop(config, data_paths)
         else:
-            asyncio.run(run(config, paths, cli_only=args.cli))
+            asyncio.run(run(config, data_paths, cli_only=args.cli))
     except KeyboardInterrupt:
         pass
 

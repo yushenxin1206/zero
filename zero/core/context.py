@@ -19,7 +19,7 @@ from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
-from zero.paths import Paths, current
+from zero.data_paths import DataPaths, current
 
 
 # 包安装目录（skills 等内置资源所在位置），与运行目录无关
@@ -95,7 +95,7 @@ class Context:
             session_id: str,
             channel: str,
             session_store: SessionStore,
-            paths: Paths,
+            data_paths: DataPaths,
             permission: PermissionState,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
@@ -105,7 +105,7 @@ class Context:
         # 会话存储、数据根与权限状态由组合根/上层上下文显式传入：
         # 本类不读进程级路径
         self.session_store = session_store
-        self.paths = paths
+        self.data_paths = data_paths
         self.permission = permission
         self.tool_registry = tool_registry
         self.tool_context = tool_context or ToolContext(
@@ -240,7 +240,7 @@ class Context:
         # 否则模型无从得知记忆位置，记忆功能永远无法冷启动。
         # 文件本身由模型按需用 write 工具创建（write 会自动建父目录），
         # 代码侧不做任何写入，避免 prompt 构建产生副作用。
-        memory_path = self.paths.memory
+        memory_path = self.data_paths.memory
         memory = ""
         if memory_path.exists():
             memory = memory_path.read_text(encoding="utf-8").strip()
@@ -259,7 +259,7 @@ Long-term memory about the user (preferences, background, cross-project facts) i
         # 代码侧只读不写（prompt 构建零副作用）。文件不存在时渲染 (empty)，
         # 路径与更新协议保持可见以支持冷启动。
         memory_path = project_memory_path(
-            get_cwd(), override=self.paths.project_memory)
+            get_cwd(), override=self.data_paths.project_memory)
         memory = ""
         if memory_path.exists():
             memory = memory_path.read_text(encoding="utf-8").strip()
@@ -373,7 +373,7 @@ class SubAgentContext(Context):
             prompt: str,
             *,
             session_store: SessionStore,
-            paths: Paths,
+            data_paths: DataPaths,
             permission: PermissionState,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
@@ -386,7 +386,7 @@ class SubAgentContext(Context):
             session_id=tc.session_id,
             channel=tc.channel,
             session_store=session_store,
-            paths=paths,
+            data_paths=data_paths,
             permission=permission,
             tool_registry=tool_registry,
             tool_context=tc,
@@ -470,7 +470,7 @@ if __name__ == "__main__":
     _ctx = Context(
         session_id="doc", channel="cli",
         session_store=SessionStore(current().sessions),
-        paths=current(),
+        data_paths=current(),
         permission=PermissionState(
             current(), SessionStore(current().sessions)))
     _out = PKG_ROOT / "docs" / "prompt.md"

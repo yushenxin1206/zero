@@ -6,7 +6,7 @@ import threading
 import time
 from pathlib import Path
 
-from zero.paths import current
+from zero.data_paths import current
 from tests.support import make_store
 
 CHANNEL = "cli"

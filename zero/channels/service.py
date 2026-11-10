@@ -19,7 +19,7 @@ from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.permission.envelope import PermissionState
 from zero.models import Message, MessageBody, MessageIn, StopRequest
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
 from zero.session.models import SessionMeta
@@ -58,7 +58,7 @@ class ChannelService:
         msg_bus: MessageBus,
         session_store: SessionStore,
         scheduler_store: SchedulerStore,
-        paths: Paths,
+        data_paths: DataPaths,
         permission: PermissionState,
         config: Config | None = None,
         tool_registry: ToolRegistry | None = None,
@@ -74,7 +74,7 @@ class ChannelService:
         # 会话存储由 channel 组合根显式传入；绑定文件与 session 同根
         self.session_store = session_store
         self.scheduler_store = scheduler_store
-        self.paths = paths
+        self.data_paths = data_paths
         # 切换模型时要重建 Context（含环境段），权限状态随之显式传入
         self.permission = permission
         self._binding_path = (
@@ -241,7 +241,7 @@ class ChannelService:
         return await switch_model(
             config=self.config, channel=self.channel,
             session_id=self.session_id, new_model=name,
-            session_store=self.session_store, paths=self.paths,
+            session_store=self.session_store, data_paths=self.data_paths,
             permission=self.permission, tools=tools)
 
     # ------------------------------------------------------------------

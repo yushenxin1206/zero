@@ -10,7 +10,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
-from tests.support import make_paths, make_permission, make_store, make_test_config, wait_turn_closed
+from tests.support import make_data_paths, make_permission, make_store, make_test_config, wait_turn_closed
 
 
 class FakeProvider:
@@ -29,7 +29,7 @@ async def main() -> dict:
     bus = MessageBus()
     cfg = make_test_config()
     loop = AgentLoop(
-        msg_bus=bus, config=cfg, hooks=Hooks(), session_store=make_store(), paths=make_paths(), permission=make_permission())
+        msg_bus=bus, config=cfg, hooks=Hooks(), session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
 
     from zero.core.runner import AgentRunner
 
@@ -147,7 +147,7 @@ class TestTurnStop(unittest.TestCase):
             cfg = make_test_config()
             context = Context(
                 session_id="s-repair", channel="cli",
-                session_store=make_store(), paths=make_paths(), permission=make_permission())
+                session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
             stop_event = asyncio.Event()
             runner = AgentRunner(
                 config=cfg, running_context=context,
@@ -234,7 +234,7 @@ class TestStopDuringSilentThinking(unittest.TestCase):
             bus = MessageBus()
             loop = AgentLoop(
                 msg_bus=bus, config=make_test_config(), hooks=Hooks(),
-                session_store=make_store(), paths=make_paths(), permission=make_permission())
+                session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
 
             prov = OpenAI(ProviderConfig(api_base="http://stub", api_key="k"))
             # turn1 思考期 3s（终止应打断它）；turn2 立即完整输出

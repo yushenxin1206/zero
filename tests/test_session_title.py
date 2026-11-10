@@ -2,7 +2,7 @@
 import json
 
 from zero.models import MessageBody, MessageIn, MessageOut
-from zero.paths import current
+from zero.data_paths import current
 from zero.session.store import TITLE_MAX_LEN
 from tests.support import make_store
 

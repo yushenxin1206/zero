@@ -27,7 +27,7 @@ import pytest
 from tests.support import make_scheduler_store, make_store
 
 import zero.channels as channels_pkg
-from zero.paths import current
+from zero.data_paths import current
 from zero.permission import envelope, seatbelt
 from zero.permission.envelope import PermissionState
 
@@ -123,7 +123,7 @@ def test_render(permission):
         project_root=Path("/tmp/proj"),
         session_dir=Path("/tmp/proj/sess"),
         deny_read=tuple(envelope._real(p) for p in permission.ungrantable_read()))
-    text = seatbelt.render_profile(env, permission.paths.profiles)
+    text = seatbelt.render_profile(env, permission.data_paths.profiles)
     # 渲染值一律 realpath 后的字面量（macOS：/tmp → /private/tmp）
     root = seatbelt._quote(envelope._real("/tmp/proj"))
     sess = seatbelt._quote(envelope._real("/tmp/proj/sess"))
@@ -147,7 +147,7 @@ def test_render(permission):
 def test_render_denied_network(permission):
     """无人值守档必须显式断网，且压过基线里可能的网络放行。"""
     env = envelope.Envelope(project_root=Path("/tmp/proj"), network=False)
-    text = seatbelt.render_profile(env, permission.paths.profiles)
+    text = seatbelt.render_profile(env, permission.data_paths.profiles)
     assert "(allow network*)" not in text
     assert "(deny network*)" in text
 
@@ -198,7 +198,7 @@ def test_scope(permission):
 def test_wrap(permission):
     body = "(version 1)\n(allow default)\n"
     argv, path = seatbelt.wrap(
-        ["/bin/echo", "hi"], body, permission.paths.profiles)
+        ["/bin/echo", "hi"], body, permission.data_paths.profiles)
     assert argv[0] == str(seatbelt.SEATBELT_EXEC)
     assert argv[1] == "-f" and argv[2] == str(path)
     assert argv[3:] == ["/bin/echo", "hi"]
@@ -419,11 +419,11 @@ def test_launchd_mutation_blocked(isolated_state, permission):
         '</dict>\n</plist>\n', encoding="utf-8")
 
     text = seatbelt.render_profile(
-        current_envelope(None, permission), permission.paths.profiles)
+        current_envelope(None, permission), permission.data_paths.profiles)
 
     def sandboxed(argv):
         wrapped, profile = seatbelt.wrap(
-            argv, text, permission.paths.profiles)
+            argv, text, permission.data_paths.profiles)
         try:
             return subprocess.run(wrapped, capture_output=True, timeout=30)
         finally:

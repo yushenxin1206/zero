@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from zero.config import HOME
-from zero.paths import Paths, current
+from zero.data_paths import DataPaths, current
 from zero.permission import seatbelt
 from zero.session.store import SessionStore
 
@@ -144,13 +144,13 @@ def _under(path: Path, root: Path) -> bool:
 class PermissionState:
     """权限层的显式状态与操作集合。
 
-    由组合根按同一组 ``Paths`` / ``SessionStore`` 构造一次，再注入守卫、
+    由组合根按同一组 ``DataPaths`` / ``SessionStore`` 构造一次，再注入守卫、
     Shell 与 Context。探针缓存与会话扩权表都是进程内可变状态，必须随对象
     走（而不是挂在模块上），否则多组合根会互相串权。
     """
 
-    def __init__(self, paths: Paths, session_store: SessionStore):
-        self.paths = paths
+    def __init__(self, data_paths: DataPaths, session_store: SessionStore):
+        self.data_paths = data_paths
         self.session_store = session_store
         # 能力探针结果按工作区根缓存：同一次运行内重复询问不重复跑子进程
         self._probe_cache: dict[str, bool] = {}
@@ -159,12 +159,12 @@ class PermissionState:
         self._session_roots: dict[tuple[str, str, str], set[Path]] = {}
 
     # ------------------------------------------------------------------
-    # 不可授予名单（策略文件路径由注入的 Paths 提供）
+    # 不可授予名单（策略文件路径由注入的 DataPaths 提供）
     # ------------------------------------------------------------------
 
     def ungrantable_read(self) -> tuple[Path, ...]:
         """不可授予：凭证与策略文件。读方向是减法，这份名单是唯一读禁止集合。"""
-        p = self.paths
+        p = self.data_paths
         return (
             HOME / ".ssh",
             HOME / ".aws",
@@ -179,7 +179,7 @@ class PermissionState:
 
     def ungrantable_write(self) -> tuple[Path, ...]:
         """不可授予：系统路径与策略文件。写方向是加法，用于挡住审批扩权到系统区。"""
-        p = self.paths
+        p = self.data_paths
         return (
             Path("/etc"),
             Path("/System"),
@@ -237,7 +237,7 @@ class PermissionState:
 
     def _probe(self, root: Path) -> bool:
         """双向探针：既确认 deny 真的生效，也确认基线没把正常命令误杀。"""
-        profiles = self.paths.profiles
+        profiles = self.data_paths.profiles
         profiles.mkdir(parents=True, exist_ok=True)
         mark = profiles / seatbelt.PROBE_MARK
         try:
@@ -263,7 +263,7 @@ class PermissionState:
         """双向探针：宿主能连上本地监听口，同一命令进沙箱后必须连不上。"""
         import socket
 
-        profiles = self.paths.profiles
+        profiles = self.data_paths.profiles
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.bind(("127.0.0.1", 0))
@@ -298,11 +298,11 @@ class PermissionState:
     # ------------------------------------------------------------------
 
     def render_profile(self, env: Envelope) -> str:
-        return seatbelt.render_profile(env, self.paths.profiles)
+        return seatbelt.render_profile(env, self.data_paths.profiles)
 
     def wrap(self, argv: list[str],
              profile_text: str) -> tuple[list[str], Path]:
-        return seatbelt.wrap(argv, profile_text, self.paths.profiles)
+        return seatbelt.wrap(argv, profile_text, self.data_paths.profiles)
 
     # ------------------------------------------------------------------
     # profile.json（用户资产；模型不可写）
@@ -311,7 +311,7 @@ class PermissionState:
     def load_profile(self) -> dict:
         try:
             data = json.loads(
-                self.paths.profile_file.read_text(encoding="utf-8"))
+                self.data_paths.profile_file.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return {}
         except (OSError, ValueError) as e:  # noqa: BLE001
@@ -321,7 +321,7 @@ class PermissionState:
 
     def save_profile(self, data: dict) -> None:
         """只由 CLI 与审批的「总是允许」调用。"""
-        path = self.paths.profile_file
+        path = self.data_paths.profile_file
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             json.dumps(data, indent=2, ensure_ascii=False) + "\n",
@@ -365,7 +365,7 @@ class PermissionState:
 
     def _key(self, ctx) -> tuple[str, str, str]:
         return (
-            str(self.paths.root),
+            str(self.data_paths.root),
             getattr(ctx, "channel", "") or "",
             getattr(ctx, "session_id", "") or "",
         )

@@ -38,7 +38,7 @@ from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.config import Config
 from zero.models import MessageOut, StreamEvent
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
 from zero.scheduler.store import SchedulerStore
@@ -58,7 +58,7 @@ class CLIChannel(BusChannel):
     name = CHANNEL
 
     def __init__(self, msg_bus, session_store: SessionStore,
-                 scheduler_store: SchedulerStore, paths: Paths,
+                 scheduler_store: SchedulerStore, data_paths: DataPaths,
                  permission: PermissionState,
                  config: Config | None = None,
                  tool_registry: ToolRegistry | None = None,
@@ -67,7 +67,7 @@ class CLIChannel(BusChannel):
         self.console = console or Console(highlight=False)
         self.service = ChannelService(
             CHANNEL, msg_bus=msg_bus, session_store=session_store,
-            scheduler_store=scheduler_store, paths=paths,
+            scheduler_store=scheduler_store, data_paths=data_paths,
             permission=permission, config=config,
             tool_registry=tool_registry)
         self.renderer = CliRenderer(self.console, self.service)

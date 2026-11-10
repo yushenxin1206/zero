@@ -3,7 +3,7 @@
 本模块只做路径算术：不读文件、不建目录、不实例化 Config。
 进程启动时由 ``main()`` 调 ``configure()``；测试由 pytest fixture 调
 ``configure(tmp_path)``。组合根与进程边界（CLI / 工具 / 子命令）通过
-``current()`` 取一次路径，再把 ``Paths`` 显式传给核心对象；核心域不在
+``current()`` 取一次路径，再把 ``DataPaths`` 显式传给核心对象；核心域不在
 调用点回读进程根。
 
 ``scope()`` 给同一进程内的多实例/集成测试一个轻量入口：``with
@@ -26,7 +26,7 @@ def default_root() -> Path:
 
 
 @dataclass(frozen=True)
-class Paths:
+class DataPaths:
     """一棵数据根下的全部路径视图（纯派生，无 IO）。"""
     root: Path
     # 项目级记忆的显式覆盖：默认 None 表示按运行目录推导。嵌入式宿主或
@@ -70,15 +70,15 @@ class Paths:
         return self.maintenance / "state.json"
 
 
-_global_paths = Paths(default_root())
-_override: ContextVar[Paths | None] = ContextVar("zero_paths", default=None)
+_global_paths = DataPaths(default_root())
+_override: ContextVar[DataPaths | None] = ContextVar("zero_paths", default=None)
 
 
 def configure(root: Path | None = None, *,
-              project_memory: Path | None = None) -> Paths:
+              project_memory: Path | None = None) -> DataPaths:
     """设置进程级数据根。由 ``main()`` 或测试 fixture 显式调用。"""
     global _global_paths
-    _global_paths = Paths(
+    _global_paths = DataPaths(
         Path(root) if root is not None else default_root(),
         project_memory=project_memory,
     )
@@ -86,20 +86,20 @@ def configure(root: Path | None = None, *,
 
 
 @contextmanager
-def scope(root: Path, *, project_memory: Path | None = None) -> Iterator[Paths]:
+def scope(root: Path, *, project_memory: Path | None = None) -> Iterator[DataPaths]:
     """在当前协程上下文内临时切换到另一个数据根。
 
     异步任务在创建时复制上下文，因此两个任务可以各持一个根并发运行；
     未进入 scope 的线程仍读进程根。
     """
-    paths = Paths(Path(root), project_memory=project_memory)
-    token = _override.set(paths)
+    data_paths = DataPaths(Path(root), project_memory=project_memory)
+    token = _override.set(data_paths)
     try:
-        yield paths
+        yield data_paths
     finally:
         _override.reset(token)
 
 
-def current() -> Paths:
+def current() -> DataPaths:
     """当前生效的数据根：协程级 override 优先，否则进程根。"""
     return _override.get() or _global_paths

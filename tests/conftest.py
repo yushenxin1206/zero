@@ -1,7 +1,7 @@
 """Shared pytest setup.
 
 Per-test filesystem isolation now goes through the explicit composition root:
-each test calls ``paths.configure(tmp_path)`` *before* its body runs, so any
+each test calls ``data_paths.configure(tmp_path)`` *before* its body runs, so any
 thread or task it starts inherits the throwaway root. No storage module
 constants are monkeypatched, and the developer's real ``~/.zero`` is never
 read or written.
@@ -13,7 +13,7 @@ TMPDIR root and invalidate the assertions.
 """
 import pytest
 
-from zero.paths import configure, current
+from zero.data_paths import configure, current
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore

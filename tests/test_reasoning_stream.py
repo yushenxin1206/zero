@@ -20,7 +20,7 @@ from zero.core.context import SubAgentContext
 from zero.core.runner import AgentRunner
 from zero.models import (
     AgentRuntimeConfig, LLMCallOptions, LLMRuntime, ProviderConfig, StreamEvent)
-from tests.support import make_paths, make_permission, make_store
+from tests.support import make_data_paths, make_permission, make_store
 
 
 class FakeProvider:
@@ -43,7 +43,7 @@ def make_runner(chunks) -> AgentRunner:
                                context_window_tokens=20000),
     )
     r.context = SubAgentContext(
-        "测试任务", session_store=make_store(), paths=make_paths(), permission=make_permission())   # compressible=False，跳过压缩
+        "测试任务", session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())   # compressible=False，跳过压缩
     r.provider = FakeProvider(chunks)
     r._stop_event = None
     r.tool_registry = None

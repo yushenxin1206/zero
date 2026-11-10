@@ -31,7 +31,7 @@ from zero.models import (
     ToolCallFunction,
     ToolContext,
 )
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.providers.base import LLMPayload
 from zero.providers.openai import OpenAI
@@ -401,7 +401,7 @@ async def run_subagent(
         config: Config,
         hooks: Hooks,
         session_store: SessionStore,
-        paths: Paths,
+        data_paths: DataPaths,
         permission: PermissionState,
         task: str = "default",
         tool_registry: ToolRegistry | None = None,
@@ -434,7 +434,7 @@ async def run_subagent(
     context = SubAgentContext(
         prompt,
         session_store=session_store,
-        paths=paths,
+        data_paths=data_paths,
         permission=permission,
         tool_registry=tool_registry,
         tool_context=tool_context,

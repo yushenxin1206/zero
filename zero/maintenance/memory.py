@@ -9,7 +9,7 @@ import datetime as dt
 import json
 import logging
 
-from zero.paths import Paths
+from zero.data_paths import DataPaths
 from zero.models import AgentRuntimeConfig, MaintenanceConfig
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
@@ -46,7 +46,7 @@ async def run_memory(
         runtime: AgentRuntimeConfig,
         maintenance_cfg: MaintenanceConfig,
         session_store: SessionStore,
-        paths: Paths,
+        data_paths: DataPaths,
 ) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
@@ -56,7 +56,7 @@ async def run_memory(
     if not summaries:
         return  # 无新复盘信息，无需更新
 
-    memory_path = paths.memory
+    memory_path = data_paths.memory
     current_memory = await asyncio.to_thread(_read_text_or_empty, memory_path)
 
     summaries_json = json.dumps(
