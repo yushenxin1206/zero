@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 
 from zero.bus.queue import BusQueueFull, MessageBus
-from zero.models import MessageBody, MessageIn, Origin
+from zero.models import MessageBody, MessageIn, Origin, TurnStatus
 from zero.scheduler.models import RunOutcome, ScheduleTask
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL_SECONDS = 10
 
 # 轮次结束时的 loop 状态 → 执行结果
-_RUN_OUTCOME: dict[str, RunOutcome] = {
+_RUN_OUTCOME: dict[TurnStatus, RunOutcome] = {
     "completed": "ok",
     "error": "failed",
     "cancelled": "cancelled",
@@ -98,7 +98,7 @@ class Scheduler:
                 task.id, trigger_at=next_trigger, last_run_at=now)
         # once：终态等 finish_turn 回写，派发只代表"已开始"
 
-    async def finish_turn(self, msg_in: MessageIn, status: str,
+    async def finish_turn(self, msg_in: MessageIn, status: TurnStatus,
                           error: str) -> None:
         """AgentLoop 轮次结束回调：把真实结果回写给定时任务。
 

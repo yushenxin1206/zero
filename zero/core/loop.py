@@ -18,7 +18,8 @@ from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
-    MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext)
+    MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext,
+    TurnStatus)
 from zero.data_paths import DataPaths
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -38,7 +39,7 @@ _ERROR_MAX_CHARS = 200
 #    「不干预」，而状态回写被吞会让定时任务永远停在 running 且无人知晓。
 # 3. 在轮次 finally 中调用，成功/取消/异常三条出口共用，调用时状态已落盘；
 #    因此它拿到的是最终结论，不能用来干预进行中的事。
-TurnFinishedHook = Callable[[MessageIn, str, str], Awaitable[None]]
+TurnFinishedHook = Callable[[MessageIn, TurnStatus, str], Awaitable[None]]
 
 
 @dataclass
@@ -54,7 +55,7 @@ class TurnStat:
     model: str = "-"
     tools: int = 0
     tokens: TokenUsage | None = None
-    status: str = "completed"
+    status: TurnStatus = "completed"
     error: str = ""
     started: float = field(default_factory=time.monotonic)
 

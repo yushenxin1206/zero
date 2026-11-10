@@ -12,6 +12,14 @@ from pathlib import Path
 
 from zero.scheduler.models import RunOutcome, ScheduleTask, TaskStatus
 
+# once 任务执行结果 → 终态。显式标注键值类型：内联字典会被推断成
+# dict[str, str]，取出来是无法赋给 TaskStatus（Literal）的裸 str。
+_ONCE_FINAL_STATUS: dict[RunOutcome, TaskStatus] = {
+    "ok": "done",
+    "failed": "failed",
+    "cancelled": "cancelled",
+}
+
 
 class SchedulerStore:
 
@@ -105,10 +113,6 @@ class SchedulerStore:
         task.last_error = "" if outcome == "ok" else error
         task.last_run_at = datetime.now()
         if task.schedule_type == "once":
-            task.status = {
-                "ok": "done",
-                "failed": "failed",
-                "cancelled": "cancelled",
-            }[outcome]
+            task.status = _ONCE_FINAL_STATUS[outcome]
         task.updated_at = datetime.now()
         self._save_tasks(tasks)
