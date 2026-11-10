@@ -148,6 +148,30 @@ class ConfigWriteError(RuntimeError):
     """配置写盘被拒绝：模板只允许新建文件，绝不覆盖已有配置。"""
 
 
+# ``--write`` 落盘的启动骨架：只写"能解析、能绑定模型"的必要覆盖。
+# compact / session_summary / memory / subagent 等派生任务刻意不出现——
+# 它们靠继承 agentRuntimes.default 即可工作，落盘只会制造第二份真相。
+SKELETON: dict[str, Any] = {
+    "models": {
+        "deepseek-chat": {
+            "provider": "deepseek",
+            "contextWindowTokens": 65536,
+        },
+    },
+    "providers": {
+        "deepseek": {
+            "apiBase": "https://api.deepseek.com",
+            "apiKey": "",
+        },
+    },
+    "agentRuntimes": {
+        "default": {
+            "llmCallOptions": {"model": "deepseek-chat"},
+        },
+    },
+}
+
+
 def render_template() -> str:
     """完整默认值模板（只供展示 / 新建文件，绝不用于回写已有配置）。
 
@@ -161,13 +185,23 @@ def render_template() -> str:
     return Config.model_construct().model_dump_json(indent=2, by_alias=True)
 
 
-def write_template(path: Path) -> Path:
-    """把模板写成一份新配置；目标已存在则拒绝，绝不覆盖手写内容。"""
+def render_skeleton() -> str:
+    """``--write`` 的精简骨架：只覆盖建立模型绑定所需的最少字段。
+
+    与 ``render_template`` 的分工：模板回答"全部可配置项是什么"，骨架回答
+    "最少写多少就能跑"。派生任务的调用选项全部继承 default，用户后续只需
+    替换 models / providers / default.model 里的示例值并填入 apiKey。
+    """
+    return json.dumps(SKELETON, ensure_ascii=False, indent=2)
+
+
+def write_skeleton(path: Path) -> Path:
+    """把骨架写成一份新配置；目标已存在则拒绝，绝不覆盖手写内容。"""
     target = path
     if target.exists():
         raise ConfigWriteError(
-            f'{target} 已存在，拒绝覆盖：模板只用于新建，改配置请手动编辑')
-    save_or_create_file(file_path=target, content=render_template())
+            f'{target} 已存在，拒绝覆盖：骨架只用于新建，改配置请手动编辑')
+    save_or_create_file(file_path=target, content=render_skeleton())
     return target
 
 
@@ -186,7 +220,7 @@ def load_config(path: Path) -> Config:
 
 def main(argv: list[str] | None = None, *,
          data_paths: DataPaths | None = None) -> int:
-    """``python -m zero.config``：默认只打印模板，``--write`` 才落盘。
+    """``python -m zero.config``：默认只打印全量模板，``--write`` 写精简骨架。
 
     ``data_paths`` 由调用方提供；命令行入口用 ``DataPaths.default()``，
     测试传入隔离根。
@@ -196,14 +230,14 @@ def main(argv: list[str] | None = None, *,
         description='打印配置模板；默认不写任何文件。')
     parser.add_argument(
         '--write', action='store_true',
-        help='把模板写入配置文件（目标已存在时拒绝）')
+        help='写入可运行的精简骨架（目标已存在时拒绝）')
     args = parser.parse_args(argv)
 
     if not args.write:
         print(render_template())
         return 0
     try:
-        target = write_template(
+        target = write_skeleton(
             (data_paths or DataPaths.default()).config)
     except ConfigWriteError as exc:
         print(f'未写入：{exc}', file=sys.stderr)

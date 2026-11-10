@@ -5,7 +5,7 @@ from pathlib import Path
 from tests.support import current
 
 from zero import config as config_module
-from zero.config import Config, load_config, render_template
+from zero.config import Config, load_config, render_skeleton, render_template
 
 # 精简配置：compact 只覆盖 temperature，其余字段靠继承 default / 模型默认值
 MINIMAL = {
@@ -41,6 +41,8 @@ def test_template_is_a_valid_config():
     """模板必须能重新通过校验：未来新增必填字段或校验器会在这里变红。"""
     template = json.loads(render_template())
     Config.model_validate(template)
+    # 默认打印的是全量参考（包含派生的 compact 条目），与 --write 的骨架不同
+    assert "compact" in template["agentRuntimes"]
 
 
 def test_template_command_never_touches_existing_config(capsys):
@@ -58,15 +60,40 @@ def test_template_command_never_touches_existing_config(capsys):
     assert _snapshot(target) == before
 
 
-def test_template_write_creates_only_new_file():
+def test_template_write_creates_runnable_skeleton():
+    """--write 落盘的是精简骨架：结构完整、能解析并绑定模型。"""
     target = current().config
     assert not target.exists()
 
     assert config_module.main(["--write"], data_paths=current()) == 0
     assert target.exists()
-    # 模板是完整默认值，所以加载后必然能解析出结构
+    written = json.loads(target.read_text(encoding="utf-8"))
+    assert written == json.loads(render_skeleton())
+
     loaded = load_config(target)
-    assert "agentRuntimes" in loaded.model_dump(by_alias=True)
+    default_runtime = loaded.resolve_runtime("default")
+    assert default_runtime.llm_call_options.model
+    # 派生任务不需要出现在文件里也能解析出同一个模型
+    assert (loaded.resolve_runtime("compact").llm_call_options.model
+            == default_runtime.llm_call_options.model)
+
+
+def test_skeleton_leaves_derived_tasks_to_inheritance():
+    """骨架不写死派生任务；改 default 后 compact 等全部跟随继承。"""
+    skeleton = json.loads(render_skeleton())
+    assert set(skeleton["agentRuntimes"]) == {"default"}
+
+    data = json.loads(json.dumps(skeleton))
+    data["agentRuntimes"]["default"]["llmCallOptions"].update(
+        {"maxTokens": 1234, "temperature": 0.2})
+    _write(current().config, data)
+
+    loaded = load_config(current().config)
+    for task in ("compact", "session_summary", "memory", "subagent"):
+        runtime = loaded.resolve_runtime(task)
+        assert runtime.llm_call_options.model == "deepseek-chat"
+        assert runtime.llm_call_options.max_tokens == 1234
+        assert runtime.llm_call_options.temperature == 0.2
 
 
 def test_load_config_keeps_explicit_field_set():

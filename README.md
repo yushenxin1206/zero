@@ -62,9 +62,11 @@ pytest 配置与 ruff 规则见 `pyproject.toml`。测试不依赖本机真实�
 配置文件位于 `~/.zero/config.json`，**需要自己创建**：程序不会自动生成，缺失时按默认值运行。
 
 ```bash
-uv run python -m zero.config           # 把完整默认值模板打印到终端
-uv run python -m zero.config --write   # 仅在配置文件不存在时写入模板
+uv run python -m zero.config           # 打印全量参考模板（只读，不写盘）
+uv run python -m zero.config --write   # 仅在配置文件不存在时写入精简骨架
 ```
+
+不带参数时输出的是**全量参考**，用来看"有哪些配置项"。`--write` 落盘的是一份**能直接跑起来的精简骨架**：只包含 models 注册表、对应 provider 与 `agentRuntimes.default` 的模型绑定；`compact` / `session_summary` / `memory` / `subagent` 等派生任务刻意不写死，全部继承 `agentRuntimes.default`。填上 `apiKey`（必要时替换模型名、端点与窗口）即可启动。
 
 `--write` 遇到已有配置会拒绝覆盖，避免把手工维护的精简配置冲成一份全显式的。配置里**只写你真正要改的字段**；没写的字段继续继承（`agentRuntimes.compact` 等任务条目继承 `agentRuntimes.default`，其余用默认值）。需要飞书通道时填入：
 
