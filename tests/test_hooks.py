@@ -295,6 +295,27 @@ def test_handlers_for_returns_registration_order():
     assert chain.handlers_for("before_tool_call") == (first, second)
 
 
+def test_callable_object_with_async_call_is_accepted():
+    """守卫是 async __call__ 的实例，注册校验不能只看实例本身。"""
+    chain = HookChain()
+
+    class Guard:
+        async def __call__(self, tool_name, kwargs, ctx):
+            return ToolCallDecision(proceed=False, reason="no")
+
+    guard = Guard()
+    chain.on_before_tool_call(guard)
+    assert chain.handlers_for("before_tool_call") == (guard,)
+
+
+def test_build_hooks_registers_real_guard():
+    """真实组合根必须装上守卫（此前测试打桩了 install，漏掉了启动路径）。"""
+    from zero.main import build_hooks
+
+    chain = build_hooks(MessageBus())
+    assert len(chain.handlers_for("before_tool_call")) == 1
+
+
 def test_build_hooks_requires_guard(monkeypatch):
     """守卫装不上时启动期硬失败，而不是带着空链静默 fail-open。"""
     import zero.permission.guard as guard_mod

@@ -17,6 +17,7 @@ handler 一律 async；任何 handler 抛异常只记日志、视为 no-op（fai
 TurnCancelled 是终止信号（非业务异常），必须透传，不允许被 fail-open 吞掉。
 """
 import asyncio
+import functools
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -85,7 +86,13 @@ def _check_handler(hook_name: HookName, fn: HookHandler) -> None:
     签名漂移如果在分发时才暴露，会被 ``_safe`` 的宽 except 吞成静默 no-op
     ——对 fail-open 的护栏来说等于护栏不存在。所以在注册处直接报错。
     """
-    if not inspect.iscoroutinefunction(fn):
+    # 可调用对象（如 PermissionGuard）的协程性在 __call__ 上；直接对实例
+    # 调 iscoroutinefunction 恒为 False，会误杀合法的 async __call__ 守卫
+    target = fn if (
+        inspect.isfunction(fn) or inspect.ismethod(fn)
+        or isinstance(fn, functools.partial)
+    ) else getattr(type(fn), "__call__", None)
+    if target is None or not inspect.iscoroutinefunction(target):
         raise TypeError(
             f"hook '{hook_name}' handler {fn!r} 必须是 async 函数")
     try:
