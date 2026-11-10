@@ -301,7 +301,7 @@ class AgentRuntimeSpec(Base):
     默认空对象即"未覆盖任何调用选项、整条继承 default"；是否继承由
     model_fields_set 表达（磁盘未写该键 = 继承基座），显式写 llmCallOptions
     则逐子键与 default 合并。fields_set 来自磁盘文件的键集合，即手工维护的
-    精简配置是显式性的唯一来源（save_config 的全字段 dump 仅用于生成模板）。
+    精简配置是显式性的唯一来源。
 
     策略字段（max_iterations）对派生任务会一并继承但不被消费——只有主对话
     做上下文压缩。压缩功能本身的策略（开关/触发比例/尾部比例/输出上限）
