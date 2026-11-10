@@ -201,6 +201,13 @@ StreamEventKind = Literal[
     "delta", "reasoning", "tool_call", "done", "error", "approval",
     "subagent_result",
 ]
+EVENT_DELTA: StreamEventKind = "delta"
+EVENT_REASONING: StreamEventKind = "reasoning"
+EVENT_TOOL_CALL: StreamEventKind = "tool_call"
+EVENT_DONE: StreamEventKind = "done"
+EVENT_ERROR: StreamEventKind = "error"
+EVENT_APPROVAL: StreamEventKind = "approval"
+EVENT_SUBAGENT_RESULT: StreamEventKind = "subagent_result"
 
 
 class StreamEvent(Base):
@@ -231,7 +238,7 @@ class StreamEvent(Base):
     channel: str = ""
     session_id: str = ""
     turn_id: str = ""  # id of the MessageIn this event belongs to
-    kind: StreamEventKind = "delta"
+    kind: StreamEventKind = EVENT_DELTA
     content: str = ""
     origin: Origin = Field(default_factory=Origin)
     # 仅 done 事件携带：本轮模型调用的 token 用量（厂商未上报则 None）
@@ -247,7 +254,7 @@ class StreamEvent(Base):
         非审批事件或坏包返回 None。协议形状只在这里定义一次，消费端不再
         各自 ``json.loads`` 猜键名。
         """
-        if self.kind != "approval":
+        if self.kind != EVENT_APPROVAL:
             return None
         try:
             return ApprovalRequest.model_validate_json(self.content)

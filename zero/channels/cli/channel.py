@@ -38,7 +38,9 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.models import CHANNEL_CLI, MessageOut, StreamEvent, TokenUsage
+from zero.models import (
+    CHANNEL_CLI, EVENT_APPROVAL, EVENT_DELTA, EVENT_DONE, EVENT_ERROR,
+    EVENT_REASONING, EVENT_TOOL_CALL, MessageOut, StreamEvent, TokenUsage)
 from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
@@ -277,7 +279,7 @@ class CLIChannel(BusChannel):
                     if event.turn_id != turn_id:
                         # 防御：listener 已按 active turn 路由，正常不会走到
                         continue
-                    if event.kind == "delta":
+                    if event.kind == EVENT_DELTA:
                         # 正文开始 → 收起思考面板（折叠成一行摘要），
                         # 让正式回答独占画面
                         if reason_acc.strip():
@@ -287,11 +289,11 @@ class CLIChannel(BusChannel):
                         # 工具已结束、模型继续输出：清除残留的工具状态行，
                         # 否则它会留在每一帧乃至终帧里重复出现
                         status = ""
-                    elif event.kind == "reasoning":
+                    elif event.kind == EVENT_REASONING:
                         # 思考 chunk：仅累积作实时展示（dim 面板），
                         # 不进 acc，故不影响最终回复、不落盘
                         reason_acc += event.content
-                    elif event.kind == "tool_call":
+                    elif event.kind == EVENT_TOOL_CALL:
                         # 思考结束、转入工具调用：先收思考再固化正文
                         if reason_acc.strip():
                             renderer.collapse_reasoning(live, reason_acc)
@@ -302,7 +304,7 @@ class CLIChannel(BusChannel):
                             renderer.freeze_paragraph(live, acc)
                             acc = ""
                         status = f"调用工具 {renderer.clip(event.content, 90)}"
-                    elif event.kind == "approval":
+                    elif event.kind == EVENT_APPROVAL:
                         # 固化段落后再审批：审批面板停/启 Live 会整帧重绘，
                         # 旧文本若留在帧里会在审批后再次出现。先固化清帧，
                         # 审批后只显示新文本
@@ -314,13 +316,13 @@ class CLIChannel(BusChannel):
                             acc = ""
                         # 通用就地审批：暂停 Live 提问，回答回填后恢复渲染
                         await self.approval.handle(event, live)
-                    elif event.kind == "error":
+                    elif event.kind == EVENT_ERROR:
                         status = ""
                         reason_acc = ""
                         live.stop()
                         self.console.print(f"[red]出错:[/red] {event.content}")
                         done = True  # 视为终结，迟到的 MessageOut 不再重复渲染
-                    elif event.kind == "done":
+                    elif event.kind == EVENT_DONE:
                         status = ""
                         reason_acc = ""
                         if event.content and not acc:

@@ -21,6 +21,11 @@ from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
 from zero.models import (
+    EVENT_DELTA,
+    EVENT_DONE,
+    EVENT_ERROR,
+    EVENT_REASONING,
+    EVENT_TOOL_CALL,
     SENDER_TOOL,
     AgentRuntimeConfig,
     MessageBody,
@@ -101,9 +106,9 @@ class AgentRunner:
         """
         reply = ""
         async for event in self.run_stream():
-            if event.kind == "delta":
+            if event.kind == EVENT_DELTA:
                 reply += event.content
-            elif event.kind == "done":
+            elif event.kind == EVENT_DONE:
                 reply = event.content or reply
         return reply
 
@@ -127,7 +132,7 @@ class AgentRunner:
             raise
         except Exception as e:  # noqa: BLE001 - report failure to the channel
             logger.exception("Agent runner failed")
-            yield StreamEvent(kind="error", content=str(e))
+            yield StreamEvent(kind=EVENT_ERROR, content=str(e))
 
     async def _run_loop(self):
         for _ in range(self.runtime_config.max_iterations):
@@ -161,13 +166,13 @@ class AgentRunner:
                     self._check_cancelled()
                     if kind == "content":
                         content_parts.append(data)
-                        yield StreamEvent(kind="delta", content=data)
-                    elif kind == "reasoning":
+                        yield StreamEvent(kind=EVENT_DELTA, content=data)
+                    elif kind == EVENT_REASONING:
                         # 透传思考过程供 channel 实时展示（CLI 用 dim 面板）。
                         # 刻意不进 content_parts：reasoning 不参与最终回复、
                         # 不落盘，仅作展示；终止安全点仍由上面的
                         # _check_cancelled 保证（reasoner 思考期也逐 chunk 检查）
-                        yield StreamEvent(kind="reasoning", content=data)
+                        yield StreamEvent(kind=EVENT_REASONING, content=data)
                     elif kind == "tool_calls":
                         self._accumulate_tool_call(tool_call_acc, data)
                     elif kind == "usage":
@@ -197,7 +202,7 @@ class AgentRunner:
                 # 收到 error 即抛 RuntimeError，不会被当成有效结果回投）。
                 if finish_reason == "length":
                     yield StreamEvent(
-                        kind="error",
+                        kind=EVENT_ERROR,
                         content=(
                             "模型输出达到 max_tokens 被截断"
                             "（finish_reason=length）：reasoning 与正文共享 "
@@ -207,12 +212,12 @@ class AgentRunner:
                 if not content.strip():
                     # 无 tool_calls 且正文为空：模型未产出任何可交付内容
                     yield StreamEvent(
-                        kind="error",
+                        kind=EVENT_ERROR,
                         content=f"模型返回空正文（finish_reason={finish_reason}）",
                     )
                     return
                 yield StreamEvent(
-                    kind="done",
+                    kind=EVENT_DONE,
                     content=content,
                     token_usage=usage,
                 )
@@ -231,7 +236,7 @@ class AgentRunner:
                     # 工具执行前的安全点：工具是长协程，边界检查不打断中途
                     self._check_cancelled()
                     yield StreamEvent(
-                        kind="tool_call",
+                        kind=EVENT_TOOL_CALL,
                         content=f"{tc.function.name}({tc.function.arguments})",
                     )
                     await self._execute_and_persist(tc)
@@ -265,7 +270,7 @@ class AgentRunner:
         # 落盘、渲染，甚至被子 agent 当成有效结果回投。error 事件让 channel
         # 展示失败、让 run_subagent 抛 RuntimeError。
         yield StreamEvent(
-            kind="error",
+            kind=EVENT_ERROR,
             content=(
                 "agent 循环达到最大迭代次数"
                 f"（max_iterations={self.runtime_config.max_iterations}），"
@@ -461,11 +466,11 @@ async def run_subagent(
     )
     reply = ""
     async for event in runner.run_stream():
-        if event.kind == "error":
+        if event.kind == EVENT_ERROR:
             raise RuntimeError(event.content)
-        if event.kind == "delta":
+        if event.kind == EVENT_DELTA:
             reply += event.content
-        elif event.kind == "done":
+        elif event.kind == EVENT_DONE:
             reply = event.content or reply
     return reply
 

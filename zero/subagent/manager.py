@@ -20,7 +20,8 @@ from zero.config import Config
 from zero.core.hooks import Hooks
 from zero.core.runner import run_subagent
 from zero.models import (
-    ORIGIN_SUBAGENT, MessageBody, MessageIn, Origin, StreamEvent, ToolContext)
+    EVENT_SUBAGENT_RESULT, ORIGIN_SUBAGENT, MessageBody, MessageIn, Origin,
+    StreamEvent, ToolContext)
 from zero.data_paths import DataPaths
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -129,7 +130,7 @@ class SubagentManager:
             channel=tool_context.channel,
             session_id=tool_context.session_id,
             turn_id=sid,
-            kind="subagent_result",
+            kind=EVENT_SUBAGENT_RESULT,
             content=result,
             origin=Origin(kind=ORIGIN_SUBAGENT, task_id=sid),
         ))

@@ -19,7 +19,9 @@ from rich.text import Text
 from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
 from zero.models import (
-    ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, MessageOut, Origin, StreamEvent)
+    EVENT_APPROVAL, EVENT_DELTA, EVENT_ERROR, EVENT_REASONING,
+    EVENT_SUBAGENT_RESULT, EVENT_TOOL_CALL, ORIGIN_SCHEDULER, ORIGIN_SUBAGENT,
+    MessageOut, Origin, StreamEvent)
 from zero.utils.notify import toast
 
 BackgroundKind = Literal["turn", "approval_blocked", "subagent_result"]
@@ -72,7 +74,7 @@ class CliBackground:
 
     def handle_event(self, event: StreamEvent) -> None:
         """Consume one stream event that is not the active turn."""
-        if event.kind == "subagent_result":
+        if event.kind == EVENT_SUBAGENT_RESULT:
             # 子 agent 结果原文：不走 turn 累积，直接进异步渲染管线独立展示
             self._notify_subagent_result(event)
             return
@@ -84,18 +86,18 @@ class CliBackground:
             "last_flush": 0.0,
             "streamed": False,
         })
-        if event.kind == "delta":
+        if event.kind == EVENT_DELTA:
             acc["text"] += event.content
             if self._stream_enabled():
                 self._push(acc, event.content)
-        elif event.kind == "reasoning":
+        elif event.kind == EVENT_REASONING:
             # 后台 turn（定时任务、已转后台的轮次）的思考过程默认忽略，
             # 避免噪音；正文仍照常累积与渲染
             return
-        elif event.kind == "tool_call":
+        elif event.kind == EVENT_TOOL_CALL:
             if self._stream_enabled():
                 self._push(acc, f"\n[调用工具 {event.content}]\n")
-        elif event.kind == "approval":
+        elif event.kind == EVENT_APPROVAL:
             # turn 已被 Ctrl+C 移入后台：审批请求无法就地提问，后端将
             # 超时 fail-closed。借异步结果管线（自带渲染锁串行）给用户
             # 一条明确提示，而不是静默丢弃
@@ -106,7 +108,7 @@ class CliBackground:
                 text=event.content or acc["text"],
                 session_id=acc["session_id"],
                 origin=acc["origin"],
-                error=event.kind == "error",
+                error=event.kind == EVENT_ERROR,
                 streamed=acc["streamed"],
             )
 

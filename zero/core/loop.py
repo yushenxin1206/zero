@@ -18,6 +18,7 @@ from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import (
+    EVENT_DELTA, EVENT_DONE, EVENT_ERROR, EVENT_TOOL_CALL,
     MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext,
     TurnStatus)
 from zero.data_paths import DataPaths
@@ -268,14 +269,14 @@ class AgentLoop:
                 event.turn_id = msg_in.id
                 event.origin = msg_in.origin
                 await self.msg_bus.stream_queue.enqueue(event)
-                if event.kind == "delta":
+                if event.kind == EVENT_DELTA:
                     reply_text += event.content
-                elif event.kind == "done":
+                elif event.kind == EVENT_DONE:
                     reply_text = event.content or reply_text
                     final_usage = event.token_usage
-                elif event.kind == "tool_call":
+                elif event.kind == EVENT_TOOL_CALL:
                     stat.tools += 1
-                elif event.kind == "error":
+                elif event.kind == EVENT_ERROR:
                     # 记录错误：LLM/工具失败（如孤儿 tool_call_id
                     # 触发 400）。不中断消费，但终止后不落盘空回复。
                     saw_error = event.content
@@ -329,7 +330,7 @@ class AgentLoop:
         部分回复不落盘；轮次边界仍必须闭合，否则加载时会被当成崩溃残留。
         """
         final_event = StreamEvent(
-            kind="done",
+            kind=EVENT_DONE,
             content=partial,
             cancelled=True,
             channel=msg_in.channel,

@@ -22,7 +22,8 @@ from uuid import uuid4
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
-from zero.models import ApprovalOption, ApprovalRequest, StreamEvent
+from zero.models import (
+    EVENT_APPROVAL, ApprovalOption, ApprovalRequest, StreamEvent)
 from zero.permission import envelope
 from zero.permission.envelope import PermissionState
 
@@ -82,7 +83,7 @@ async def request(
             channel=ctx.channel,
             session_id=ctx.session_id,
             turn_id=ctx.turn_id,
-            kind="approval",
+            kind=EVENT_APPROVAL,
             content=ApprovalRequest(
                 req_id=req_id,
                 title=title,
