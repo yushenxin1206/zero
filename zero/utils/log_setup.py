@@ -1,8 +1,8 @@
 """日志脚手架：文件/控制台分离、按大小轮转、密钥脱敏、第三方噪音压制。
 
 文件收 DEBUG（排障用，2MB × 保留 3 份），控制台只出 ERROR 及以上——CLI 是
-rich 全屏渲染，WARNING 级别的行会打断面板，所以不往终端刷。文件格式与
-改造前逐字符一致，历史 grep 习惯不变。
+rich 全屏渲染，WARNING 级别的行会打断面板，所以不往终端刷。两条格式都带
+源码位置（logger 名 + 行号）——见 ``FILE_FORMAT`` 的注释。
 """
 import logging
 import re
@@ -11,9 +11,18 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# 文件行格式：与 basicConfig 时代完全一致（时间/级别/logger 名/内容）
-FILE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-CONSOLE_FORMAT = "%(levelname)s %(name)s: %(message)s"
+# 文件行格式：时间/级别/logger 名:源码行/内容。
+#
+# 位置写成 ``%(name)s:%(lineno)d`` 而不是 ``%(filename)s:%(lineno)d``：
+# 本仓 logger 全部用 ``__name__`` 命名，name 本身就是模块路径
+# （``zero.core.loop``），已经唯一定位到文件；单加 filename 反而会在
+# session/store.py 与 scheduler/store.py 之间产生同名歧义，pathname 又太长。
+# 行号放在 name 之后，既有 grep 锚点（``[ERROR] zero.core.loop:``、
+# ``turn status=``）仍原样命中。
+FILE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d: %(message)s"
+# 控制台与文件刻意不同：不带时间戳（终端已有上下文），但同样带位置——
+# 控制台只出 ERROR，正是用户截图/粘贴给我们的那些行，位置直接可用。
+CONSOLE_FORMAT = "%(levelname)s %(name)s:%(lineno)d: %(message)s"
 
 MAX_BYTES = 2 * 1024 * 1024
 BACKUP_COUNT = 3
@@ -28,9 +37,12 @@ _SECRET_PATTERNS = (
 )
 
 # 自带 handler 或 DEBUG 级会刷屏的第三方 logger：统一汇入 root 并压到 WARNING。
+# 按前缀生效：给父 logger 设级别，未单独设级别的子 logger 会继承，
+# 例如 ``markdown_it.rules_block.*`` 全部收敛。
 _NOISY_LOGGERS = (
     "Lark", "lark_oapi", "websocket", "websockets",
-    "urllib3", "urllib3.connectionpool", "requests", "asyncio", "pywebview",
+    "urllib3", "urllib3.connectionpool", "requests", "asyncio",
+    "markdown_it", "pywebview",
 )
 
 

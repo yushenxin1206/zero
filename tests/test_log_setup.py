@@ -2,6 +2,7 @@
 
 全部用临时目录，结束后恢复 root handler —— 不污染其他测试的 caplog。
 """
+import inspect
 import logging
 
 import pytest
@@ -78,10 +79,35 @@ def test_console_only_outputs_errors(tmp_path, isolated_root, capsys):
     setup_logging(tmp_path)
     logger = logging.getLogger("zero.test.console")
     logger.warning("warning stays in file")
+    error_line = inspect.currentframe().f_lineno + 1
     logger.error("error reaches terminal")
     captured = capsys.readouterr()
     assert "warning stays in file" not in captured.err
-    assert "error reaches terminal" in captured.err
+    assert f"zero.test.console:{error_line}: error reaches terminal" in captured.err
+
+
+def test_log_includes_source_location(tmp_path, isolated_root):
+    """文件行带 logger 名:行号，可直接定位到发出日志的代码。"""
+    setup_logging(tmp_path)
+    logger = logging.getLogger("zero.test.location")
+    info_line = inspect.currentframe().f_lineno + 1
+    logger.info("locate me")
+    flush(isolated_root)
+
+    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert f"zero.test.location:{info_line}: locate me" in text
+
+
+def test_third_party_debug_noise_is_suppressed(tmp_path, isolated_root):
+    """第三方库的 DEBUG 噪音不进文件；本项目 DEBUG 照常保留。"""
+    setup_logging(tmp_path)
+    logging.getLogger("markdown_it.rules_block.hr").debug("entering hr")
+    logging.getLogger("zero.test.noise").debug("project detail")
+    flush(isolated_root)
+
+    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "entering hr" not in text
+    assert "project detail" in text
 
 
 def test_setup_is_idempotent(tmp_path, isolated_root):
