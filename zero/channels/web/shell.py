@@ -40,9 +40,9 @@ class _BootstrapApi:
 def run_desktop(
         backend: Callable[[dict[str, Any]], Awaitable[None]],
         *,
+        width: int,
+        height: int,
         title: str = "zero",
-        width: int = 1120,
-        height: int = 760,
 ) -> None:
     """Open the desktop window and run ``backend(holder)`` in a worker thread."""
     try:
