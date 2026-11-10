@@ -71,7 +71,7 @@ def create_task(
 def cancel_task(
         store: SchedulerStore, *, task_id: str,
         session_id: str) -> ScheduleTask:
-    """取消一个尚未终结（done/failed/cancelled）的定时任务。
+    """取消一个尚未终结（completed/failed/cancelled）的定时任务。
 
     仅允许取消属于 session_id 的任务；找不到或状态不允许时抛出 ValueError，
     由调用方（如工具层）决定如何呈现错误。
@@ -81,7 +81,7 @@ def cancel_task(
         raise ValueError(f"Scheduled task not found: {task_id!r}")
     if task.session_id != session_id:
         raise ValueError(f"Scheduled task {task_id!r} does not belong to this session.")
-    if task.status in ("done", "failed", "cancelled"):
+    if task.status in ("completed", "failed", "cancelled"):
         raise ValueError(f"Scheduled task {task_id!r} is already {task.status}, cannot cancel.")
 
     store.update_status(task_id, "cancelled")

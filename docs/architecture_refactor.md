@@ -149,8 +149,9 @@
   加 `[turn=... session=...]` 前缀。调用点不新增参数，`asyncio.to_thread`
   里的写盘与工具日志同样携带。
 - **定时任务终态**：派发入队只把任务置为 `running`，轮次真正结束后由
-  `Scheduler.finish_turn` 回写；once 落 `done` / `failed` / `cancelled`，
-  recurring 保持 `pending` 并同样记录 `last_status` / `last_error`。
+  `Scheduler.finish_turn` 回写；once 落 `completed` / `failed` / `cancelled`，
+  recurring 保持 `pending` 并更新 `last_run_at`。本轮成败只由轮次摘要日志
+  记录，任务文件不再冗余存一份结果。
   进程内 `_in_flight` 集合阻止 running 任务被重复派发；进程中途崩溃时
   once 停留在 running，重启后仍会被 `find_due` 重跑（at-least-once）。
 

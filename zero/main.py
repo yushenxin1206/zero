@@ -127,7 +127,7 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
     )
     registry.register(SubagentTool(subagent_manager))
     # 定时任务的终态由轮次真正结束时回写：dispatch 只标 running，
-    # Scheduler.finish_turn 负责落 done/failed/cancelled
+    # Scheduler.finish_turn 负责落 completed/failed/cancelled
     scheduler = Scheduler(msg_bus=msg_bus, store=scheduler_store)
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,

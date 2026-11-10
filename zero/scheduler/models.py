@@ -11,10 +11,10 @@ from pydantic import Field
 from zero.models import Base
 
 ScheduleType = Literal["once", "recurring"]
-TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
-# 一轮实际执行的结果；与任务状态区分：recurring 执行失败后任务仍回到
-# pending 等待下一次触发，失败事实记录在 last_status / last_error 上。
-RunOutcome = Literal["ok", "failed", "cancelled"]
+TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+# 轮次状态：调度器自己声明入口词汇，不 import core 的同名类型。两边各自
+# 独立演进，loop 将来新增的状态不会自动成为调度器接受的输入。
+TurnStatus = Literal["completed", "error", "cancelled"]
 
 
 class ScheduleTask(Base):
@@ -32,6 +32,3 @@ class ScheduleTask(Base):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     last_run_at: datetime | None = None
-    # 最近一轮真实执行的结果与失败原因（空串表示还没跑过）
-    last_status: RunOutcome | Literal[""] = ""
-    last_error: str = ""

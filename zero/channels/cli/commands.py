@@ -177,7 +177,7 @@ class CliCommands:
 
         status_style = {
             "pending": "yellow", "running": "green",
-            "done": "dim", "failed": "red", "cancelled": "dim",
+            "completed": "dim", "failed": "red", "cancelled": "dim",
         }
         table = Table(
             title=f"定时任务（{'全部' if show_all else '当前会话'}）", expand=True)

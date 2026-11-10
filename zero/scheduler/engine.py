@@ -17,8 +17,8 @@ import logging
 from datetime import datetime
 
 from zero.bus.queue import BusQueueFull, MessageBus
-from zero.models import MessageBody, MessageIn, Origin, TurnStatus
-from zero.scheduler.models import RunOutcome, ScheduleTask
+from zero.models import MessageBody, MessageIn, Origin
+from zero.scheduler.models import ScheduleTask, TaskStatus, TurnStatus
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -26,9 +26,11 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 10
 
-# 轮次结束时的 loop 状态 → 执行结果
-_RUN_OUTCOME: dict[TurnStatus, RunOutcome] = {
-    "completed": "ok",
+# 边界守卫：只把调度器声明过的轮次状态映射成任务终态。它不是名字翻译表——
+# loop 将来新增的状态不会自动获得映射，未知值一律按失败处理，防止 core 的
+# 状态空间渗进任务存储。
+_TURN_STATUS_TO_TASK_STATUS: dict[TurnStatus, TaskStatus] = {
+    "completed": "completed",
     "error": "failed",
     "cancelled": "cancelled",
 }
@@ -99,22 +101,22 @@ class Scheduler:
         # once：终态等 finish_turn 回写，派发只代表"已开始"
 
     async def finish_turn(self, msg_in: MessageIn, status: TurnStatus,
-                          error: str) -> None:
-        """AgentLoop 轮次结束回调：把真实结果回写给定时任务。
+                          _error: str) -> None:
+        """AgentLoop 轮次结束回调：把最终状态回写给定时任务。
 
-        once 在这一刻才进入 done/failed/cancelled；recurring 保持 pending，
-        只记录本轮 last_status / last_error。非定时任务来源直接忽略。
+        once 在这一刻才进入 completed/failed/cancelled；recurring 保持
+        pending，只更新 last_run_at。非定时任务来源直接忽略。轮次错误原因
+        已由 loop 的轮次摘要记录，任务侧不再存一份（没有读取方）。
         """
         origin = msg_in.origin
         if origin.kind != "scheduler" or not origin.task_id:
             return
         task_id = origin.task_id
         self._in_flight.discard(task_id)
-        outcome = _RUN_OUTCOME.get(status, "failed")
+        task_status = _TURN_STATUS_TO_TASK_STATUS.get(status, "failed")
         try:
             await asyncio.to_thread(
-                self.store.finish_run, task_id, outcome=outcome,
-                error="" if outcome == "ok" else error)
+                self.store.finish_run, task_id, status=task_status)
         except Exception:  # noqa: BLE001 - 回写失败只留痕，不能影响轮次
             # 读写失败（文件不可读、JSON 损坏、写入/替换失败）都会走到这里。
             # 不重试、不写"失败"标记：同一份存储刚写失败，重试几乎必然再失败，
@@ -123,4 +125,4 @@ class Scheduler:
             # "真的还在跑"。
             logger.exception(
                 "定时任务 %s 状态回写失败：期望 %s；任务将停留在 running，"
-                "重启后按到期重跑", task_id, outcome)
+                "重启后按到期重跑", task_id, task_status)

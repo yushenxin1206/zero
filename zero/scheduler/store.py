@@ -11,17 +11,9 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from zero.scheduler.models import RunOutcome, ScheduleTask, TaskStatus
+from zero.scheduler.models import ScheduleTask, TaskStatus
 
 logger = logging.getLogger(__name__)
-
-# once 任务执行结果 → 终态。显式标注键值类型：内联字典会被推断成
-# dict[str, str]，取出来是无法赋给 TaskStatus（Literal）的裸 str。
-_ONCE_FINAL_STATUS: dict[RunOutcome, TaskStatus] = {
-    "ok": "done",
-    "failed": "failed",
-    "cancelled": "cancelled",
-}
 
 
 class SchedulerStore:
@@ -35,11 +27,20 @@ class SchedulerStore:
         if not path.exists():
             return tasks
         with path.open("r", encoding="utf-8") as f:
-            for line in f:
+            for line_number, line in enumerate(f, start=1):
                 line = line.strip()
                 if not line:
                     continue
-                task = ScheduleTask.model_validate_json(line)
+                try:
+                    task = ScheduleTask.model_validate_json(line)
+                except ValueError:
+                    # 单条坏数据（含旧版 status="done" 这类已失效取值）只
+                    # 丢弃该条，不能让整个任务列表加载失败。下一次写盘时
+                    # 该行会随全量重写消失。
+                    logger.warning(
+                        "跳过无法解析的定时任务（%s 第 %d 行）：%s",
+                        path, line_number, line[:120])
+                    continue
                 tasks[task.id] = task
         return tasks
 
@@ -97,13 +98,13 @@ class SchedulerStore:
         task.updated_at = datetime.now()
         self._save_tasks(tasks)
 
-    def finish_run(self, task_id: str, *, outcome: RunOutcome,
-                   error: str = "") -> None:
-        """一轮真正结束后回写结果。
+    def finish_run(self, task_id: str, *, status: TaskStatus) -> None:
+        """一轮真正结束后回写任务状态。
 
-        once 在这一刻才进入终态（done / failed / cancelled）——派发入队
-        只是"已开始"，不是"已完成"。recurring 已由 dispatch 推进到下一次
-        触发并回到 pending，这里只记录本轮结果，不覆盖任务状态。
+        once 在这一刻才进入终态（completed / failed / cancelled）——派发
+        入队只是"已开始"，不是"已完成"。recurring 已由 dispatch 推进到
+        下一次触发并回到 pending，这里只更新 last_run_at；本轮成败不落盘，
+        由轮次摘要日志记录。
 
         进程在轮次中途崩溃时，once 会停留在 running，重启后仍会被
         find_due 捞出重跑（at-least-once），不会永久卡住。
@@ -116,13 +117,11 @@ class SchedulerStore:
         task = tasks.get(task_id)
         if task is None:
             logger.warning(
-                "定时任务 %s 不存在，忽略本轮结果回写（outcome=%s）",
-                task_id, outcome)
+                "定时任务 %s 不存在，忽略本轮状态回写（status=%s）",
+                task_id, status)
             return
-        task.last_status = outcome
-        task.last_error = "" if outcome == "ok" else error
         task.last_run_at = datetime.now()
         if task.schedule_type == "once":
-            task.status = _ONCE_FINAL_STATUS[outcome]
+            task.status = status
         task.updated_at = datetime.now()
         self._save_tasks(tasks)
