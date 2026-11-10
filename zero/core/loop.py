@@ -21,6 +21,7 @@ from zero.models import (
 from zero.data_paths import DataPaths
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
+from zero.utils.log_context import turn_log_context
 
 logger = logging.getLogger(__name__)
 
@@ -134,17 +135,20 @@ class AgentLoop:
         stat = TurnStat(
             turn_id=msg_in.id, channel=msg_in.channel,
             session_id=msg_in.session_id)
-        try:
-            await self._run_turn(msg_in, stop_event, stat)
-        except asyncio.CancelledError:
-            stat.status = "cancelled"
-            raise
-        except BaseException as e:  # noqa: BLE001 - 先留痕再原样抛出
-            stat.status = "error"
-            stat.error = f"{type(e).__name__}: {e}"
-            raise
-        finally:
-            logger.info(_format_turn(stat))
+        # 轮次标识进 contextvars：本轮所有日志（含线程池里的写盘/工具日志）
+        # 自动带上 turn/session 前缀，调用点不需要手工传字段。
+        with turn_log_context(msg_in.id, msg_in.session_id):
+            try:
+                await self._run_turn(msg_in, stop_event, stat)
+            except asyncio.CancelledError:
+                stat.status = "cancelled"
+                raise
+            except BaseException as e:  # noqa: BLE001 - 先留痕再原样抛出
+                stat.status = "error"
+                stat.error = f"{type(e).__name__}: {e}"
+                raise
+            finally:
+                logger.info(_format_turn(stat))
 
     async def _run_turn(
             self, msg_in: MessageIn, stop_event: asyncio.Event,

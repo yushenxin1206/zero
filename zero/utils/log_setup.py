@@ -11,7 +11,9 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-# 文件行格式：时间/级别/logger 名:源码行/内容。
+from zero.utils.log_context import current_session_id, current_turn_id
+
+# 文件行格式：时间/级别/logger 名:源码行/轮次上下文/内容。
 #
 # 位置写成 ``%(name)s:%(lineno)d`` 而不是 ``%(filename)s:%(lineno)d``：
 # 本仓 logger 全部用 ``__name__`` 命名，name 本身就是模块路径
@@ -19,10 +21,14 @@ from pathlib import Path
 # session/store.py 与 scheduler/store.py 之间产生同名歧义，pathname 又太长。
 # 行号放在 name 之后，既有 grep 锚点（``[ERROR] zero.core.loop:``、
 # ``turn status=``）仍原样命中。
-FILE_FORMAT = "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d: %(message)s"
-# 控制台与文件刻意不同：不带时间戳（终端已有上下文），但同样带位置——
-# 控制台只出 ERROR，正是用户截图/粘贴给我们的那些行，位置直接可用。
-CONSOLE_FORMAT = "%(levelname)s %(name)s:%(lineno)d: %(message)s"
+#
+# ``%(context)s`` 由 TurnContextFilter 注入：轮内是
+# `` [turn=<id> session=<id>]``，轮外为空串，因此不改动既有行的可读性。
+FILE_FORMAT = (
+    "%(asctime)s [%(levelname)s] %(name)s:%(lineno)d:%(context)s %(message)s")
+# 控制台与文件刻意不同：不带时间戳（终端已有上下文），但同样带位置与轮次
+# 前缀——控制台只出 ERROR，正是用户截图/粘贴给我们的那些行，位置直接可用。
+CONSOLE_FORMAT = "%(levelname)s %(name)s:%(lineno)d:%(context)s %(message)s"
 
 MAX_BYTES = 2 * 1024 * 1024
 BACKUP_COUNT = 3
@@ -64,6 +70,22 @@ class SecretFilter(logging.Filter):
         return True
 
 
+class TurnContextFilter(logging.Filter):
+    """把当前轮次的 turn_id / session_id 写进每条 LogRecord。
+
+    值来自 contextvars，轮内所有日志自动携带；轮外为空，前缀也随之为空。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        turn_id = current_turn_id()
+        session_id = current_session_id()
+        record.turn_id = turn_id
+        record.session_id = session_id
+        record.context = (
+            f" [turn={turn_id} session={session_id}]" if turn_id else "")
+        return True
+
+
 def setup_logging(
         log_dir: Path,
         *,
@@ -93,6 +115,7 @@ def setup_logging(
     console_handler.setFormatter(logging.Formatter(CONSOLE_FORMAT))
 
     for handler in (file_handler, console_handler):
+        handler.addFilter(TurnContextFilter())
         handler.addFilter(SecretFilter())
         logger.addHandler(handler)
     logger.setLevel(logging.DEBUG)

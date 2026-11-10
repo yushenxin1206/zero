@@ -11,6 +11,7 @@ import pytest
 from logging.handlers import RotatingFileHandler
 
 from zero.utils.log_setup import FILE_FORMAT, setup_logging
+from zero.utils.log_context import turn_log_context
 
 
 @pytest.fixture
@@ -102,6 +103,26 @@ def test_log_includes_source_location(tmp_path, isolated_root):
 
     text = (log_dir(tmp_path) / "debug.log").read_text(encoding="utf-8")
     assert f"zero.test.location:{info_line}: locate me" in text
+
+
+def test_log_lines_carry_turn_context(tmp_path, isolated_root):
+    """轮内日志自动带 turn/session 前缀，轮外保持原格式。"""
+    setup_logging(log_dir(tmp_path))
+    logger = logging.getLogger("zero.test.context")
+    logger.info("outside turn")
+    with turn_log_context("t1", "s1"):
+        logger.info("inside turn")
+    logger.info("after turn")
+    flush(isolated_root)
+
+    lines = (log_dir(tmp_path) / "debug.log").read_text(
+        encoding="utf-8").splitlines()
+    inside = next(line for line in lines if "inside turn" in line)
+    outside = next(line for line in lines if "outside turn" in line)
+    after = next(line for line in lines if "after turn" in line)
+    assert "[turn=t1 session=s1] inside turn" in inside
+    assert "turn=" not in outside
+    assert "turn=" not in after
 
 
 def test_third_party_debug_noise_is_suppressed(tmp_path, isolated_root):
