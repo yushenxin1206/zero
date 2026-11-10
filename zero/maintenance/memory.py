@@ -45,11 +45,13 @@ async def run_memory(
         provider: Provider,
         runtime: AgentRuntimeConfig,
         maintenance_cfg: MaintenanceConfig,
+        session_store: SessionStore,
 ) -> None:
     """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
     since = dt.datetime.now() - MEMORY_WINDOW
     # 会话索引/复盘读取是阻塞文件 IO：整批放线程池，事件循环只等结果
-    summaries = await asyncio.to_thread(_collect_summaries, since)
+    summaries = await asyncio.to_thread(
+        _collect_summaries, since, session_store)
     if not summaries:
         return  # 无新复盘信息，无需更新
 
@@ -80,12 +82,13 @@ async def run_memory(
     logger.info("记忆沉淀完成：合并 %d 份会话复盘", len(summaries))
 
 
-def _collect_summaries(since: dt.datetime) -> list[SessionSummary]:
+def _collect_summaries(
+        since: dt.datetime, store: SessionStore) -> list[SessionSummary]:
     """读取窗口内所有渠道的会话复盘（阻塞 IO，由线程池调用）。"""
     summaries: list[SessionSummary] = []
-    for channel in SessionStore.list_channels():
-        for meta in SessionStore.list_recent(channel, since):
-            s = SessionStore.load_summary(channel, meta.session_id)
+    for channel in store.list_channels():
+        for meta in store.list_recent(channel, since):
+            s = store.load_summary(channel, meta.session_id)
             if s is not None:
                 summaries.append(s)
     return summaries

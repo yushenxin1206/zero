@@ -13,10 +13,9 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn
-from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_test_config, wait_turn_closed
+from tests.support import make_store, make_test_config, wait_turn_closed
 
 
 class _DummyTool(Tool):
@@ -54,7 +53,8 @@ async def run_case() -> dict:
             raise TurnCancelled()
 
     loop = AgentLoop(msg_bus=bus, config=cfg,
-                     tool_registry=registry, hooks=CancellingHooks())
+                     tool_registry=registry, hooks=CancellingHooks(),
+                     session_store=make_store())
 
     from zero.core.runner import AgentRunner
     orig = AgentRunner.__init__
@@ -90,7 +90,7 @@ async def run_case() -> dict:
         except Exception:
             msg_out = None
         # 取消收尾先把 done/MessageOut 入队、再落 end_turn；不等闭合就读历史
-        # 会把本轮当成崩溃残留（见 SessionStore.load_history）
+        # 会把本轮当成崩溃残留（见 make_store().load_history）
         await wait_turn_closed("cli", "s-approve-stop", msg.id)
         loop_task.cancel()
         try:
@@ -98,7 +98,7 @@ async def run_case() -> dict:
         except asyncio.CancelledError:
             pass
 
-        history = SessionStore.load_history("s-approve-stop", "cli")
+        history = make_store().load_history("s-approve-stop", "cli")
         return {"done_ev": done_ev, "err_ev": err_ev, "msg_out": msg_out,
                 "history": history}
     finally:

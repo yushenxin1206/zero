@@ -31,13 +31,16 @@ from zero.session.store import SessionStore
 logger = logging.getLogger(__name__)
 
 
-def session_model(config: Config, channel: str, session_id: str) -> str:
+def session_model(
+        config: Config, channel: str, session_id: str,
+        session_store: SessionStore,
+) -> str:
     """会话当前生效的模型注册表键：绑定优先，未绑定回退全局 default。
 
     channel 无关的只读查询，供各 channel 展示「当前模型」。绑定语义收敛
     在 core，channel 只渲染不重复实现。
     """
-    return (SessionStore.get_model(channel, session_id)
+    return (session_store.get_model(channel, session_id)
             or config.resolve_runtime("default").llm_call_options.model)
 
 
@@ -57,6 +60,7 @@ async def switch_model(
         session_id: str,
         new_model: str,
         *,
+        session_store: SessionStore,
         tools: list[dict] | None = None,
 ) -> ModelSwitchResult:
     """把会话绑定模型切换到 new_model（config.models 注册表键）。
@@ -71,7 +75,7 @@ async def switch_model(
             f"已知键: {sorted(config.models)}")
 
     old_model = (await asyncio.to_thread(
-        SessionStore.get_model, channel, session_id)
+        session_store.get_model, channel, session_id)
         or config.resolve_runtime("default").llm_call_options.model)
     if old_model == new_model:
         return ModelSwitchResult(
@@ -88,7 +92,9 @@ async def switch_model(
 
     # 同一进程内会话上下文的 system prompt 复用同一 Context 构建逻辑；
     # 历史/压缩记录/提示词全部在线程池读完再进入压缩调用，事件循环不等盘
-    ctx = Context(session_id=session_id, channel=channel)
+    ctx = Context(
+        session_id=session_id, channel=channel,
+        session_store=session_store)
     await ctx.aprepare()
     raw = ctx.raw_history
     rec = ctx.compact_record
@@ -101,6 +107,7 @@ async def switch_model(
             session_runtime=target,
             compact_runtime=compact_runtime,
             compact_config=config.compact,
+            session_store=session_store,
         )
         record = await compactor.compress_for_target(
             session_id=session_id,
@@ -117,7 +124,7 @@ async def switch_model(
         compacted = record is not None
 
     await asyncio.to_thread(
-        SessionStore.set_model, channel, session_id, new_model)
+        session_store.set_model, channel, session_id, new_model)
     logger.info(
         "会话模型切换: session=%s %s -> %s%s", session_id, old_model, new_model,
         " (已按新窗口压缩)" if compacted else "")

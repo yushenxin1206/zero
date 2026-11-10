@@ -9,6 +9,7 @@ import contextlib
 
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
+from tests.support import make_store
 from zero.models import (
     AgentRuntimeConfig,
     CompactConfig,
@@ -27,7 +28,7 @@ CHANNEL = "cli"
 
 
 def fresh_session(source_id: str) -> str:
-    return SessionStore.create_session(CHANNEL, source_id)
+    return make_store().create_session(CHANNEL, source_id)
 
 
 def make_msg(sender, content="", session_id="", tool_calls=None,
@@ -48,28 +49,28 @@ def tc(name="read", args="{}") -> ToolCall:
 
 @contextlib.contextmanager
 def count_reads():
-    """统计 SessionStore.load_history / load_compact 的调用次数。"""
+    """统计 make_store().load_history / load_compact 的调用次数。"""
     counter = {"history": 0, "compact": 0}
     orig_history = SessionStore.load_history
     orig_compact = SessionStore.load_compact
 
-    def counted_history(session_id, channel, include_compact=True,
+    def counted_history(self_, session_id, channel, include_compact=True,
                         repair_closed_turns=False, active_turn_id=""):
         counter["history"] += 1
-        return orig_history(session_id, channel, include_compact,
+        return orig_history(self_, session_id, channel, include_compact,
                             repair_closed_turns, active_turn_id)
 
-    def counted_compact(channel, session_id):
+    def counted_compact(self_, channel, session_id):
         counter["compact"] += 1
-        return orig_compact(channel, session_id)
+        return orig_compact(self_, channel, session_id)
 
-    SessionStore.load_history = staticmethod(counted_history)
-    SessionStore.load_compact = staticmethod(counted_compact)
+    SessionStore.load_history = counted_history
+    SessionStore.load_compact = counted_compact
     try:
         yield counter
     finally:
-        SessionStore.load_history = staticmethod(orig_history)
-        SessionStore.load_compact = staticmethod(orig_compact)
+        SessionStore.load_history = orig_history
+        SessionStore.load_compact = orig_compact
 
 
 class FakeProvider:
@@ -97,17 +98,17 @@ def make_compactor(fake, window=20000, max_tokens=100,
         llm_call_options=LLMCallOptions(model="mock-model"))
     cs = CompactConfig(context_compact_max_tokens=context_compact_max)
     return Compactor(provider=fake, session_runtime=rc, compact_runtime=cc,
-                     compact_config=cs)
+                     compact_config=cs, session_store=make_store())
 
 
 def seed_big(sid):
     """两轮历史：总估算 ~15400 tokens（窗口 20000，阈值 15000）。"""
-    SessionStore.append(make_msg("user", "你好" * 3500, session_id=sid))
-    SessionStore.append(make_msg("assistant", "第一轮回复", session_id=sid))
-    SessionStore.append(make_msg("user", "继续" * 3500, session_id=sid))
-    SessionStore.append(make_msg("assistant", "", session_id=sid,
+    make_store().append(make_msg("user", "你好" * 3500, session_id=sid))
+    make_store().append(make_msg("assistant", "第一轮回复", session_id=sid))
+    make_store().append(make_msg("user", "继续" * 3500, session_id=sid))
+    make_store().append(make_msg("assistant", "", session_id=sid,
                                  tool_calls=[tc()]))
-    SessionStore.append(make_msg("tool", "结果" * 10, session_id=sid,
+    make_store().append(make_msg("tool", "结果" * 10, session_id=sid,
                                  tool_call_id="call_1"))
 
 
@@ -130,13 +131,13 @@ def test_apply_compact_pure_function():
 def test_snapshot_semantics():
     """turn 内不感知外部写入，record() 立即反映。"""
     sid = fresh_session("src-snapshot")
-    SessionStore.append(make_msg("user", "第一条", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL)
+    make_store().append(make_msg("user", "第一条", session_id=sid))
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store())
 
     assert [m["role"] for m in ctx.messages] == ["system", "user"]
 
     # 绕过 record 直接写盘（模拟另一进程 mid-turn 写入）→ 快照不变
-    SessionStore.append(make_msg("user", "外部写入", session_id=sid))
+    make_store().append(make_msg("user", "外部写入", session_id=sid))
     assert len(ctx.messages) == 2, "turn 内应保持一次原子快照"
 
     # 走 record → 立即反映（写透）
@@ -144,14 +145,14 @@ def test_snapshot_semantics():
     assert len(ctx.messages) == 3
     assert ctx.messages[-1] == {"role": "assistant", "content": "回复"}
     # record 也写入磁盘（新 Context 能看到：system + 3 条消息）
-    assert len(Context(session_id=sid, channel=CHANNEL).messages) == 4
+    assert len(Context(session_id=sid, channel=CHANNEL, session_store=make_store()).messages) == 4
 
 
 def test_compaction_view_rebuild():
     """压缩回写后无需重读盘即可合成 [压缩] + 尾部。"""
     sid = fresh_session("src-compact-view")
     seed_big(sid)
-    ctx = Context(session_id=sid, channel=CHANNEL)
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store())
     assert asyncio.run(
         make_compactor(FakeProvider()).maybe_compress(ctx)) is True
 
@@ -167,8 +168,8 @@ def test_compaction_view_rebuild():
 def test_per_turn_single_read():
     """模拟完整 turn（N 次迭代）只读一次盘。"""
     sid = fresh_session("src-turn-count")
-    SessionStore.append(make_msg("user", "任务", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL)
+    make_store().append(make_msg("user", "任务", session_id=sid))
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store())
     comp = make_compactor(FakeProvider())
 
     with count_reads() as counter:
@@ -183,7 +184,7 @@ def test_per_turn_single_read():
 
 def test_subagent_isolation():
     """子 agent 纯内存上下文不触盘。"""
-    sub = SubAgentContext("子任务")
+    sub = SubAgentContext("子任务", session_store=make_store())
     with count_reads() as counter:
         _ = sub.messages
         sub.record(make_msg("assistant", "子回复"))

@@ -24,6 +24,8 @@ from uuid import uuid4
 
 import pytest
 
+from tests.support import make_store
+
 import zero.channels as channels_pkg
 from zero.paths import current
 from zero.permission import envelope, seatbelt
@@ -37,6 +39,20 @@ from zero.tools.write import Write
 
 DARWIN_ONLY = pytest.mark.skipif(
     sys.platform != "darwin", reason="Seatbelt / launchd 仅 macOS")
+
+
+def current_envelope(ctx=None):
+    """测试边界：按当前隔离根构造存储，喂给包络推导。"""
+    return envelope.current_envelope(ctx, session_store=make_store())
+
+
+def check_writable(path, ctx=None):
+    return envelope.check_writable(
+        path, ctx, session_store=make_store())
+
+
+def make_shell() -> Shell:
+    return Shell(session_store=make_store())
 
 # 无人值守渠道：不能就地弹审批面板，也不放行网络。新增渠道必须显式归类
 # （加入 ATTENDED_CHANNELS 或这里），否则下面的覆盖测试会失败。
@@ -73,7 +89,7 @@ def test_unattended_channels_never_prompt_or_network():
     for name in UNATTENDED_CHANNELS:
         ctx = ToolContext(channel=name)
         assert not envelope.attended(ctx), name
-        assert not envelope.current_envelope(ctx).network, name
+        assert not current_envelope(ctx).network, name
 
 
 def make_ctx(channel: str = "cli", kind: str = "user") -> HookContext:
@@ -137,8 +153,8 @@ def test_render_denied_network():
 def test_network_policy_by_source():
     """网络放行与「能否弹审批」共用同一判定：只有交互渠道的用户轮次放行。"""
     assert envelope.attended(make_ctx())
-    assert envelope.current_envelope(make_ctx()).network
-    assert envelope.current_envelope(ToolContext(channel="cli")).network
+    assert current_envelope(make_ctx()).network
+    assert current_envelope(ToolContext(channel="cli")).network
 
     unattended = (
         ToolContext(channel="cli", origin=Origin(kind="scheduler")),
@@ -148,7 +164,7 @@ def test_network_policy_by_source():
     )
     for ctx in unattended:
         assert not envelope.attended(ctx), ctx
-        assert not envelope.current_envelope(ctx).network, ctx
+        assert not current_envelope(ctx).network, ctx
 
 
 # ---------------------------------------------------------------------------
@@ -163,13 +179,13 @@ def test_scope():
     v = envelope.check_readable("zero/permission/envelope.py")
     assert v.ok and v.tier == envelope.P, v
 
-    v = envelope.check_writable("zero/permission/envelope.py")
+    v = check_writable("zero/permission/envelope.py")
     assert v.ok, v
 
-    v = envelope.check_writable("/etc/hosts")
+    v = check_writable("/etc/hosts")
     assert not v.ok and v.tier == envelope.D, v
 
-    v = envelope.check_writable(outside("zero-out-selftest"))
+    v = check_writable(outside("zero-out-selftest"))
     assert not v.ok and v.tier == envelope.G, v
 
 
@@ -213,7 +229,7 @@ def test_network_probe():
 def test_guard_basics():
     async def main():
         bus = MessageBus()
-        guard = PermissionGuard(bus)
+        guard = PermissionGuard(bus, session_store=make_store())
 
         assert await guard("read", {}, make_ctx()) is None, "非 shell 应放行"
 
@@ -240,7 +256,7 @@ def test_guard_unattended_expand_fail_closed():
     """非 CLI 渠道同样无人值守。"""
     async def main():
         bus = MessageBus()
-        guard = PermissionGuard(bus)
+        guard = PermissionGuard(bus, session_store=make_store())
         ctx = make_ctx(channel="feishu")
         d = await guard("shell", {"command": "echo x",
                                   "write_paths": [outside("zero-out-selftest")]},
@@ -256,7 +272,7 @@ def test_guard_tiers():
 
     async def main():
         bus = MessageBus()
-        guard = PermissionGuard(bus)
+        guard = PermissionGuard(bus, session_store=make_store())
 
         # D 档：不可授予 → 拒绝，且绝不进面板
         ctx = make_ctx()
@@ -279,7 +295,7 @@ def test_guard_tiers():
         assert d is not None and d.proceed, d
         assert "本会话" in d.note, d.note
         assert envelope.session_roots(ctx), "「本会话允许」应写入会话扩权表"
-        assert envelope.check_writable(target, ctx).ok, "扩权后该路径应可写"
+        assert check_writable(target, ctx).ok, "扩权后该路径应可写"
         envelope.reset_session(ctx)
 
         # G 档 + 拒绝 → 拒绝，且不改状态
@@ -290,7 +306,7 @@ def test_guard_tiers():
                                   "write_paths": [target2]}, ctx)
         await worker
         assert d is not None and d.proceed is False, d
-        assert not envelope.check_writable(target2, ctx).ok
+        assert not check_writable(target2, ctx).ok
 
     asyncio.run(main())
 
@@ -304,7 +320,7 @@ def test_shell_denied_roundtrip():
     if not envelope.available():
         pytest.skip("内核沙箱不可用，跳过 shell 拒绝回投")
 
-    shell = Shell()
+    shell = make_shell()
     ctx = ToolContext(channel="cli", session_id=str(uuid4()))
 
     # 包络外写：内核拒绝 → sandbox_denied + needed
@@ -346,13 +362,13 @@ def test_shell_network_by_source():
     try:
         attended_ctx = ToolContext(
             channel="cli", session_id=str(uuid4()), origin=Origin(kind="user"))
-        result = asyncio.run(Shell().run(context=attended_ctx, command=command))
+        result = asyncio.run(make_shell().run(context=attended_ctx, command=command))
         assert result["returncode"] == 0, result
 
         unattended_ctx = ToolContext(
             channel="cli", session_id=str(uuid4()),
             origin=Origin(kind="scheduler"))
-        result = asyncio.run(Shell().run(context=unattended_ctx, command=command))
+        result = asyncio.run(make_shell().run(context=unattended_ctx, command=command))
         assert result["returncode"] != 0, result
         assert result.get("sandbox_denied") is True, result
         assert "断网" in result["needed"], result
@@ -397,7 +413,7 @@ def test_launchd_mutation_blocked():
         '  <key>RunAtLoad</key><true/>\n'
         '</dict>\n</plist>\n', encoding="utf-8")
 
-    text = seatbelt.render_profile(envelope.current_envelope(None))
+    text = seatbelt.render_profile(current_envelope(None))
 
     def sandboxed(argv):
         wrapped, profile = seatbelt.wrap(argv, text)
@@ -462,7 +478,7 @@ def test_file_tools_use_approval_gate():
     """
     async def main():
         bus = MessageBus()
-        guard = PermissionGuard(bus)
+        guard = PermissionGuard(bus, session_store=make_store())
 
         # read 到凭证目录：D 档拒绝，不进面板
         ctx = make_ctx()
@@ -517,7 +533,7 @@ def test_file_tools_use_approval_gate():
         await worker
         assert d is not None and d.proceed, d
         assert str(target) in d.note, d.note
-        assert envelope.check_writable(str(target), ctx).ok, "授权后该路径应可写"
+        assert check_writable(str(target), ctx).ok, "授权后该路径应可写"
         result = await Write().run(context=ctx.tool_context,
                                    file_path=str(target), content="ok")
         assert result.get("success") is True, result
@@ -531,7 +547,7 @@ def test_file_tools_use_approval_gate():
         d = await guard("write", {"file_path": target2, "content": "x"}, ctx)
         await worker
         assert d is not None and d.proceed is False, d
-        assert not envelope.check_writable(target2, ctx).ok
+        assert not check_writable(target2, ctx).ok
 
     asyncio.run(main())
 
@@ -548,7 +564,7 @@ def test_guard_covers_all_file_tools():
     """
     from zero.main import build_tool_registry
 
-    registry = build_tool_registry()
+    registry = build_tool_registry(make_store())
     covered = 0
     missing: list[str] = []
     for schema in registry.schemas():
@@ -571,7 +587,7 @@ def test_guard_fail_closed_on_internal_error(monkeypatch):
         raise RuntimeError("injected guard bug")
 
     monkeypatch.setattr(envelope, "check_readable", boom)
-    guard = PermissionGuard(MessageBus())
+    guard = PermissionGuard(MessageBus(), session_store=make_store())
     decision = asyncio.run(
         guard("read", {"file_path": "zero/permission/envelope.py"}, make_ctx()))
 

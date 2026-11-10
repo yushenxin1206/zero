@@ -362,11 +362,13 @@ def reset_session(ctx) -> None:
     _session_roots.pop(_key(ctx), None)
 
 
-def current_envelope(ctx=None) -> Envelope:
+def current_envelope(
+        ctx=None, *, session_store: SessionStore) -> Envelope:
     session_dir = None
     if ctx is not None and getattr(ctx, "session_id", ""):
         try:
-            session_dir = SessionStore.session_dir(ctx.channel, ctx.session_id)
+            session_dir = session_store.session_dir(
+                ctx.channel, ctx.session_id)
         except Exception:  # noqa: BLE001 - 推导失败退化为项目根，不阻断
             logger.warning("会话目录推导失败，退化为项目根", exc_info=True)
     return Envelope(
@@ -405,7 +407,8 @@ def check_readable(path, ctx=None) -> Verdict:
     return Verdict(ok=True)
 
 
-def check_writable(path, ctx=None) -> Verdict:
+def check_writable(
+        path, ctx=None, *, session_store: SessionStore) -> Verdict:
     """写方向是加法：必须在写集合内，且不落在不可授予名单。"""
     p = _real(path)
     for bad in _ungrantable_write():
@@ -413,7 +416,8 @@ def check_writable(path, ctx=None) -> Verdict:
             return Verdict(
                 ok=False, tier=D, needed=f"fs.write {p}",
                 reason=f"{p} 属于不可授予的写能力（系统路径或策略文件），换路径。")
-    if any(_under(p, r) for r in current_envelope(ctx).write_roots()):
+    if any(_under(p, r) for r in
+           current_envelope(ctx, session_store=session_store).write_roots()):
         return Verdict(ok=True)
     return Verdict(
         ok=False, tier=G, needed=f"fs.write {p}",
@@ -441,7 +445,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if cmd == "list":
-        env = current_envelope(None)
+        # CLI 子命令是进程边界：自行按当前数据根构造存储，供包络推导会话目录
+        env = current_envelope(
+            None, session_store=SessionStore(current().sessions))
         print("写集合（加法白名单）:")
         for r in env.write_roots():
             print(f"  {r}")

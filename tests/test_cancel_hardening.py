@@ -10,13 +10,12 @@ import unittest
 from pathlib import Path
 
 from zero.bus.queue import MessageBus
-from tests.support import make_test_config
+from tests.support import make_store, make_test_config
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import Message, MessageBody, MessageOut, StopRequest
 from zero.paths import current
 from zero.session.models import TurnMarker
-from zero.session.store import SessionStore
 
 
 class TestCancelledErrorRepairsHistory(unittest.TestCase):
@@ -35,7 +34,8 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
                     "function": {"name": "foo", "arguments": "{}"}}
 
         async def scenario() -> list:
-            context = Ctx(session_id="s-hard", channel="cli")
+            context = Ctx(session_id="s-hard", channel="cli",
+                          session_store=make_store())
             runner = AgentRunner(config=make_test_config(),
                                  running_context=context, hooks=Hooks())
             runner.provider = ToolsProvider()
@@ -51,7 +51,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
                 await ag.__anext__()
             # 取消上抛前必须已补占位（同步落盘，不经 await）；
             # 系统取消 ≠ 用户终止，文案必须如实区分
-            return SessionStore.load_history("s-hard", "cli")
+            return make_store().load_history("s-hard", "cli")
 
         hist = asyncio.run(scenario())
         self.assertEqual(len(hist), 2)
@@ -104,7 +104,7 @@ class TestLoadHistoryTurnRecovery(unittest.TestCase):
         ])
 
         # 只读路径：内存补占位，不写盘
-        hist = SessionStore.load_history(sid, "cli")
+        hist = make_store().load_history(sid, "cli")
         self.assertEqual(len(hist), 3)
         self.assertEqual(hist[2].sender, "tool")
         self.assertTrue(hist[2].synthetic)
@@ -112,13 +112,13 @@ class TestLoadHistoryTurnRecovery(unittest.TestCase):
         self.assertEqual(len(f.read_text().strip().splitlines()), 4)
 
         # 轮次所有者：落盘修复一次，之后幂等
-        hist2 = SessionStore.load_history(
+        hist2 = make_store().load_history(
             sid, "cli", repair_closed_turns=True)
         self.assertEqual(len(hist2), 3)
         raw = f.read_text(encoding="utf-8").strip().splitlines()
         self.assertEqual(len(raw), 5)  # begin + 3 消息 + end
         self.assertIn('"synthetic":true', raw[3])
-        hist3 = SessionStore.load_history(
+        hist3 = make_store().load_history(
             sid, "cli", repair_closed_turns=True)
         self.assertEqual(len(hist3), 3)
         self.assertEqual(len(f.read_text().strip().splitlines()), 5)
@@ -136,11 +136,11 @@ class TestLoadHistoryTurnRecovery(unittest.TestCase):
         before = f.read_text(encoding="utf-8")
 
         # 新轮次读历史：残留整轮丢弃，且不写盘
-        self.assertEqual(SessionStore.load_history(sid, "cli"), [])
+        self.assertEqual(make_store().load_history(sid, "cli"), [])
         self.assertEqual(f.read_text(encoding="utf-8"), before)
 
         # 该轮的 owner 自己读：原样返回，也不补占位（它可能还在写）
-        own = SessionStore.load_history(
+        own = make_store().load_history(
             sid, "cli", active_turn_id="t-crash",
             repair_closed_turns=True)
         self.assertEqual(len(own), 2)
@@ -162,7 +162,7 @@ class TestLoadHistoryTurnRecovery(unittest.TestCase):
                        body=MessageBody(content="下一问")),
             self._tool_call_msg(sid, "call_crash2"),
         ])
-        hist = SessionStore.load_history(sid, "cli")
+        hist = make_store().load_history(sid, "cli")
         self.assertEqual([m.body.content for m in hist], ["问", "答"])
 
     def test_clean_history_untouched(self):
@@ -175,7 +175,7 @@ class TestLoadHistoryTurnRecovery(unittest.TestCase):
                        body=MessageBody(content="答")),
         ])
         before = f.read_text(encoding="utf-8")
-        SessionStore.load_history(sid, "cli")
+        make_store().load_history(sid, "cli")
         self.assertEqual(f.read_text(encoding="utf-8"), before)
 
 
@@ -185,7 +185,7 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus)
+            ch = CLIChannel(msg_bus=bus, session_store=make_store())
             ch.service.session_id = "s-sigint"
             ch._active_turn_id = "turn-1"
             ch._sigint_stop_turn("turn-1")
@@ -207,7 +207,7 @@ class TestSigintStopTurn(unittest.TestCase):
 
         async def scenario():
             bus = MessageBus()
-            ch = CLIChannel(msg_bus=bus)
+            ch = CLIChannel(msg_bus=bus, session_store=make_store())
             ch.service.session_id = "s-sigint2"
             ch._active_turn_id = "turn-2"
             abort = threading.Event()

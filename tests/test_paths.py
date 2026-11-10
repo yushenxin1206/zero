@@ -11,8 +11,8 @@ import pytest
 
 from zero.config import load_config
 from zero.paths import current, scope
-from zero.session.store import SessionStore
 from zero.utils.file import save_or_create_file
+from tests.support import make_store
 
 
 def test_import_zero_has_no_data_root_io():
@@ -61,7 +61,7 @@ def test_two_scopes_do_not_interfere(tmp_path):
 
     async def worker(root: Path, marker: str) -> dict:
         with scope(root):
-            sid = SessionStore.create_session("cli", f"src-{marker}")
+            sid = make_store().create_session("cli", f"src-{marker}")
             save_or_create_file(current().config, json.dumps({
                 "models": {marker: {
                     "provider": "deepseek",
@@ -78,7 +78,7 @@ def test_two_scopes_do_not_interfere(tmp_path):
                 "sid": sid,
                 "models": set(load_config().models),
                 "memory": current().memory.read_text(encoding="utf-8"),
-                "session_dir": SessionStore.session_dir("cli", sid),
+                "session_dir": make_store().session_dir("cli", sid),
             }
 
     async def run() -> list[dict]:

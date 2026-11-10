@@ -24,6 +24,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import ApprovalOption, ApprovalRequest, StreamEvent
 from zero.permission import envelope
+from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -119,8 +120,13 @@ async def request(
 class PermissionGuard:
     """before_tool_call handler（签名与 hook 契约一致）。"""
 
-    def __init__(self, msg_bus: MessageBus | None = None):
+    def __init__(
+            self, msg_bus: MessageBus | None = None, *,
+            session_store: SessionStore,
+    ):
         self.msg_bus = msg_bus
+        # 包络推导会话目录需要会话存储，由组合根显式传入
+        self.session_store = session_store
 
     def _attended(self, ctx: HookContext) -> bool:
         """有人能回答审批吗？非交互渠道与后台来源都算无人值守。
@@ -207,7 +213,8 @@ class PermissionGuard:
         refused: list[str] = []
         pending: list[str] = []
         for raw in paths:
-            verdict = envelope.check_writable(raw, ctx)
+            verdict = envelope.check_writable(
+                raw, ctx, session_store=self.session_store)
             if verdict.ok:
                 continue                          # 已在包络内，无需申请
             if verdict.tier == envelope.D:
@@ -299,8 +306,11 @@ class PermissionGuard:
         return None
 
 
-def install(hooks, msg_bus: MessageBus | None = None) -> PermissionGuard:
+def install(
+        hooks, msg_bus: MessageBus | None = None, *,
+        session_store: SessionStore,
+) -> PermissionGuard:
     """组合根入口。msg_bus 不传则所有审批一律 fail-closed。"""
-    guard = PermissionGuard(msg_bus)
+    guard = PermissionGuard(msg_bus, session_store=session_store)
     hooks.on_before_tool_call(guard)
     return guard

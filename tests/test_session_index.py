@@ -5,21 +5,22 @@ from unittest.mock import patch
 
 from zero.models import MessageBody, MessageIn, MessageOut
 from zero.session.store import SessionStore
+from tests.support import make_store
 
 
 def test_index_is_not_rewritten_per_turn():
     """追加/心跳/自动标题/解析会话都不改写索引，写量不随历史增长。"""
     channel = "cli"
     source_id = "src-index"
-    sid = SessionStore.create_session(channel, source_id)
-    SessionStore.auto_title(channel, sid, "索引写入测试")
+    sid = make_store().create_session(channel, source_id)
+    make_store().auto_title(channel, sid, "索引写入测试")
 
-    index_path = SessionStore._index_path(channel)
+    index_path = make_store()._index_path(channel)
     before_bytes = index_path.read_text(encoding="utf-8")
     before_mtime = index_path.stat().st_mtime_ns
 
     calls = 0
-    real_save = SessionStore._save_index
+    real_save = make_store()._save_index
 
     def counting_save(ch, index):
         nonlocal calls
@@ -28,15 +29,15 @@ def test_index_is_not_rewritten_per_turn():
 
     with patch.object(SessionStore, "_save_index", counting_save):
         for i in range(80):
-            SessionStore.append(MessageIn(
+            make_store().append(MessageIn(
                 channel=channel, session_id=sid,
                 body=MessageBody(content="u" * i)))
-            SessionStore.append(MessageOut(
+            make_store().append(MessageOut(
                 channel=channel, session_id=sid,
                 body=MessageBody(content="a" * i)))
-            SessionStore.touch(channel, sid)
-            SessionStore.auto_title(channel, sid, f"第 {i} 条")
-            SessionStore.resolve_session(channel, source_id)
+            make_store().touch(channel, sid)
+            make_store().auto_title(channel, sid, f"第 {i} 条")
+            make_store().resolve_session(channel, source_id)
 
     assert calls == 0, f"每轮仍在写索引：{calls} 次"
     assert index_path.read_text(encoding="utf-8") == before_bytes
@@ -45,18 +46,18 @@ def test_index_is_not_rewritten_per_turn():
 
 def test_list_activity_follows_messages_mtime():
     """列表排序/维护过滤使用的活跃时间来自 messages.jsonl 的 mtime。"""
-    older = SessionStore.create_session("cli", "src-old")
-    newer = SessionStore.create_session("cli", "src-new")
-    SessionStore.append(MessageIn(channel="cli", session_id=older,
+    older = make_store().create_session("cli", "src-old")
+    newer = make_store().create_session("cli", "src-new")
+    make_store().append(MessageIn(channel="cli", session_id=older,
                                   body=MessageBody(content="old")))
-    SessionStore.append(MessageIn(channel="cli", session_id=newer,
+    make_store().append(MessageIn(channel="cli", session_id=newer,
                                   body=MessageBody(content="new")))
     time.sleep(0.05)
     # 给更早创建的会话追加一条消息：它应重新排到最前
-    SessionStore.append(MessageIn(channel="cli", session_id=older,
+    make_store().append(MessageIn(channel="cli", session_id=older,
                                   body=MessageBody(content="bump")))
 
-    entries = SessionStore.list_sessions("cli")
+    entries = make_store().list_sessions("cli")
     assert entries[0].session_id == older
     # 索引里的旧时间戳不参与排序：活跃时间必须晚于消息文件的创建时刻
     assert entries[0].last_updated_at > entries[1].last_updated_at
@@ -64,21 +65,21 @@ def test_list_activity_follows_messages_mtime():
 
 def test_load_history_does_not_write_index():
     """历史加载（含轮次修复）是只读索引路径。"""
-    sid = SessionStore.create_session("cli", "src-history")
-    SessionStore.begin_turn("cli", sid, "t1")
-    SessionStore.append(MessageIn(channel="cli", session_id=sid,
+    sid = make_store().create_session("cli", "src-history")
+    make_store().begin_turn("cli", sid, "t1")
+    make_store().append(MessageIn(channel="cli", session_id=sid,
                                   body=MessageBody(content="hi")))
-    SessionStore.end_turn("cli", sid, "t1")
+    make_store().end_turn("cli", sid, "t1")
 
-    index_path = SessionStore._index_path("cli")
+    index_path = make_store()._index_path("cli")
     before_mtime = index_path.stat().st_mtime_ns
-    SessionStore.load_history(sid, "cli", repair_closed_turns=True,
+    make_store().load_history(sid, "cli", repair_closed_turns=True,
                               active_turn_id="")
     assert index_path.stat().st_mtime_ns == before_mtime
 
 
 def _snapshot(channel: str = "cli"):
-    path = SessionStore._index_path(channel)
+    path = make_store()._index_path(channel)
     return path.read_text(encoding="utf-8"), path.stat().st_mtime_ns
 
 
@@ -91,12 +92,12 @@ def _count_writes():
             self.real = SessionStore._save_index
             counter = self
 
-            def counting(ch, index):
+            def counting(store_self, ch, index):
                 counter.calls += 1
-                counter.real(ch, index)
+                counter.real(store_self, ch, index)
 
             self._patch = patch.object(
-                SessionStore, "_save_index", staticmethod(counting))
+                SessionStore, "_save_index", counting)
             self._patch.start()
             return self
 
@@ -107,25 +108,25 @@ def _count_writes():
 
 
 def test_set_same_title_does_not_rewrite_index():
-    sid = SessionStore.create_session("cli", "src-same-title")
-    SessionStore.set_title("cli", sid, "标题 A")
+    sid = make_store().create_session("cli", "src-same-title")
+    make_store().set_title("cli", sid, "标题 A")
     before = _snapshot()
 
     with _count_writes() as c:
         # 只差首尾空白，规范化后与磁盘值相同
-        assert SessionStore.set_title("cli", sid, " 标题 A ") is True
+        assert make_store().set_title("cli", sid, " 标题 A ") is True
 
     assert c.calls == 0
     assert _snapshot() == before
 
 
 def test_update_meta_with_same_values_does_not_rewrite_index():
-    sid = SessionStore.create_session("cli", "src-same-meta")
-    SessionStore.update_meta_by_summary("cli", sid, "标题", "描述")
+    sid = make_store().create_session("cli", "src-same-meta")
+    make_store().update_meta_by_summary("cli", sid, "标题", "描述")
     before = _snapshot()
 
     with _count_writes() as c:
-        assert SessionStore.update_meta_by_summary(
+        assert make_store().update_meta_by_summary(
             "cli", sid, "标题", "描述") is True
 
     assert c.calls == 0
@@ -133,27 +134,27 @@ def test_update_meta_with_same_values_does_not_rewrite_index():
 
 
 def test_update_meta_with_none_keeps_values_and_skips_write():
-    sid = SessionStore.create_session("cli", "src-none-meta")
-    SessionStore.update_meta_by_summary("cli", sid, "原标题", "原描述")
+    sid = make_store().create_session("cli", "src-none-meta")
+    make_store().update_meta_by_summary("cli", sid, "原标题", "原描述")
     before = _snapshot()
 
     with _count_writes() as c:
-        assert SessionStore.update_meta_by_summary("cli", sid) is True
+        assert make_store().update_meta_by_summary("cli", sid) is True
 
     assert c.calls == 0
     assert _snapshot() == before
-    assert SessionStore.get_title("cli", sid) == "原标题"
+    assert make_store().get_title("cli", sid) == "原标题"
     entry = json.loads(before[0])["src-none-meta"]
     assert entry["description"] == "原描述"
 
 
 def test_real_meta_changes_still_write():
-    sid = SessionStore.create_session("cli", "src-real-meta")
-    SessionStore.update_meta_by_summary("cli", sid, "旧标题", "旧描述")
+    sid = make_store().create_session("cli", "src-real-meta")
+    make_store().update_meta_by_summary("cli", sid, "旧标题", "旧描述")
     before = _snapshot()
 
     with _count_writes() as c:
-        assert SessionStore.update_meta_by_summary(
+        assert make_store().update_meta_by_summary(
             "cli", sid, "新标题", None) is True
 
     assert c.calls == 1

@@ -82,12 +82,15 @@ class AgentLoop:
             self,
             msg_bus: MessageBus,
             config: Config,
+            session_store: SessionStore,
             tool_registry: ToolRegistry | None = None,
             *,
             hooks: Hooks,
     ):
         self.msg_bus = msg_bus
         self.config = config
+        # 会话存储由组合根创建并注入：本类不读进程级路径
+        self.session_store = session_store
         self.tool_registry = tool_registry
         # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
         self.hooks = hooks
@@ -149,17 +152,17 @@ class AgentLoop:
         # 轮次事务边界：begin 必须先于该轮任何消息落盘。CLI/飞书/Web
         # 共用同一个 AgentLoop，因此这里是最内层且唯一建立边界的地方。
         await asyncio.to_thread(
-            SessionStore.begin_turn,
+            self.session_store.begin_turn,
             msg_in.channel, msg_in.session_id, msg_in.id)
         await asyncio.to_thread(
-            SessionStore.append, msg_in)
+            self.session_store.append, msg_in)
         # turn 边界统一刷新活跃时间戳：msg_in 紧跟出队、无前置分支，
         # 即使本轮中途失败也已标记活跃（turn 内其它 append 不再触索引）
         await asyncio.to_thread(
-            SessionStore.touch, msg_in.channel, msg_in.session_id)
+            self.session_store.touch, msg_in.channel, msg_in.session_id)
         # 首条用户消息自动生成会话标题（已有标题则不覆盖）
         await asyncio.to_thread(
-            SessionStore.auto_title, msg_in.channel,
+            self.session_store.auto_title, msg_in.channel,
             msg_in.session_id, msg_in.body.content or "")
 
         # 慢写入期间到达的停止信号：写完当前这一条就收尾，不再继续读历史、
@@ -185,6 +188,7 @@ class AgentLoop:
         context = Context(
             session_id=msg_in.session_id,
             channel=msg_in.channel,
+            session_store=self.session_store,
             tool_registry=self.tool_registry,
             tool_context=tool_context,
         )
@@ -198,7 +202,7 @@ class AgentLoop:
             await self._finish_cancelled(msg_in)
             return
         model_override = await asyncio.to_thread(
-            SessionStore.get_model,
+            self.session_store.get_model,
             msg_in.channel, msg_in.session_id) or None
         runner = AgentRunner(
             config=self.config,
@@ -272,12 +276,12 @@ class AgentLoop:
             channel_session_id=msg_in.channel_session_id,
         )
         await asyncio.to_thread(
-            SessionStore.append, msg_out)
+            self.session_store.append, msg_out)
         await self.msg_bus.out_queue.enqueue(msg_out)
         # 本轮最后一条消息之后闭合事务；缺这一行的轮次就是
         # 崩溃残留，加载时整轮丢弃而不是补占位。
         await asyncio.to_thread(
-            SessionStore.end_turn,
+            self.session_store.end_turn,
             msg_in.channel, msg_in.session_id, msg_in.id)
 
     async def _finish_cancelled(self, msg_in: MessageIn, partial: str = ""):
@@ -305,7 +309,7 @@ class AgentLoop:
         )
         await self.msg_bus.out_queue.enqueue(msg_out)
         await asyncio.to_thread(
-            SessionStore.end_turn,
+            self.session_store.end_turn,
             msg_in.channel, msg_in.session_id, msg_in.id,
             status="cancelled")
 

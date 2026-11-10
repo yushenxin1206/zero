@@ -8,6 +8,7 @@ import pytest
 
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CLIChannel
+from tests.support import make_store
 
 windows_only = pytest.mark.skipif(
     sys.platform != "win32", reason="msvcrt 单键读取仅在 Windows 存在")
@@ -18,7 +19,7 @@ class TestApprovalUiAbort(unittest.TestCase):
 
     def test_read_key_win32_exits_immediately_on_abort(self):
         """abort 置位后，倒计时线程应在毫秒级退出，不再打印/递减。"""
-        ch = CLIChannel(MessageBus())
+        ch = CLIChannel(MessageBus(), session_store=make_store())
         abort = threading.Event()
         abort.set()
         start = time.time()
@@ -29,7 +30,7 @@ class TestApprovalUiAbort(unittest.TestCase):
 
     def test_read_key_win32_no_abort_waiting_deadline(self):
         """无 abort、无按键：到 deadline 后返回 ""（fail-closed）。"""
-        ch = CLIChannel(MessageBus())
+        ch = CLIChannel(MessageBus(), session_store=make_store())
         deadline = time.time() + 0.2
         start = time.time()
         result = ch.approval._read_key_win32(deadline, "yna")

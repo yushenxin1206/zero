@@ -18,7 +18,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StreamEvent, TokenUsage
-from tests.support import make_test_config
+from tests.support import make_store, make_test_config
 
 SESSION = "s-summary"
 
@@ -60,7 +60,9 @@ class SummarySignal(logging.Handler):
 
 async def run_turn() -> MessageIn:
     bus = MessageBus()
-    loop = AgentLoop(msg_bus=bus, config=make_test_config(), hooks=Hooks())
+    loop = AgentLoop(
+        msg_bus=bus, config=make_test_config(), hooks=Hooks(),
+        session_store=make_store())
     signal = SummarySignal()
     logger = logging.getLogger("zero.core.loop")
     logger.addHandler(signal)

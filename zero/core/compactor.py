@@ -195,9 +195,12 @@ class Compactor:
 
     def __init__(self, provider: Provider, session_runtime: AgentRuntimeConfig,
                  compact_runtime: AgentRuntimeConfig,
-                 compact_config: CompactConfig):
+                 compact_config: CompactConfig, *,
+                 session_store: SessionStore):
         self.provider = provider
         self.session_runtime = session_runtime
+        # 压缩记录落盘走的会话存储，由上层显式注入
+        self.session_store = session_store
         # 压缩调用的参数取自 compact 任务解析结果（模型/temperature 可与
         # 主对话不同）；调用方必须 resolve_runtime("compact") 传入
         self.compact_runtime = compact_runtime
@@ -309,7 +312,7 @@ class Compactor:
             content=content, covered_upto=raw[tail_start - 1].id)
         try:
             await asyncio.to_thread(
-                SessionStore.save_compact, channel, session_id, record)
+                self.session_store.save_compact, channel, session_id, record)
         except OSError:
             logger.warning(
                 "压缩记录落盘失败，跳过本轮压缩: session=%s",

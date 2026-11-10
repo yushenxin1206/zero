@@ -20,9 +20,9 @@ from zero.core.context import Context
 from zero.core.hooks import HOOK_NAMES, HookChain, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner
 from zero.models import ToolContext
-from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
+from tests.support import make_store
 
 CHANNEL = "test"
 TRUNC_SUFFIX = "...truncated"
@@ -85,7 +85,8 @@ def stub_config() -> Config:
 def make_runner(hooks: Hooks, tool: EchoTool, session_id: str) -> AgentRunner:
     registry = ToolRegistry()
     registry.register(tool)
-    context = Context(session_id=session_id, channel=CHANNEL, tool_registry=registry)
+    context = Context(session_id=session_id, channel=CHANNEL,
+                      tool_registry=registry, session_store=make_store())
     runner = AgentRunner(
         config=stub_config(),
         running_context=context,
@@ -104,7 +105,7 @@ def history_summary(session_id: str):
     return [
         (m.sender, m.body.content,
          [tc.function.name for tc in (m.body.tool_calls or [])])
-        for m in SessionStore.load_history(session_id, CHANNEL)
+        for m in make_store().load_history(session_id, CHANNEL)
     ]
 
 
@@ -312,7 +313,7 @@ def test_build_hooks_registers_real_guard():
     """真实组合根必须装上守卫（此前测试打桩了 install，漏掉了启动路径）。"""
     from zero.main import build_hooks
 
-    chain = build_hooks(MessageBus())
+    chain = build_hooks(MessageBus(), make_store())
     assert len(chain.handlers_for("before_tool_call")) == 1
 
 
@@ -321,7 +322,7 @@ def test_build_hooks_requires_guard(monkeypatch):
     import zero.permission.guard as guard_mod
     from zero.main import build_hooks
 
-    monkeypatch.setattr(guard_mod, "install", lambda chain, bus: None)
+    monkeypatch.setattr(guard_mod, "install", lambda chain, bus, *, session_store: None)
     with pytest.raises(AssertionError, match="permission guard"):
-        build_hooks(MessageBus())
+        build_hooks(MessageBus(), make_store())
 

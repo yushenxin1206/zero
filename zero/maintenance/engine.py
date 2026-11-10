@@ -18,6 +18,7 @@ from zero.scheduler import cron
 
 from zero.maintenance.memory import run_memory
 from zero.maintenance.session_summary import run_session_summary
+from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,13 @@ _SLOT_SCAN_MINUTES = 24 * 60
 class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
 
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, session_store: SessionStore):
         """入参是根配置：两个维护任务各按自己的任务名解析运行时配置
         （模型/provider 可与主对话不同），并各构造独立 provider client。
         维护任务是进程级常量，不跟会话级模型切换走，故只解析一次。"""
         self._maintenance = config.maintenance
+        # 会话复盘/记忆沉淀读取的会话存储，由组合根显式传入
+        self._session_store = session_store
         summary = config.resolve_runtime('session_summary')
         memory = config.resolve_runtime('memory')
         self._summary_provider = OpenAI(summary.llm_runtime.provider)
@@ -63,12 +66,14 @@ class MaintenanceEngine:
         await asyncio.gather(*loops)
 
     async def _run_session_summary(self) -> None:
-        await run_session_summary(self._summary_provider, self._summary_runtime,
-                                  self._maintenance)
+        await run_session_summary(
+            self._summary_provider, self._summary_runtime,
+            self._maintenance, self._session_store)
 
     async def _run_memory(self) -> None:
-        await run_memory(self._memory_provider, self._memory_runtime,
-                         self._maintenance)
+        await run_memory(
+            self._memory_provider, self._memory_runtime,
+            self._maintenance, self._session_store)
 
     async def _loop(self, name: str, cron_expr: str, fn) -> None:
         """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。"""

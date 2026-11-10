@@ -8,23 +8,23 @@ from rich.console import Console
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CHANNEL, CLIChannel
 from zero.models import MessageBody, MessageIn, MessageOut, MessageTool
-from zero.session.store import SessionStore
+from tests.support import make_store
 
 PROMPT_CHAR = chr(0x203A)  # ›
 ESCAPED = chr(92) + "u203a"  # literal backslash + u203a
 
 
 def test_history_render_has_no_escapes_and_filters_tools():
-    sid = SessionStore.create_session(CHANNEL, "render-src")
-    SessionStore.append(MessageIn(channel=CHANNEL, session_id=sid,
+    sid = make_store().create_session(CHANNEL, "render-src")
+    make_store().append(MessageIn(channel=CHANNEL, session_id=sid,
                                   body=MessageBody(content="你好，测试历史渲染")))
-    SessionStore.append(MessageTool(channel=CHANNEL, session_id=sid,
+    make_store().append(MessageTool(channel=CHANNEL, session_id=sid,
                                     body=MessageBody(content="tool output")))
-    SessionStore.append(MessageOut(channel=CHANNEL, session_id=sid,
+    make_store().append(MessageOut(channel=CHANNEL, session_id=sid,
                                    body=MessageBody(content="助手回复内容")))
 
     buf = io.StringIO()
-    ch = CLIChannel(MessageBus(), console=Console(
+    ch = CLIChannel(MessageBus(), session_store=make_store(), console=Console(
         file=buf, highlight=False, width=100))
     ch.service.session_id = sid
 

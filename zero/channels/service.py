@@ -18,7 +18,6 @@ from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.models import Message, MessageBody, MessageIn, StopRequest
-from zero.paths import current
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
 from zero.session.models import SessionMeta
@@ -55,6 +54,7 @@ class ChannelService:
         channel: str,
         *,
         msg_bus: MessageBus,
+        session_store: SessionStore,
         config: Config | None = None,
         tool_registry: ToolRegistry | None = None,
         source_prefix: str | None = None,
@@ -66,10 +66,10 @@ class ChannelService:
         self.source_prefix = source_prefix or channel
         self.source_id = ""
         self.session_id = ""
-        # 路径在构造时结算，而不是模块导入时——测试/嵌入方调 paths.configure()
-        # 后，新建的 channel 立即生效。
+        # 会话存储由 channel 组合根显式传入；绑定文件与 session 同根
+        self.session_store = session_store
         self._binding_path = (
-            current().sessions / channel / f".{channel}_current.json")
+            session_store.root / channel / f".{channel}_current.json")
 
     # ------------------------------------------------------------------
     # Session binding
@@ -97,7 +97,8 @@ class ChannelService:
     def new_session(self) -> str:
         """Create and bind a fresh session for this channel."""
         source_id = f"{self.source_prefix}-{uuid4().hex[:8]}"
-        session_id = SessionStore.create_session(self.channel, source_id)
+        session_id = self.session_store.create_session(
+            self.channel, source_id)
         self._bind(source_id, session_id, persist=True)
         return session_id
 
@@ -123,8 +124,8 @@ class ChannelService:
         place the "empty sessions don't exist" rule lives.
         """
         views = []
-        for entry in SessionStore.list_sessions(self.channel):
-            if not SessionStore.has_messages(
+        for entry in self.session_store.list_sessions(self.channel):
+            if not self.session_store.has_messages(
                     self.channel, entry.session_id, entry):
                 continue
             views.append(self._view(entry))
@@ -132,10 +133,10 @@ class ChannelService:
 
     def find(self, session_id: str) -> SessionView | None:
         """Look up one listed session by id (None if missing or empty)."""
-        for entry in SessionStore.list_sessions(self.channel):
+        for entry in self.session_store.list_sessions(self.channel):
             if entry.session_id != session_id:
                 continue
-            if not SessionStore.has_messages(
+            if not self.session_store.has_messages(
                     self.channel, entry.session_id, entry):
                 return None
             return self._view(entry)
@@ -145,8 +146,8 @@ class ChannelService:
         title = entry.title
         derived = not title
         if derived:
-            title = SessionStore.make_title(
-                SessionStore.first_user_message(
+            title = self.session_store.make_title(
+                self.session_store.first_user_message(
                     self.channel, entry.session_id, entry))
         return SessionView(
             session_id=entry.session_id,
@@ -159,12 +160,12 @@ class ChannelService:
 
     def title(self, session_id: str | None = None) -> str:
         """Stored title for a session ("" when unset)."""
-        return SessionStore.get_title(
+        return self.session_store.get_title(
             self.channel, session_id or self.session_id)
 
     def rename(self, title: str, session_id: str | None = None) -> bool:
         """Set a session title. Returns False when the session is not indexed."""
-        return SessionStore.set_title(
+        return self.session_store.set_title(
             self.channel, session_id or self.session_id, title)
 
     # ------------------------------------------------------------------
@@ -173,7 +174,7 @@ class ChannelService:
 
     def history(self, session_id: str | None = None) -> list[Message]:
         """Full persisted history (including tool messages and compaction)."""
-        return SessionStore.load_history(
+        return self.session_store.load_history(
             session_id or self.session_id, self.channel)
 
     def display_history(self, session_id: str | None = None) -> list[Message]:
@@ -215,7 +216,9 @@ class ChannelService:
         if self.config is None:
             return ""
         try:
-            return session_model(self.config, self.channel, self.session_id)
+            return session_model(
+                self.config, self.channel, self.session_id,
+                self.session_store)
         except ValueError:
             return "?"
 
@@ -228,7 +231,8 @@ class ChannelService:
             if self.tool_registry is not None else None)
         return await switch_model(
             config=self.config, channel=self.channel,
-            session_id=self.session_id, new_model=name, tools=tools)
+            session_id=self.session_id, new_model=name,
+            session_store=self.session_store, tools=tools)
 
     # ------------------------------------------------------------------
     # Turns

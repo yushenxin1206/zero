@@ -13,7 +13,8 @@ TMPDIR root and invalidate the assertions.
 """
 import pytest
 
-from zero.paths import configure
+from zero.paths import configure, current
+from zero.session.store import SessionStore
 
 
 @pytest.fixture(autouse=True)
@@ -24,3 +25,9 @@ def isolated_state(tmp_path):
         project_memory=tmp_path / "project_memory.md",
     )
     return tmp_path
+
+
+@pytest.fixture
+def session_store(isolated_state):
+    """测试边界：按当前隔离根构造会话存储，和组合根的构造方式一致。"""
+    return SessionStore(current().sessions)

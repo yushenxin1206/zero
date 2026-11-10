@@ -24,10 +24,10 @@ from zero.core.hooks import HookChain, HookContext, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner, run_subagent
 from zero.models import MessageBody, MessageIn, ToolContext
 from zero.paths import current
-from zero.session.store import SessionStore
 from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
+from tests.support import make_store
 
 CHANNEL = "test"
 
@@ -144,6 +144,7 @@ def test_single_shot_with_tools(monkeypatch):
         "做点事",
         config=stub_config(),
         hooks=Hooks(),
+        session_store=make_store(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
     ))
@@ -163,8 +164,8 @@ def test_single_shot_with_tools(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_isolation_from_session_store(monkeypatch):
-    sid = SessionStore.create_session(CHANNEL, "parent-src")
-    SessionStore.append(MessageIn(
+    sid = make_store().create_session(CHANNEL, "parent-src")
+    make_store().append(MessageIn(
         session_id=sid, channel=CHANNEL,
         body=MessageBody(content="父轮消息")))
 
@@ -178,6 +179,7 @@ def test_isolation_from_session_store(monkeypatch):
         "子任务",
         config=stub_config(),
         hooks=Hooks(),
+        session_store=make_store(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         tool_context=ToolContext(channel=CHANNEL, session_id=sid, turn_id="t1"),
@@ -186,7 +188,7 @@ def test_isolation_from_session_store(monkeypatch):
 
     assert reply == "done"
     assert before == after, "子 agent 不得在 sessions 目录产生任何新文件"
-    history = SessionStore.load_history(sid, CHANNEL)
+    history = make_store().load_history(sid, CHANNEL)
     assert len(history) == 1 and history[0].body.content == "父轮消息"
 
 
@@ -200,6 +202,7 @@ def test_custom_system_prompt(monkeypatch):
         "翻译任务",
         config=stub_config(),
         hooks=Hooks(),
+        session_store=make_store(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         system_prompt="你是翻译代理，只输出译文。",
     ))
@@ -223,6 +226,7 @@ def test_error_raises(monkeypatch):
             "必败任务",
             config=stub_config(),
             hooks=Hooks(),
+            session_store=make_store(),
             # 根配置：运行时配置在 AgentRunner 内按 task 解析
         ))
         raise AssertionError("run_subagent 应当抛 RuntimeError")
@@ -249,6 +253,7 @@ def test_compression_gate(monkeypatch):
         "任务",
         config=stub_config(),
         hooks=Hooks(),
+        session_store=make_store(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
     ))
     assert spy["calls"] == 0, "子 agent 不应触发上下文压缩"
@@ -256,7 +261,8 @@ def test_compression_gate(monkeypatch):
     # 回归：会话模式（AgentLoop 同款构造）照常触发
     registry = make_registry(EchoTool())
     context = Context(
-        session_id=str(uuid4()), channel=CHANNEL, tool_registry=registry)
+        session_id=str(uuid4()), channel=CHANNEL, tool_registry=registry,
+        session_store=make_store())
     runner = AgentRunner(
         config=stub_config(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
@@ -301,6 +307,7 @@ def test_tool_context_inherited(monkeypatch):
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         hooks=chain,
+        session_store=make_store(),
         tool_context=parent_tc,
     ))
     assert tool.contexts[0].turn_id == "turn-42"
@@ -334,6 +341,7 @@ def test_hooks_apply_to_subagent(monkeypatch):
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         hooks=chain,
+        session_store=make_store(),
     ))
     assert not tool.ran
     assert reply == "被否决后的回复"
@@ -356,7 +364,8 @@ def test_empty_reply_raises(monkeypatch):
     )
     try:
         asyncio.run(run_subagent(
-            "写一篇作文", config=stub_config(), hooks=Hooks()))
+            "写一篇作文", config=stub_config(), hooks=Hooks(),
+            session_store=make_store()))
         raise AssertionError("空正文应抛 RuntimeError")
     except RuntimeError as e:
         assert "空正文" in str(e) or "截断" in str(e), \
@@ -371,7 +380,8 @@ def test_subagent_shell_fail_closed():
     from zero.permission.guard import PermissionGuard
     from zero.models import Origin
 
-    guard = PermissionGuard(msg_bus=object())   # 有总线，但无人值守来源应短路
+    guard = PermissionGuard(
+        msg_bus=object(), session_store=make_store())   # 有总线，但无人值守来源应短路
     ctx = HookContext(
         channel="cli", session_id="sid", turn_id="sub-1",
         tool_context=ToolContext(
@@ -404,6 +414,7 @@ def test_manager_stamps_subagent_origin(monkeypatch):
     manager = SubagentManager(
         msg_bus=bus,
         config=stub_config(),
+        session_store=make_store(),
         tool_registry=make_registry(tool),
         hooks=HookChain(),
     )

@@ -33,6 +33,7 @@ from zero.models import (
 )
 from zero.providers.base import LLMPayload
 from zero.providers.openai import OpenAI
+from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,7 @@ class AgentRunner:
             session_runtime=self.runtime_config,
             compact_runtime=compact_config,
             compact_config=config.compact,
+            session_store=running_context.session_store,
         )
 
     def _check_cancelled(self) -> None:
@@ -396,6 +398,7 @@ async def run_subagent(
         *,
         config: Config,
         hooks: Hooks,
+        session_store: SessionStore,
         task: str = "default",
         tool_registry: ToolRegistry | None = None,
         tool_context: ToolContext | None = None,
@@ -426,6 +429,7 @@ async def run_subagent(
     ))
     context = SubAgentContext(
         prompt,
+        session_store=session_store,
         tool_registry=tool_registry,
         tool_context=tool_context,
         system_prompt=system_prompt,

@@ -103,11 +103,14 @@ class Context:
             self,
             session_id: str,
             channel: str,
+            session_store: SessionStore,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
+        # 会话存储由组合根/上层上下文显式传入：本类不读进程级路径
+        self.session_store = session_store
         self.tool_registry = tool_registry
         self.tool_context = tool_context or ToolContext(
             channel=channel,
@@ -130,7 +133,7 @@ class Context:
         """懒加载 turn 级历史快照；一个 turn 内至多读一次盘。"""
         if self._history_loaded:
             return
-        self._raw_history = SessionStore.load_history(
+        self._raw_history = self.session_store.load_history(
             self.session_id, self.channel,
             include_compact=False,
             # turn owner：本轮的 begin 已经落盘，但轮次仍可能继续增长。
@@ -138,7 +141,7 @@ class Context:
             # 纳入上下文；其它没有 turn_end 的段是崩溃残留，整轮丢弃。
             repair_closed_turns=True,
             active_turn_id=self.tool_context.turn_id)
-        self._compact_record = SessionStore.load_compact(
+        self._compact_record = self.session_store.load_compact(
             self.channel, self.session_id)
         self._history_loaded = True
 
@@ -170,7 +173,7 @@ class Context:
             await asyncio.to_thread(self._ensure_history)
         if self._session_dir is None:
             self._session_dir = await asyncio.to_thread(
-                SessionStore.session_dir, self.channel, self.session_id)
+                self.session_store.session_dir, self.channel, self.session_id)
         if self._prompt_cache is None:
             # 构建提示词会读 memory.md / skills frontmatter
             await asyncio.to_thread(lambda: self.system_prompt)
@@ -187,13 +190,13 @@ class Context:
         同步版本仅用于取消/退出语境（task 已被取消，不能再 await）。
         正常异步路径统一走 arecord，把追加操作放进线程池。
         """
-        SessionStore.append(message)
+        self.session_store.append(message)
         if self._history_loaded:
             self._raw_history.append(message)
 
     async def arecord(self, message: Message) -> None:
         """异步落盘：append 是阻塞文件 IO，不在事件循环里直接执行。"""
-        await asyncio.to_thread(SessionStore.append, message)
+        await asyncio.to_thread(self.session_store.append, message)
         if self._history_loaded:
             self._raw_history.append(message)
 
@@ -216,7 +219,8 @@ class Context:
         # platform.machine() 在部分环境返回空串，只拼接非空部分
         os_info = " ".join(p for p in (platform.system(), platform.machine()) if p)
         session_dir = (self._session_dir
-                       or SessionStore.session_dir(self.channel, self.session_id))
+                       or self.session_store.session_dir(
+                           self.channel, self.session_id))
         # 沙箱是否真的在跑以探针为准（可用时包络内免审批，否则每条 shell 走审批）
         sandbox_note = (SHELL_SANDBOX_NOTE if envelope.available()
                         else SHELL_APPROVAL_NOTE)
@@ -371,6 +375,7 @@ class SubAgentContext(Context):
             self,
             prompt: str,
             *,
+            session_store: SessionStore,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
             system_prompt: str | None = None,
@@ -381,6 +386,7 @@ class SubAgentContext(Context):
         super().__init__(
             session_id=tc.session_id,
             channel=tc.channel,
+            session_store=session_store,
             tool_registry=tool_registry,
             tool_context=tc,
         )
@@ -460,7 +466,9 @@ class SubAgentContext(Context):
 
 if __name__ == "__main__":
     # 重新生成 docs/prompt.md（提示词文档快照，由代码生成，请勿手改）
-    _ctx = Context(session_id="doc", channel="cli")
+    _ctx = Context(
+        session_id="doc", channel="cli",
+        session_store=SessionStore(current().sessions))
     _out = PKG_ROOT / "docs" / "prompt.md"
     _out.write_text(
         "<!-- 本文件由 `python core/context.py` 生成，请勿手改 -->\n\n"

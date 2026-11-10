@@ -10,8 +10,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
-from zero.session.store import SessionStore
-from tests.support import make_test_config, wait_turn_closed
+from tests.support import make_store, make_test_config, wait_turn_closed
 
 
 class FakeProvider:
@@ -29,7 +28,8 @@ class FakeProvider:
 async def main() -> dict:
     bus = MessageBus()
     cfg = make_test_config()
-    loop = AgentLoop(msg_bus=bus, config=cfg, hooks=Hooks())
+    loop = AgentLoop(
+        msg_bus=bus, config=cfg, hooks=Hooks(), session_store=make_store())
 
     from zero.core.runner import AgentRunner
 
@@ -93,8 +93,8 @@ async def main() -> dict:
             "first_delta": first.content,
             "done_ev": done_ev,
             "msg_out": msg_out,
-            "history": SessionStore.load_history("s-test-stop", "cli"),
-            "raw": SessionStore._session_file(
+            "history": make_store().load_history("s-test-stop", "cli"),
+            "raw": make_store()._session_file(
                 "cli", "s-test-stop").read_text(
                     encoding="utf-8").strip().splitlines(),
         }
@@ -145,7 +145,9 @@ class TestTurnStop(unittest.TestCase):
 
         async def main_repair() -> list:
             cfg = make_test_config()
-            context = Context(session_id="s-repair", channel="cli")
+            context = Context(
+                session_id="s-repair", channel="cli",
+                session_store=make_store())
             stop_event = asyncio.Event()
             runner = AgentRunner(
                 config=cfg, running_context=context,
@@ -173,7 +175,7 @@ class TestTurnStop(unittest.TestCase):
                     await ag.__anext__()
             finally:
                 runner._execute_and_persist = orig_exec
-            return SessionStore.load_history("s-repair", "cli")
+            return make_store().load_history("s-repair", "cli")
 
         hist = asyncio.run(main_repair())
         # [assistant(tool_calls a,b), tool(a), tool(b 占位)]
@@ -231,7 +233,8 @@ class TestStopDuringSilentThinking(unittest.TestCase):
         async def scenario() -> dict:
             bus = MessageBus()
             loop = AgentLoop(
-                msg_bus=bus, config=make_test_config(), hooks=Hooks())
+                msg_bus=bus, config=make_test_config(), hooks=Hooks(),
+                session_store=make_store())
 
             prov = OpenAI(ProviderConfig(api_base="http://stub", api_key="k"))
             # turn1 思考期 3s（终止应打断它）；turn2 立即完整输出

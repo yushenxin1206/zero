@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from zero.paths import current
-from zero.session.store import SessionStore
+from tests.support import make_store
 
 CHANNEL = "cli"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,7 +28,7 @@ def test_threads_create_without_lost_updates():
     def worker(tag: str) -> None:
         barrier.wait()
         for i in range(count):
-            SessionStore.create_session(CHANNEL, f"{tag}-{i}")
+            make_store().create_session(CHANNEL, f"{tag}-{i}")
 
     threads = [threading.Thread(target=worker, args=(tag,))
                for tag in ("a", "b")]
@@ -46,14 +46,14 @@ def test_threads_update_without_lost_updates():
     session_ids = {}
     for i in range(count * 2):
         source = f"src-{i}"
-        session_ids[source] = SessionStore.create_session(CHANNEL, source)
+        session_ids[source] = make_store().create_session(CHANNEL, source)
 
     barrier = threading.Barrier(2)
 
     def worker(tag: str, offset: int) -> None:
         barrier.wait()
         for i in range(offset, offset + count):
-            SessionStore.set_title(
+            make_store().set_title(
                 CHANNEL, session_ids[f"src-{i}"], f"title-{tag}-{i}")
 
     threads = [
@@ -76,18 +76,18 @@ def test_threads_update_without_lost_updates():
 _CHILD = """
 import sys
 import time
+from pathlib import Path
 
-from zero.paths import configure
 from zero.session.store import SessionStore
 
 root, tag, count, start_at = (
     sys.argv[1], sys.argv[2], int(sys.argv[3]), float(sys.argv[4]))
-configure(root)
+store = SessionStore(Path(root) / "sessions")
 delay = start_at - time.time()
 if delay > 0:
     time.sleep(delay)
 for i in range(count):
-    SessionStore.create_session("cli", f"{tag}-{i}")
+    store.create_session("cli", f"{tag}-{i}")
 """
 
 
@@ -112,11 +112,11 @@ def test_processes_create_without_lost_updates():
 
 
 def test_write_ignores_foreign_fixed_tmp_file():
-    SessionStore.create_session(CHANNEL, "seed")
+    make_store().create_session(CHANNEL, "seed")
     fixed_tmp = _index_path().parent / "index.json.tmp"
     fixed_tmp.write_text("garbage", encoding="utf-8")
 
-    SessionStore.create_session(CHANNEL, "after-collision")
+    make_store().create_session(CHANNEL, "after-collision")
 
     assert "after-collision" in _read_index()
     # 固定名的旧临时文件不被碰，唯一临时文件用完即删

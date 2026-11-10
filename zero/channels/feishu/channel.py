@@ -55,9 +55,12 @@ class FeishuChannel:
     def __init__(
         self,
         config: FeishuConfig,
+        session_store: SessionStore,
         msg_bus: MessageBus | None = None,
     ):
         self.config = config
+        # 飞书 WS 线程也要解析 session，存储实例由组合根显式传入
+        self.session_store = session_store
         self.msg_bus = msg_bus
         # 向 bus 认领 feishu 专属出站队列，dispatcher 只会路由 channel=feishu 的消息
         self._out_queue: MessageOutQueue | None = (
@@ -140,7 +143,8 @@ class FeishuChannel:
             )
 
             msg_in = MessageIn(
-                session_id=SessionStore.resolve_session("feishu", chat_id),
+                session_id=self.session_store.resolve_session(
+                    "feishu", chat_id),
                 channel="feishu",
                 body=MessageBody(content=text),
                 channel_message_id=message_id,

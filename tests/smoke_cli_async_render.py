@@ -22,13 +22,14 @@ from zero.channels.cli import CHANNEL, CLIChannel
 from zero.models import MessageBody, MessageOut, Origin, StreamEvent
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
+from tests.support import make_store
 
 
 async def run_with_channel(scenario):
     """Start a CLI channel + bus dispatchers, then run one scenario."""
     bus = MessageBus()
     buf = io.StringIO()
-    ch = CLIChannel(bus, console=Console(
+    ch = CLIChannel(bus, session_store=make_store(), console=Console(
         file=buf, highlight=False, width=100))
     dispatchers = [
         asyncio.create_task(bus.run_out_dispatcher()),

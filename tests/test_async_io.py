@@ -9,7 +9,7 @@ from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest
 from zero.session.store import SessionStore
-from tests.support import make_test_config
+from tests.support import make_store, make_test_config
 
 
 class _EchoProvider:
@@ -40,7 +40,8 @@ def test_event_loop_stays_responsive_during_slow_session_write():
     async def scenario() -> int:
         bus = MessageBus()
         loop = AgentLoop(
-            msg_bus=bus, config=make_test_config(), hooks=Hooks())
+            msg_bus=bus, config=make_test_config(), hooks=Hooks(),
+            session_store=make_store())
         ticks = 0
 
         async def heartbeat():
@@ -55,9 +56,9 @@ def test_event_loop_stays_responsive_during_slow_session_write():
 
         real_begin = SessionStore.begin_turn
 
-        def slow_begin(channel, session_id, turn_id):
+        def slow_begin(store_self, channel, session_id, turn_id):
             time.sleep(0.4)
-            real_begin(channel, session_id, turn_id)
+            real_begin(store_self, channel, session_id, turn_id)
 
         with _patch_provider(_EchoProvider()):
             with patch.object(SessionStore, "begin_turn", slow_begin):
@@ -90,15 +91,16 @@ def test_stop_takes_effect_during_slow_write():
     async def scenario() -> dict:
         bus = MessageBus()
         loop = AgentLoop(
-            msg_bus=bus, config=make_test_config(), hooks=Hooks())
+            msg_bus=bus, config=make_test_config(), hooks=Hooks(),
+            session_store=make_store())
         loop_task = asyncio.create_task(loop.run())
         await asyncio.sleep(0.05)
 
         real_begin = SessionStore.begin_turn
 
-        def slow_begin(channel, session_id, turn_id):
+        def slow_begin(store_self, channel, session_id, turn_id):
             time.sleep(0.5)
-            real_begin(channel, session_id, turn_id)
+            real_begin(store_self, channel, session_id, turn_id)
 
         with _patch_provider(_EchoProvider()):
             with patch.object(SessionStore, "begin_turn", slow_begin):
@@ -121,7 +123,7 @@ def test_stop_takes_effect_during_slow_write():
                     await asyncio.sleep(0.01)
 
         raw_lines = []
-        path = SessionStore._session_file("cli", "s-stop-slow-write")
+        path = make_store()._session_file("cli", "s-stop-slow-write")
         for _ in range(200):
             if path.exists():
                 raw_lines = path.read_text(encoding="utf-8").strip().splitlines()

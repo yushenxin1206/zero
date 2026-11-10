@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from zero.paths import current
+from tests.support import make_store
 from zero.core.compactor import (
     COMPACT_FINAL_INSTRUCTION,
     COMPRESS_PROMPT,
@@ -36,7 +37,7 @@ CHANNEL = "cli"
 
 
 def fresh_session(source_id: str) -> str:
-    return SessionStore.create_session(CHANNEL, source_id)
+    return make_store().create_session(CHANNEL, source_id)
 
 
 def make_msg(sender, content="", session_id="", tool_calls=None,
@@ -92,7 +93,7 @@ def make_compactor(fake, window=20000, enabled=True, max_tokens=100,
     cs = CompactConfig(
         enabled=enabled, context_compact_max_tokens=context_compact_max)
     return Compactor(provider=fake, session_runtime=rc, compact_runtime=cc,
-                     compact_config=cs)
+                     compact_config=cs, session_store=make_store())
 
 
 class FakeContext:
@@ -112,12 +113,12 @@ class FakeContext:
 
     @property
     def raw_history(self):
-        return SessionStore.load_history(
+        return make_store().load_history(
             self.session_id, self.channel, include_compact=False)
 
     @property
     def compact_record(self):
-        return SessionStore.load_compact(self.channel, self.session_id)
+        return make_store().load_compact(self.channel, self.session_id)
 
     @compact_record.setter
     def compact_record(self, rec):
@@ -126,12 +127,12 @@ class FakeContext:
 
 def seed_big(sid):
     """两轮历史：总估算 ~15400 tokens（窗口 20000，阈值 15000）。"""
-    SessionStore.append(make_msg("user", "你好" * 3500, session_id=sid))
-    SessionStore.append(make_msg("assistant", "第一轮回复", session_id=sid))
-    SessionStore.append(make_msg("user", "继续" * 3500, session_id=sid))
-    SessionStore.append(make_msg("assistant", "", session_id=sid,
+    make_store().append(make_msg("user", "你好" * 3500, session_id=sid))
+    make_store().append(make_msg("assistant", "第一轮回复", session_id=sid))
+    make_store().append(make_msg("user", "继续" * 3500, session_id=sid))
+    make_store().append(make_msg("assistant", "", session_id=sid,
                                  tool_calls=[tc()]))
-    SessionStore.append(make_msg("tool", "结果" * 10, session_id=sid,
+    make_store().append(make_msg("tool", "结果" * 10, session_id=sid,
                                  tool_call_id="call_1"))
 
 
@@ -222,30 +223,30 @@ def test_build_compact_messages():
 
 def test_load_history_synthesis():
     sid = fresh_session("src-comp")
-    SessionStore.append(make_msg("user", "第一条", session_id=sid))
+    make_store().append(make_msg("user", "第一条", session_id=sid))
     m2 = make_msg("assistant", "回复", session_id=sid)
-    SessionStore.append(m2)
+    make_store().append(m2)
     m3 = make_msg("user", "第二条", session_id=sid)
-    SessionStore.append(m3)
-    assert len(SessionStore.load_history(sid, CHANNEL)) == 3
+    make_store().append(m3)
+    assert len(make_store().load_history(sid, CHANNEL)) == 3
 
-    SessionStore.save_compact(
+    make_store().save_compact(
         CHANNEL, sid,
         CompactRecord(content="<compact>摘要</compact>", covered_upto=m2.id))
-    hist = SessionStore.load_history(sid, CHANNEL)
+    hist = make_store().load_history(sid, CHANNEL)
     assert len(hist) == 2
     assert hist[0].sender == "user" and hist[0].compact
     assert "<compact>摘要</compact>" in hist[0].body.content
     assert hist[1].id == m3.id
     # include_compact=False → 全量
-    assert len(SessionStore.load_history(sid, CHANNEL, include_compact=False)) == 3
+    assert len(make_store().load_history(sid, CHANNEL, include_compact=False)) == 3
     # covered_upto 找不到 → 退化全量
-    SessionStore.save_compact(
+    make_store().save_compact(
         CHANNEL, sid, CompactRecord(content="x", covered_upto="不存在"))
-    assert len(SessionStore.load_history(sid, CHANNEL)) == 3
+    assert len(make_store().load_history(sid, CHANNEL)) == 3
     # 损坏的 compact.json → None
-    SessionStore._compact_file(CHANNEL, sid).write_text("{bad json", encoding="utf-8")
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    make_store()._compact_file(CHANNEL, sid).write_text("{bad json", encoding="utf-8")
+    assert make_store().load_compact(CHANNEL, sid) is None
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +260,9 @@ def test_maybe_compress_over_threshold():
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is True
 
-    rec = SessionStore.load_compact(CHANNEL, sid)
+    rec = make_store().load_compact(CHANNEL, sid)
     assert rec is not None and "<compact>" in rec.content
-    hist = SessionStore.load_history(sid, CHANNEL)
+    hist = make_store().load_history(sid, CHANNEL)
     assert hist[0].sender == "user" and hist[0].compact
     assert hist[1].sender != "tool"  # 尾部首条不是 tool → 无孤儿 tool
     assert len(hist) == 4  # [压缩, user, assistant(带tool_calls), tool]
@@ -280,11 +281,11 @@ def test_maybe_compress_below_threshold():
     fake = FakeProvider()
     comp = make_compactor(fake)
     sid = fresh_session("src-small")
-    SessionStore.append(make_msg("user", "你好", session_id=sid))
-    SessionStore.append(make_msg("assistant", "你好！", session_id=sid))
+    make_store().append(make_msg("user", "你好", session_id=sid))
+    make_store().append(make_msg("assistant", "你好！", session_id=sid))
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
-    assert len(SessionStore.load_history(sid, CHANNEL)) == 2
+    assert make_store().load_compact(CHANNEL, sid) is None
+    assert len(make_store().load_history(sid, CHANNEL)) == 2
 
 
 def test_maybe_compress_fail_safe():
@@ -293,8 +294,8 @@ def test_maybe_compress_fail_safe():
     sid = fresh_session("src-err")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
-    assert len(SessionStore.load_history(sid, CHANNEL)) == 5
+    assert make_store().load_compact(CHANNEL, sid) is None
+    assert len(make_store().load_history(sid, CHANNEL)) == 5
 
 
 def test_maybe_compress_disabled():
@@ -303,7 +304,7 @@ def test_maybe_compress_disabled():
     sid = fresh_session("src-disabled")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None
 
 
 def test_maybe_compress_fits_in_tail():
@@ -311,10 +312,10 @@ def test_maybe_compress_fits_in_tail():
     fake = FakeProvider()
     comp = make_compactor(fake, window=2000)
     sid = fresh_session("src-fits")
-    SessionStore.append(make_msg("user", "你好", session_id=sid))
-    SessionStore.append(make_msg("assistant", "你好！", session_id=sid))
+    make_store().append(make_msg("user", "你好", session_id=sid))
+    make_store().append(make_msg("assistant", "你好！", session_id=sid))
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None
 
 
 def test_maybe_compress_no_gain():
@@ -326,11 +327,11 @@ def test_maybe_compress_no_gain():
     fake = FakeProvider()
     comp = make_compactor(fake, window=6000, max_tokens=1000)
     sid = fresh_session("src-nowin")
-    SessionStore.append(make_msg("user", "你好" * 1000, session_id=sid))
-    SessionStore.append(make_msg("assistant", "答", session_id=sid))
-    SessionStore.append(make_msg("user", "继续" * 1000, session_id=sid))
+    make_store().append(make_msg("user", "你好" * 1000, session_id=sid))
+    make_store().append(make_msg("assistant", "答", session_id=sid))
+    make_store().append(make_msg("user", "继续" * 1000, session_id=sid))
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None
     assert fake.payloads == []
 
 
@@ -341,8 +342,8 @@ def test_maybe_compress_empty_result():
     sid = fresh_session("src-empty")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
-    assert len(SessionStore.load_history(sid, CHANNEL)) == 5
+    assert make_store().load_compact(CHANNEL, sid) is None
+    assert len(make_store().load_history(sid, CHANNEL)) == 5
 
 
 def test_maybe_compress_save_failure(monkeypatch):
@@ -356,7 +357,7 @@ def test_maybe_compress_save_failure(monkeypatch):
     sid = fresh_session("src-diskfull")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None
 
 
 def test_maybe_compress_truncated():
@@ -369,7 +370,7 @@ def test_maybe_compress_truncated():
     sid = fresh_session("src-truncated")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None
 
 
 def test_maybe_compress_partial_keeps_old():
@@ -378,15 +379,15 @@ def test_maybe_compress_partial_keeps_old():
     seed_big(sid)
     assert asyncio.run(
         make_compactor(FakeProvider()).maybe_compress(FakeContext(sid))) is True
-    old_rec = SessionStore.load_compact(CHANNEL, sid)
-    SessionStore.append(make_msg("user", "追问" * 4000, session_id=sid))
-    SessionStore.append(make_msg("assistant", "第二轮", session_id=sid))
+    old_rec = make_store().load_compact(CHANNEL, sid)
+    make_store().append(make_msg("user", "追问" * 4000, session_id=sid))
+    make_store().append(make_msg("assistant", "第二轮", session_id=sid))
 
     fake = FakeProvider(chunks=[
         ("content", "# 摘要\n\n## Goal\n1. 用户（Ace）要求：")])
     assert asyncio.run(
         make_compactor(fake).maybe_compress(FakeContext(sid))) is False
-    assert SessionStore.load_compact(CHANNEL, sid).covered_upto == old_rec.covered_upto
+    assert make_store().load_compact(CHANNEL, sid).covered_upto == old_rec.covered_upto
 
 
 def test_maybe_compress_chained():
@@ -396,9 +397,9 @@ def test_maybe_compress_chained():
     sid = fresh_session("src-chain")
     seed_big(sid)
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is True
-    first_covered = SessionStore.load_compact(CHANNEL, sid).covered_upto
-    SessionStore.append(make_msg("user", "追问" * 4000, session_id=sid))
-    SessionStore.append(make_msg("assistant", "第二轮", session_id=sid))
+    first_covered = make_store().load_compact(CHANNEL, sid).covered_upto
+    make_store().append(make_msg("user", "追问" * 4000, session_id=sid))
+    make_store().append(make_msg("assistant", "第二轮", session_id=sid))
     assert asyncio.run(comp.maybe_compress(FakeContext(sid))) is True
 
     second_msgs = fake.payloads[1].messages
@@ -408,7 +409,7 @@ def test_maybe_compress_chained():
     second_texts = [m.get("content") or "" for m in second_msgs]
     assert not any(t == "你好" * 3500 for t in second_texts)
     assert any(t == "继续" * 3500 for t in second_texts)
-    rec = SessionStore.load_compact(CHANNEL, sid)
+    rec = make_store().load_compact(CHANNEL, sid)
     assert rec.covered_upto != first_covered
 
 
@@ -433,53 +434,53 @@ def _write_legacy_summary(sid: str, content: str, covered: str) -> Path:
 
 def test_migrate_legacy_summary_exact_tags():
     sid = fresh_session("src-legacy")
-    SessionStore.append(make_msg("user", "旧会话", session_id=sid))
+    make_store().append(make_msg("user", "旧会话", session_id=sid))
     last = make_msg("assistant", "回复", session_id=sid)
-    SessionStore.append(last)
+    make_store().append(last)
     legacy_path = _write_legacy_summary(
         sid, "<summary>\n## Goal\n测试\n</summary>", last.id)
 
-    assert SessionStore.migrate_legacy_summaries() >= 1
+    assert make_store().migrate_legacy_summaries() >= 1
     assert not legacy_path.exists()
-    migrated = SessionStore.load_compact(CHANNEL, sid)
+    migrated = make_store().load_compact(CHANNEL, sid)
     assert migrated is not None
     assert migrated.content == "<compact>\n## Goal\n测试\n</compact>"
     assert migrated.covered_upto == last.id
     # 迁移后 load_history 正常合成
-    hist = SessionStore.load_history(sid, CHANNEL, include_compact=True)
+    hist = make_store().load_history(sid, CHANNEL, include_compact=True)
     assert hist[0].compact
     # 二次迁移幂等
-    assert SessionStore.migrate_legacy_summaries() >= 0
-    assert SessionStore.load_compact(CHANNEL, sid) is not None
+    assert make_store().migrate_legacy_summaries() >= 0
+    assert make_store().load_compact(CHANNEL, sid) is not None
 
 
 def test_migrate_leaves_new_style_summary():
     sid = fresh_session("src-newstyle")
-    SessionStore.append(make_msg("user", "新复盘", session_id=sid))
-    SessionStore.save_summary(CHANNEL, sid, SessionSummary(
+    make_store().append(make_msg("user", "新复盘", session_id=sid))
+    make_store().save_summary(CHANNEL, sid, SessionSummary(
         title="t", description="d", done=["a"], covered_upto="x"))
-    before = SessionStore._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
-    SessionStore.migrate_legacy_summaries()
-    after = SessionStore._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
+    before = make_store()._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
+    make_store().migrate_legacy_summaries()
+    after = make_store()._summary_file(CHANNEL, sid).read_text(encoding="utf-8")
     assert before == after
-    assert not SessionStore._compact_file(CHANNEL, sid).exists()
+    assert not make_store()._compact_file(CHANNEL, sid).exists()
 
 
 def test_migrate_inexact_tags_only_renames():
     sid = fresh_session("src-partialfmt")
-    SessionStore.append(make_msg("user", "x", session_id=sid))
+    make_store().append(make_msg("user", "x", session_id=sid))
     _write_legacy_summary(sid, "raw text without tags", "whatever")
-    SessionStore.migrate_legacy_summaries()
-    rec = SessionStore.load_compact(CHANNEL, sid)
+    make_store().migrate_legacy_summaries()
+    rec = make_store().load_compact(CHANNEL, sid)
     assert rec is not None and rec.content == "raw text without tags"
 
 
 def test_migrate_broken_json_only_renames():
     sid = fresh_session("src-broken")
-    SessionStore.append(make_msg("user", "y", session_id=sid))
+    make_store().append(make_msg("user", "y", session_id=sid))
     broken = _write_legacy_summary(sid, "irrelevant", "x")
     broken.write_text("{bad json", encoding="utf-8")
-    SessionStore.migrate_legacy_summaries()
+    make_store().migrate_legacy_summaries()
     assert not broken.exists()
     assert (broken.parent / "compact.json").exists()
-    assert SessionStore.load_compact(CHANNEL, sid) is None
+    assert make_store().load_compact(CHANNEL, sid) is None

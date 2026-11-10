@@ -38,6 +38,7 @@ from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.config import Config
 from zero.models import MessageOut, StreamEvent
+from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
 CHANNEL = "cli"
@@ -53,14 +54,15 @@ class CLIChannel(BusChannel):
 
     name = CHANNEL
 
-    def __init__(self, msg_bus, config: Config | None = None,
+    def __init__(self, msg_bus, session_store: SessionStore,
+                 config: Config | None = None,
                  tool_registry: ToolRegistry | None = None,
                  console: Console | None = None):
         super().__init__(msg_bus)
         self.console = console or Console(highlight=False)
         self.service = ChannelService(
-            CHANNEL, msg_bus=msg_bus, config=config,
-            tool_registry=tool_registry)
+            CHANNEL, msg_bus=msg_bus, session_store=session_store,
+            config=config, tool_registry=tool_registry)
         self.renderer = CliRenderer(self.console, self.service)
         self.input = CliInput(self.console, toolbar=self._toolbar_line)
         self.approval = CliApproval(

@@ -45,6 +45,7 @@ from zero.channels.base import BusChannel
 from zero.channels.service import ChannelService
 from zero.config import Config
 from zero.models import MessageOut, StreamEvent
+from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +57,12 @@ class WebChannel(BusChannel):
 
     name = CHANNEL
 
-    def __init__(self, msg_bus: MessageBus, config: Config | None = None):
+    def __init__(self, msg_bus: MessageBus, session_store: SessionStore,
+                 config: Config | None = None):
         super().__init__(msg_bus)
-        self.service = ChannelService(CHANNEL, msg_bus=msg_bus, config=config)
+        self.service = ChannelService(
+            CHANNEL, msg_bus=msg_bus, session_store=session_store,
+            config=config)
         self.web_config = config.channels.web if config is not None else None
 
         self._clients: set[ServerConnection] = set()

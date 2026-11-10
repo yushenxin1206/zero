@@ -20,6 +20,7 @@ from zero.core.context import SubAgentContext
 from zero.core.runner import AgentRunner
 from zero.models import (
     AgentRuntimeConfig, LLMCallOptions, LLMRuntime, ProviderConfig, StreamEvent)
+from tests.support import make_store
 
 
 class FakeProvider:
@@ -41,7 +42,8 @@ def make_runner(chunks) -> AgentRunner:
         llm_runtime=LLMRuntime(provider=ProviderConfig(),
                                context_window_tokens=20000),
     )
-    r.context = SubAgentContext("测试任务")   # compressible=False，跳过压缩
+    r.context = SubAgentContext(
+        "测试任务", session_store=make_store())   # compressible=False，跳过压缩
     r.provider = FakeProvider(chunks)
     r._stop_event = None
     r.tool_registry = None

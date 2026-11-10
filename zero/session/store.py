@@ -49,7 +49,6 @@ except ImportError:  # pragma: no cover - Windows 无 fcntl，退化为仅进程
     fcntl = None
 
 from zero.models import Message, MessageBody, MessageTool, CompactRecord
-from zero.paths import current
 from zero.session.models import SessionMeta, SessionSummary, TurnMarker
 
 logger = logging.getLogger(__name__)
@@ -65,38 +64,13 @@ _index_cache: dict[str, tuple[int, dict[str, SessionMeta],
                                dict[str, SessionMeta]]] = {}
 _index_lock = threading.Lock()
 
-# 每个渠道一把进程内写锁：索引的读-改-写必须整段串行，否则后台复盘回写
-# 与用户改标题同时发生时会互相覆盖（写盘本身是整份重写）。
+# 每个渠道索引一把进程内写锁：索引的读-改-写必须整段串行，否则后台复盘
+# 回写与用户改标题同时发生时会互相覆盖（写盘本身是整份重写）。键是索引
+# 文件路径而不是渠道名，不同数据根下同名渠道互不阻塞。
 _channel_locks: dict[str, threading.Lock] = {}
 _channel_locks_guard = threading.Lock()
 
 T = TypeVar("T")
-
-
-def _channel_write_lock(channel: str) -> threading.Lock:
-    with _channel_locks_guard:
-        lock = _channel_locks.get(channel)
-        if lock is None:
-            lock = _channel_locks[channel] = threading.Lock()
-        return lock
-
-
-@contextmanager
-def _index_file_lock(channel: str) -> Iterator[None]:
-    """跨进程互斥：索引同目录下的锁文件，flock 独占。
-
-    平台没有 fcntl（Windows）时只保留进程内锁，单进程多线程仍安全。
-    """
-    path = SessionStore._index_path(channel).with_name(".index.lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as fh:
-        if fcntl is not None:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl is not None:
-                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
 # ---------------------------------------------------------------------------
@@ -136,25 +110,55 @@ def apply_compact(
 
 
 class SessionStore:
-    """Append-only JSONL storage for conversation sessions."""
+    """Append-only JSONL storage for conversation sessions.
+
+    构造时接收 sessions 根目录，不读进程级路径：组合根（main）创建实例并
+    显式注入，测试/嵌入方也能在同一进程内并存多个数据根。
+    """
+
+    def __init__(self, root: Path):
+        self.root = Path(root)
 
     # ------------------------------------------------------------------
     # Index file helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _index_path(channel: str) -> Path:
-        return current().sessions / channel / "index.json"
+    def _index_path(self, channel: str) -> Path:
+        return self.root / channel / "index.json"
 
-    @staticmethod
+    def _channel_write_lock(self, channel: str) -> threading.Lock:
+        key = str(self._index_path(channel))
+        with _channel_locks_guard:
+            lock = _channel_locks.get(key)
+            if lock is None:
+                lock = _channel_locks[key] = threading.Lock()
+            return lock
+
+    @contextmanager
+    def _index_file_lock(self, channel: str) -> Iterator[None]:
+        """跨进程互斥：索引同目录下的锁文件，flock 独占。
+
+        平台没有 fcntl（Windows）时只保留进程内锁，单进程多线程仍安全。
+        """
+        path = self._index_path(channel).with_name(".index.lock")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a+") as fh:
+            if fcntl is not None:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                if fcntl is not None:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
     def _cached_maps(
-            channel: str,
+            self, channel: str,
     ) -> tuple[dict[str, SessionMeta], dict[str, SessionMeta]]:
         """索引缓存：返回 (source_id→entry, session_id→entry)，按文件 mtime 失效。
 
         两个映射与缓存共享条目，调用方不得修改；需要改字段走 _load_index()。
         """
-        path = SessionStore._index_path(channel)
+        path = self._index_path(channel)
         key = str(path)
         try:
             stamp = path.stat().st_mtime_ns
@@ -175,21 +179,18 @@ class SessionStore:
             _index_cache[key] = (stamp, by_source, by_session)
         return by_source, by_session
 
-    @staticmethod
-    def _cached_index(channel: str) -> dict[str, SessionMeta]:
+    def _cached_index(self, channel: str) -> dict[str, SessionMeta]:
         """索引的 source_id → 条目视图（共享只读）。"""
-        return SessionStore._cached_maps(channel)[0]
+        return self._cached_maps(channel)[0]
 
-    @staticmethod
-    def _load_index(channel: str) -> dict[str, SessionMeta]:
+    def _load_index(self, channel: str) -> dict[str, SessionMeta]:
         """索引的可写副本：供改字段后 _save_index 的调用方使用。"""
         return {sid: entry.model_copy()
-                for sid, entry in SessionStore._cached_index(channel).items()}
+                for sid, entry in self._cached_index(channel).items()}
 
-    @staticmethod
-    def _save_index(channel: str, index: dict[str, SessionMeta]) -> None:
+    def _save_index(self, channel: str, index: dict[str, SessionMeta]) -> None:
         """原子写回索引并刷新进程内缓存（调用方必须已持有本渠道写锁）。"""
-        path = SessionStore._index_path(channel)
+        path = self._index_path(channel)
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {sid: e.model_dump(mode="json") for sid, e in index.items()}
         # 临时文件必须每次唯一：固定名在并发写时会互相踩，第二个 replace 报错
@@ -210,12 +211,10 @@ class SessionStore:
                 stamp, dict(index),
                 {e.session_id: e for e in index.values()})
 
-    @staticmethod
-    def _find_entry_by_session_id(channel: str, session_id: str) -> SessionMeta | None:
-        return SessionStore._cached_maps(channel)[1].get(session_id)
+    def _find_entry_by_session_id(self, channel: str, session_id: str) -> SessionMeta | None:
+        return self._cached_maps(channel)[1].get(session_id)
 
-    @staticmethod
-    def _last_activity_at(channel: str, entry: SessionMeta) -> datetime:
+    def _last_activity_at(self, channel: str, entry: SessionMeta) -> datetime:
         """会话最后活跃时间：messages.jsonl 的 mtime；从未落消息则视为未活跃。
 
         索引不持久化活跃时间，列表排序与 24 小时过滤都读这个派生值。返回
@@ -223,7 +222,7 @@ class SessionStore:
         """
         if not entry.date:
             return datetime.fromtimestamp(0)
-        path = (current().sessions / channel / entry.date
+        path = (self.root / channel / entry.date
                 / entry.session_id / "messages.jsonl")
         try:
             return datetime.fromtimestamp(path.stat().st_mtime)
@@ -234,8 +233,7 @@ class SessionStore:
     # Path helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def session_dir(channel: str, session_id: str,
+    def session_dir(self, channel: str, session_id: str,
                     entry: SessionMeta | None = None) -> Path:
         """会话数据目录（messages.jsonl / compact.json / summary.json 所在处）。
 
@@ -244,30 +242,26 @@ class SessionStore:
         索引条目的调用方直接传入，省掉一次 session_id → 条目的查表。
         """
         if entry is None:
-            entry = SessionStore._find_entry_by_session_id(channel, session_id)
+            entry = self._find_entry_by_session_id(channel, session_id)
         date = entry.date if entry is not None else datetime.now().strftime("%Y-%m-%d")
-        return current().sessions / channel / date / session_id
+        return self.root / channel / date / session_id
 
-    @staticmethod
-    def _session_file(channel: str, session_id: str,
+    def _session_file(self, channel: str, session_id: str,
                       entry: SessionMeta | None = None) -> Path:
-        return SessionStore.session_dir(channel, session_id, entry) / "messages.jsonl"
+        return self.session_dir(channel, session_id, entry) / "messages.jsonl"
 
-    @staticmethod
-    def _compact_file(channel: str, session_id: str) -> Path:
-        return SessionStore.session_dir(channel, session_id) / "compact.json"
+    def _compact_file(self, channel: str, session_id: str) -> Path:
+        return self.session_dir(channel, session_id) / "compact.json"
 
-    @staticmethod
-    def _summary_file(channel: str, session_id: str) -> Path:
-        return SessionStore.session_dir(channel, session_id) / "summary.json"
+    def _summary_file(self, channel: str, session_id: str) -> Path:
+        return self.session_dir(channel, session_id) / "summary.json"
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    @staticmethod
     def _write_index(
-            channel: str,
+            self, channel: str,
             mutate: Callable[[dict[str, SessionMeta]], tuple[T, bool]],
     ) -> T:
         """索引的事务性读-改-写：锁内取最新副本，改完原子写回。
@@ -280,15 +274,14 @@ class SessionStore:
         （目标会话不存在，或改完的值与原来相同），此时不写文件、不动 mtime、
         也不刷新缓存。
         """
-        with _channel_write_lock(channel), _index_file_lock(channel):
-            index = SessionStore._load_index(channel)
+        with self._channel_write_lock(channel), self._index_file_lock(channel):
+            index = self._load_index(channel)
             result, changed = mutate(index)
             if changed:
-                SessionStore._save_index(channel, index)
+                self._save_index(channel, index)
             return result
 
-    @staticmethod
-    def resolve_session(channel: str, source_id: str) -> str:
+    def resolve_session(self, channel: str, source_id: str) -> str:
         """
         Look up or create a session for the given channel-specific source_id.
 
@@ -299,7 +292,7 @@ class SessionStore:
         if not source_id:
             return str(uuid4())
 
-        index = SessionStore._cached_index(channel)
+        index = self._cached_index(channel)
         if source_id in index:
             # 已有会话：活跃时间由 messages.jsonl 的 mtime 表达，无需写索引
             return index[source_id].session_id
@@ -313,10 +306,9 @@ class SessionStore:
             entries[source_id] = meta
             return meta.session_id, True
 
-        return SessionStore._write_index(channel, mutate)
+        return self._write_index(channel, mutate)
 
-    @staticmethod
-    def create_session(channel: str, source_id: str) -> str:
+    def create_session(self, channel: str, source_id: str) -> str:
         """
         Force-create a NEW session for source_id, replacing any existing
         binding. Use for explicit "new conversation" actions (CLI /new).
@@ -326,22 +318,21 @@ class SessionStore:
             entries[source_id] = meta
             return meta.session_id, True
 
-        return SessionStore._write_index(channel, mutate)
+        return self._write_index(channel, mutate)
 
-    @staticmethod
-    def list_sessions(channel: str) -> list[SessionMeta]:
+    def list_sessions(self, channel: str) -> list[SessionMeta]:
         """
         List all sessions of a channel, most recently updated first.
 
         Each returned SessionMeta has source_id filled in from the index key.
         """
-        index = SessionStore._cached_index(channel)
+        index = self._cached_index(channel)
         entries: list[SessionMeta] = []
         for sid, entry in index.items():
             # 活跃时间取自消息文件 mtime；索引条目本身不被修改（缓存共享）
             entries.append(entry.model_copy(update={
                 "source_id": sid,
-                "last_updated_at": SessionStore._last_activity_at(channel, entry),
+                "last_updated_at": self._last_activity_at(channel, entry),
             }))
         entries.sort(key=lambda e: e.last_updated_at, reverse=True)
         return entries
@@ -350,8 +341,7 @@ class SessionStore:
     # Session titles
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def make_title(text: str) -> str:
+    def make_title(self, text: str) -> str:
         """Derive a session title from a message (whitespace-collapsed,
         truncated to TITLE_MAX_LEN)."""
         title = " ".join((text or "").split())
@@ -359,14 +349,12 @@ class SessionStore:
             title = title[:TITLE_MAX_LEN] + "…"
         return title
 
-    @staticmethod
-    def get_title(channel: str, session_id: str) -> str:
+    def get_title(self, channel: str, session_id: str) -> str:
         """Return the session's title, or "" if unset/unknown."""
-        entry = SessionStore._find_entry_by_session_id(channel, session_id)
+        entry = self._find_entry_by_session_id(channel, session_id)
         return entry.title if entry else ""
 
-    @staticmethod
-    def set_title(channel: str, session_id: str, title: str) -> bool:
+    def set_title(self, channel: str, session_id: str, title: str) -> bool:
         """Manually set/rename a session title. Returns True if found."""
         def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
             for entry in entries.values():
@@ -378,17 +366,15 @@ class SessionStore:
                     return True, True
             return False, False
 
-        return SessionStore._write_index(channel, mutate)
+        return self._write_index(channel, mutate)
 
-    @staticmethod
-    def get_model(channel: str, session_id: str) -> str:
+    def get_model(self, channel: str, session_id: str) -> str:
         """Return the session's bound model (config.models key), or "" if
         the session follows the global default."""
-        entry = SessionStore._find_entry_by_session_id(channel, session_id)
+        entry = self._find_entry_by_session_id(channel, session_id)
         return entry.model if entry else ""
 
-    @staticmethod
-    def set_model(channel: str, session_id: str, model: str) -> bool:
+    def set_model(self, channel: str, session_id: str, model: str) -> bool:
         """Bind a model to the session. Returns True if updated."""
         def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
             for entry in entries.values():
@@ -397,13 +383,12 @@ class SessionStore:
                     return True, True
             return False, False
 
-        return SessionStore._write_index(channel, mutate)
+        return self._write_index(channel, mutate)
 
-    @staticmethod
-    def auto_title(channel: str, session_id: str, text: str) -> None:
+    def auto_title(self, channel: str, session_id: str, text: str) -> None:
         """Set the title from the first user message, unless one is already
         set (auto or manual). No-op for sessions not in the index."""
-        title = SessionStore.make_title(text)
+        title = self.make_title(text)
         if not title:
             return
 
@@ -416,15 +401,14 @@ class SessionStore:
                     return None, False
             return None, False
 
-        SessionStore._write_index(channel, mutate)
+        self._write_index(channel, mutate)
 
-    @staticmethod
-    def first_user_message(channel: str, session_id: str,
+    def first_user_message(self, channel: str, session_id: str,
                            entry: SessionMeta | None = None) -> str:
         """Return the content of the session's first user message ("" if
         none). Stops at the first match without loading the whole file."""
         try:
-            path = SessionStore._session_file(channel, session_id, entry)
+            path = self._session_file(channel, session_id, entry)
         except ValueError:
             return ""
         if not path.exists():
@@ -442,8 +426,7 @@ class SessionStore:
                     return m.body.content
         return ""
 
-    @staticmethod
-    def has_messages(channel: str, session_id: str,
+    def has_messages(self, channel: str, session_id: str,
                      entry: SessionMeta | None = None) -> bool:
         """True if the session has a non-empty messages file.
 
@@ -451,7 +434,7 @@ class SessionStore:
         ``entry`` 让已经持有索引条目的调用方跳过 session_id → 条目的查表。
         """
         try:
-            path = SessionStore._session_file(channel, session_id, entry)
+            path = self._session_file(channel, session_id, entry)
         except ValueError:
             return False
         try:
@@ -459,43 +442,38 @@ class SessionStore:
         except OSError:
             return False
 
-    @staticmethod
-    def _append_json(channel: str, session_id: str, payload: str) -> None:
-        path = SessionStore._session_file(channel, session_id)
+    def _append_json(self, channel: str, session_id: str, payload: str) -> None:
+        path = self._session_file(channel, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(payload + "\n")
 
-    @staticmethod
-    def begin_turn(channel: str, session_id: str, turn_id: str) -> None:
+    def begin_turn(self, channel: str, session_id: str, turn_id: str) -> None:
         """写入轮次开始标记。必须在该轮第一条消息之前落盘。"""
-        SessionStore._append_json(
+        self._append_json(
             channel, session_id,
             TurnMarker(kind="turn_begin", turn_id=turn_id).model_dump_json())
 
-    @staticmethod
-    def end_turn(channel: str, session_id: str, turn_id: str,
+    def end_turn(self, channel: str, session_id: str, turn_id: str,
                  status: str = "ok") -> None:
         """写入轮次结束标记。必须在该轮最后一条消息之后落盘。"""
-        SessionStore._append_json(
+        self._append_json(
             channel, session_id,
             TurnMarker(kind="turn_end", turn_id=turn_id,
                        status=status).model_dump_json())
 
-    @staticmethod
-    def append(message: Message) -> None:
+    def append(self, message: Message) -> None:
         """Append a Message to its session file.
 
         不触碰 index.json：turn 内每条中间消息都 touch 会让整个索引被反复
         读改写（随渠道会话数放大的写放大）。活跃时间戳由调用方在 turn 边界
         用 touch() 统一刷新一次。
         """
-        SessionStore._append_json(
+        self._append_json(
             message.channel, message.session_id,
             message.model_dump_json())
 
-    @staticmethod
-    def touch(channel: str, session_id: str) -> None:
+    def touch(self, channel: str, session_id: str) -> None:
         """刷新会话最后活跃时间（turn 边界调用一次即可）。
 
         活跃时间只服务列表排序与 maintenance 的 24h 活跃过滤，由
@@ -503,14 +481,13 @@ class SessionStore:
         不再读改写整份 index.json——历史再长、会话再多也不放大写入。
         """
         try:
-            os.utime(SessionStore._session_file(channel, session_id))
+            os.utime(self._session_file(channel, session_id))
         except OSError:
             return
 
-    @staticmethod
-    def load_compact(channel: str, session_id: str) -> CompactRecord | None:
+    def load_compact(self, channel: str, session_id: str) -> CompactRecord | None:
         """Load the context compression record, or None if absent/corrupt."""
-        path = SessionStore._compact_file(channel, session_id)
+        path = self._compact_file(channel, session_id)
         if not path.exists():
             return None
         try:
@@ -518,10 +495,9 @@ class SessionStore:
         except (OSError, ValueError):
             return None
 
-    @staticmethod
-    def save_compact(channel: str, session_id: str, record: CompactRecord) -> None:
+    def save_compact(self, channel: str, session_id: str, record: CompactRecord) -> None:
         """Atomically persist a compression record (tmp file + replace)."""
-        path = SessionStore._compact_file(channel, session_id)
+        path = self._compact_file(channel, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(record.model_dump_json(), encoding="utf-8")
@@ -531,8 +507,7 @@ class SessionStore:
     # 加载期补写占位的固定文案。读取方不再靠文案识别，改用 synthetic 字段。
     _SYNTHETIC_NOTE = "tool result missing: turn ended before completion"
 
-    @staticmethod
-    def _placeholder_tool_msg(tool_call_id: str, session_id: str,
+    def _placeholder_tool_msg(self, tool_call_id: str, session_id: str,
                               channel: str) -> MessageTool:
         """闭合轮次里缺失的 tool 结果占位。
 
@@ -548,16 +523,15 @@ class SessionStore:
             recipient="assistant",
             body=MessageBody(
                 content=json.dumps(
-                    {"error": SessionStore._SYNTHETIC_NOTE},
+                    {"error": self._SYNTHETIC_NOTE},
                     ensure_ascii=False),
                 tool_call_id=tool_call_id,
             ),
             synthetic=True,
         )
 
-    @staticmethod
     def _repair_tool_sequence(
-            messages: list[Message], channel: str,
+            self, messages: list[Message], channel: str,
             session_id: str) -> tuple[list[Message], bool]:
         """给一个已闭合的消息段补齐缺失的 tool 结果。
 
@@ -574,7 +548,7 @@ class SessionStore:
         def settle():
             nonlocal pending, changed
             for tc_id in pending.values():
-                repaired.append(SessionStore._placeholder_tool_msg(
+                repaired.append(self._placeholder_tool_msg(
                     tc_id, session_id, channel))
                 changed = True
             pending = {}
@@ -594,19 +568,17 @@ class SessionStore:
         settle()  # 段末仍未配对
         return repaired, changed
 
-    @staticmethod
-    def _write_records(session_id: str, channel: str,
+    def _write_records(self, session_id: str, channel: str,
                        records: list[Message | TurnMarker]) -> None:
         """原子重写 messages.jsonl（tmp + replace），保留轮次标记。"""
-        path = SessionStore._session_file(channel, session_id)
+        path = self._session_file(channel, session_id)
         tmp = path.with_suffix(".jsonl.tmp")
         tmp.write_text(
             "".join(r.model_dump_json() + "\n" for r in records),
             encoding="utf-8")
         tmp.replace(path)
 
-    @staticmethod
-    def _read_records(path: Path) -> list[Message | TurnMarker]:
+    def _read_records(self, path: Path) -> list[Message | TurnMarker]:
         records: list[Message | TurnMarker] = []
         with path.open("r", encoding="utf-8") as f:
             for line in f:
@@ -620,9 +592,8 @@ class SessionStore:
                     records.append(Message.model_validate(data))
         return records
 
-    @staticmethod
     def _group_turns(
-            records: list[Message | TurnMarker],
+            self, records: list[Message | TurnMarker],
     ) -> list[tuple[TurnMarker | None, list[Message], TurnMarker | None]]:
         """把记录切成顺序段：(begin?, messages, end?)。
 
@@ -648,9 +619,8 @@ class SessionStore:
                 groups[-1] = (begin, msgs + [r], end)
         return groups
 
-    @staticmethod
     def load_history(
-            session_id: str,
+            self, session_id: str,
             channel: str,
             include_compact: bool = True,
             repair_closed_turns: bool = False,
@@ -669,21 +639,21 @@ class SessionStore:
         段的补全结果原子写回；其它读路径永远零写盘。活跃轮绝不改写。
         """
         try:
-            path = SessionStore._session_file(channel, session_id)
+            path = self._session_file(channel, session_id)
         except ValueError:
             return []
         if not path.exists():
             return []
 
-        groups = SessionStore._group_turns(
-            SessionStore._read_records(path))
+        groups = self._group_turns(
+            self._read_records(path))
         view: list[Message] = []
         disk: list[Message | TurnMarker] = []
         changed = False
 
         for begin, msgs, end in groups:
             if begin is None:
-                fixed, group_changed = SessionStore._repair_tool_sequence(
+                fixed, group_changed = self._repair_tool_sequence(
                     msgs, channel, session_id)
                 view.extend(fixed)
                 disk.extend(fixed)
@@ -705,7 +675,7 @@ class SessionStore:
                 disk.extend(msgs)
                 continue
 
-            fixed, group_changed = SessionStore._repair_tool_sequence(
+            fixed, group_changed = self._repair_tool_sequence(
                 msgs, channel, session_id)
             view.extend(fixed)
             disk.append(begin)
@@ -714,7 +684,7 @@ class SessionStore:
             changed = changed or group_changed
 
         if repair_closed_turns and changed:
-            SessionStore._write_records(session_id, channel, disk)
+            self._write_records(session_id, channel, disk)
             logger.warning(
                 "session %s/%s: repaired missing tool results in closed turns",
                 channel, session_id)
@@ -722,32 +692,29 @@ class SessionStore:
         if not include_compact:
             return view
         return apply_compact(
-            view, SessionStore.load_compact(channel, session_id),
+            view, self.load_compact(channel, session_id),
             session_id, channel)
 
     # ------------------------------------------------------------------
     # Maintenance APIs（session_summary/memory 定时任务专用，纯存储无业务）
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def list_channels() -> list[str]:
+    def list_channels(self) -> list[str]:
         """List all channel names that have session directories on disk."""
-        root = current().sessions
+        root = self.root
         if not root.exists():
             return []
         return sorted(p.name for p in root.iterdir() if p.is_dir())
 
-    @staticmethod
-    def list_recent(channel: str, since: datetime) -> list[SessionMeta]:
+    def list_recent(self, channel: str, since: datetime) -> list[SessionMeta]:
         """List sessions of the channel with last_updated_at >= since
         (source_id filled, most recently updated first)."""
-        return [e for e in SessionStore.list_sessions(channel)
+        return [e for e in self.list_sessions(channel)
                 if e.last_updated_at >= since]
 
-    @staticmethod
-    def load_summary(channel: str, session_id: str) -> SessionSummary | None:
+    def load_summary(self, channel: str, session_id: str) -> SessionSummary | None:
         """Load the session summary, or None if absent/corrupt."""
-        path = SessionStore._summary_file(channel, session_id)
+        path = self._summary_file(channel, session_id)
         if not path.exists():
             return None
         try:
@@ -755,18 +722,16 @@ class SessionStore:
         except (OSError, ValueError):
             return None
 
-    @staticmethod
-    def save_summary(channel: str, session_id: str, summary: SessionSummary) -> None:
+    def save_summary(self, channel: str, session_id: str, summary: SessionSummary) -> None:
         """Atomically persist a session summary (tmp file + replace)."""
-        path = SessionStore._summary_file(channel, session_id)
+        path = self._summary_file(channel, session_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(summary.model_dump_json(), encoding="utf-8")
         tmp.replace(path)
 
-    @staticmethod
     def update_meta_by_summary(
-            channel: str,
+            self, channel: str,
             session_id: str,
             title: str | None = None,
             description: str | None = None,
@@ -795,10 +760,9 @@ class SessionStore:
                     return True, changed
             return False, False
 
-        return SessionStore._write_index(channel, mutate)
+        return self._write_index(channel, mutate)
 
-    @staticmethod
-    def migrate_legacy_summaries() -> int:
+    def migrate_legacy_summaries(self) -> int:
         """一次性迁移：旧版压缩摘要 summary.json → compact.json。
 
         旧结构（SummaryRecord：content + covered_upto，content 包裹
@@ -811,7 +775,7 @@ class SessionStore:
         content 字段，直接跳过。返回迁移的会话数。
         """
         migrated = 0
-        root = current().sessions
+        root = self.root
         if not root.exists():
             return 0
         for channel_dir in root.iterdir():

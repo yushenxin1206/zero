@@ -4,7 +4,13 @@ import json
 import time
 
 from zero.config import Config
+from zero.paths import current
 from zero.session.store import SessionStore
+
+
+def make_store() -> SessionStore:
+    """测试边界：按当前隔离根构造会话存储，与组合根的构造方式一致。"""
+    return SessionStore(current().sessions)
 
 
 def make_test_config() -> Config:
@@ -33,7 +39,7 @@ async def wait_turn_closed(
     """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        path = SessionStore._session_file(channel, session_id)
+        path = make_store()._session_file(channel, session_id)
         if path.exists():
             for line in path.read_text(encoding="utf-8").splitlines():
                 try:
