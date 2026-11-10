@@ -7,7 +7,8 @@ CreateScheduledTask tool is a thin wrapper around this module.
 """
 from datetime import datetime, timedelta
 
-from zero.scheduler.models import ScheduleTask, ScheduleType
+from zero.scheduler.models import (
+    SCHEDULE_ONCE, SCHEDULE_RECURRING, ScheduleTask, ScheduleType)
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -30,7 +31,7 @@ def create_task(
     """
     now = datetime.now()
 
-    if schedule_type == "once":
+    if schedule_type == SCHEDULE_ONCE:
         if trigger_at_iso:
             try:
                 trigger_at = datetime.fromisoformat(trigger_at_iso)
@@ -44,7 +45,7 @@ def create_task(
                 )
             trigger_at = now + timedelta(minutes=minutes)
         cron = ""
-    elif schedule_type == "recurring":
+    elif schedule_type == SCHEDULE_RECURRING:
         try:
             # 校验表达式，并保证下一次触发严格晚于当前时刻
             trigger_at = next_run(cron, now)

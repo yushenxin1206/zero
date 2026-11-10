@@ -19,7 +19,8 @@ from datetime import datetime
 from zero.bus.queue import BusQueueFull, MessageBus
 from zero.models import (
     ORIGIN_SCHEDULER, MessageBody, MessageIn, Origin, TurnStatus)
-from zero.scheduler.models import ScheduleTask, TaskStatus
+from zero.scheduler.models import (
+    SCHEDULE_RECURRING, ScheduleTask, TaskStatus)
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -89,7 +90,7 @@ class Scheduler:
         self._in_flight.add(task.id)
         self.store.update_status(task.id, "running")
 
-        if task.schedule_type == "recurring":
+        if task.schedule_type == SCHEDULE_RECURRING:
             # 推进到 cron 的下一次触发，任务回到 pending 继续参与调度
             try:
                 next_trigger = next_run(task.cron, now)

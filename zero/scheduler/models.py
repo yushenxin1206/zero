@@ -11,6 +11,8 @@ from pydantic import Field
 from zero.models import Base
 
 ScheduleType = Literal["once", "recurring"]
+SCHEDULE_ONCE: ScheduleType = "once"
+SCHEDULE_RECURRING: ScheduleType = "recurring"
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 
 
@@ -20,7 +22,7 @@ class ScheduleTask(Base):
     channel: str = ""
     session_id: str = ""  # 目标会话，结果回投到该会话
     instruction: str = ""  # 创建时固化的自包含指令
-    schedule_type: ScheduleType = "once"
+    schedule_type: ScheduleType = SCHEDULE_ONCE
     trigger_at: datetime | None = None  # once: 执行时刻；recurring: 下次执行时刻
     cron: str = ""  # recurring: 5 字段 cron 表达式
     status: TaskStatus = "pending"

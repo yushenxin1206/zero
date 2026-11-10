@@ -11,7 +11,7 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from zero.scheduler.models import ScheduleTask, TaskStatus
+from zero.scheduler.models import SCHEDULE_ONCE, ScheduleTask, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class SchedulerStore:
                 task_id, status)
             return
         task.last_run_at = datetime.now()
-        if task.schedule_type == "once":
+        if task.schedule_type == SCHEDULE_ONCE:
             task.status = status
         task.updated_at = datetime.now()
         self._save_tasks(tasks)

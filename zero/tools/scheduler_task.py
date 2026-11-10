@@ -8,6 +8,7 @@ and the result is routed back to the originating session), or cancel a task
 that has not finished yet.
 """
 from zero.models import ToolContext
+from zero.scheduler.models import SCHEDULE_ONCE
 from zero.scheduler.service import cancel_task, create_task
 from zero.scheduler.store import SchedulerStore
 from zero.tools.base import Tool
@@ -77,7 +78,7 @@ class CreateScheduledTask(Tool):
             task = create_task(
                 self.store,
                 instruction=instruction,
-                schedule_type=kwargs.get("schedule_type", "once"),
+                schedule_type=kwargs.get("schedule_type", SCHEDULE_ONCE),
                 channel=context.channel,
                 session_id=context.session_id,
                 channel_session_id=context.channel_session_id,
