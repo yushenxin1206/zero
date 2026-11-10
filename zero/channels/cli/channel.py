@@ -38,14 +38,14 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.models import MessageOut, StreamEvent, TokenUsage
+from zero.models import CHANNEL_CLI, MessageOut, StreamEvent, TokenUsage
 from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
 from zero.scheduler.store import SchedulerStore
 from zero.tools.registry import ToolRegistry
 
-CHANNEL = "cli"
+CHANNEL = CHANNEL_CLI
 
 # 流式渲染的最小重绘间隔（秒）。Live 每次重绘都要「擦除整帧 + 重画整帧」，
 # 若每个 token 都触发（可达几十次/秒），终端上会持续闪烁；固定到这个帧率后

@@ -29,6 +29,7 @@ from pathlib import Path
 
 from zero.config import HOME
 from zero.data_paths import DataPaths
+from zero.models import CHANNEL_CLI, CHANNEL_WEB
 from zero.permission import seatbelt
 from zero.session.store import SessionStore
 
@@ -48,7 +49,7 @@ D = "D"  # 不可授予：拒绝，无面板
 
 # 有人值守、可以就地弹审批面板作答的渠道。网络放行与 G 档审批共用这个
 # 判定：无人值守来源既不能弹面板，也不允许自动联网。
-ATTENDED_CHANNELS = frozenset({"cli", "web"})
+ATTENDED_CHANNELS = frozenset({CHANNEL_CLI, CHANNEL_WEB})
 
 
 # ---------------------------------------------------------------------------

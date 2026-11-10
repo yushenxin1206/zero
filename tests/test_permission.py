@@ -32,6 +32,7 @@ from zero.permission.envelope import PermissionState
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookContext
+import zero.models as contract
 from zero.models import (
     ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, ORIGIN_USER, ApprovalRequest, Origin,
     OriginKind, ToolContext)
@@ -61,7 +62,11 @@ UNATTENDED_CHANNELS = frozenset({"feishu"})
 
 
 def _declared_channel_names() -> set[str]:
-    """扫描 zero/channels 下所有顶层 ``CHANNEL = "..."`` 声明。"""
+    """扫描 zero/channels 下的 CHANNEL 声明。
+
+    取值支持字面量或共享常量（``CHANNEL = CHANNEL_CLI``）：常量统一在
+    zero.models 里定义，这里按名字解析。
+    """
     root = Path(channels_pkg.__file__).parent
     names: set[str] = set()
     for path in root.rglob("*.py"):
@@ -70,11 +75,16 @@ def _declared_channel_names() -> set[str]:
             if not isinstance(node, ast.Assign):
                 continue
             targets = node.targets
-            if (any(isinstance(t, ast.Name) and t.id == "CHANNEL"
-                    for t in targets)
-                    and isinstance(node.value, ast.Constant)
-                    and isinstance(node.value.value, str)):
-                names.add(node.value.value)
+            if not any(isinstance(t, ast.Name) and t.id == "CHANNEL"
+                       for t in targets):
+                continue
+            value: object = None
+            if isinstance(node.value, ast.Constant):
+                value = node.value.value
+            elif isinstance(node.value, ast.Name):
+                value = getattr(contract, node.value.id, None)
+            if isinstance(value, str):
+                names.add(value)
     return names
 
 

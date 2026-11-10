@@ -44,7 +44,7 @@ from zero.bus.queue import BusQueueFull, MessageBus
 from zero.channels.base import BusChannel
 from zero.channels.service import ChannelService
 from zero.config import Config
-from zero.models import MessageOut, StreamEvent
+from zero.models import CHANNEL_WEB, MessageOut, StreamEvent
 from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
@@ -52,7 +52,7 @@ from zero.scheduler.store import SchedulerStore
 
 logger = logging.getLogger(__name__)
 
-CHANNEL = "web"
+CHANNEL = CHANNEL_WEB
 
 
 class WebChannel(BusChannel):

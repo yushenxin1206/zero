@@ -92,6 +92,12 @@ class Origin(Base):
     task_id: str | None = None
 
 
+# 内置通道标识。channel 字段保持开放 str（插件/第三方通道可自由接入），
+# 这里只固定内置三者的名字，供构造与比较点引用，不做封闭 Literal。
+CHANNEL_CLI = "cli"
+CHANNEL_WEB = "web"
+CHANNEL_FEISHU = "feishu"
+
 MessageSender = Literal["user", "assistant", "tool"]
 MessageRecipient = Literal["assistant", "user"]
 # 一轮执行结束时 AgentLoop 对外回报的状态；跨 core / scheduler 使用，

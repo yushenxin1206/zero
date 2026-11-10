@@ -20,6 +20,7 @@ from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
 from zero.data_paths import DataPaths
+from zero.models import CHANNEL_FEISHU
 from zero.permission.envelope import PermissionState
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
@@ -179,7 +180,7 @@ def start_feishu(msg_bus: MessageBus, config: Config,
     channel = FeishuChannel(
         config=feishu_cfg, session_store=session_store, msg_bus=msg_bus)
     # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
-    return asyncio.create_task(_guard(channel.start(), "feishu"))
+    return asyncio.create_task(_guard(channel.start(), CHANNEL_FEISHU))
 
 
 async def run(config: Config, data_paths: DataPaths, cli_only: bool = False):

@@ -25,11 +25,12 @@ from lark_oapi.api.im.v1 import (
 
 from zero.bus.queue import BusQueueFull, MessageBus, MessageOutQueue
 from zero.models import (
-    FeishuConfig, MessageBody, MessageIn, MessageOut, StreamEvent)
+    CHANNEL_FEISHU, FeishuConfig, MessageBody, MessageIn, MessageOut,
+    StreamEvent)
 from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
-CHANNEL = "feishu"
+CHANNEL = CHANNEL_FEISHU
 
 
 class FeishuChannel:
@@ -144,8 +145,8 @@ class FeishuChannel:
 
             msg_in = MessageIn(
                 session_id=self.session_store.resolve_session(
-                    "feishu", chat_id),
-                channel="feishu",
+                    CHANNEL, chat_id),
+                channel=CHANNEL,
                 body=MessageBody(content=text),
                 channel_message_id=message_id,
                 channel_sender_id=sender_id,
