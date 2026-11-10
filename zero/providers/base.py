@@ -31,26 +31,9 @@ class LLMPayload(Base):
 
 class Provider(ABC):
 
-    def __init__(
-            self,
-            provider_config: ProviderConfig,
-            provider_key: str = '',
-    ):
-        """构造即校验端点与密钥，把"第一次请求才 401"提前到启动。
-
-        provider_key 由 Config.resolve_runtime 结算时带上（dashscope /
-        deepseek / zhipu），仅用于在报错里指明该补哪个配置键。
-        """
+    def __init__(self, provider_config: ProviderConfig):
         self.api_base = provider_config.api_base
         self.api_key = provider_config.api_key
-        missing = [key for key, value in
-                   (('apiBase', self.api_base), ('apiKey', self.api_key))
-                   if not value]
-        if missing:
-            where = f'providers.{provider_key}' if provider_key else 'providers.<厂商>'
-            raise ValueError(
-                f"{where} 缺少 {' 和 '.join(missing)}：请在 config.json 的 "
-                f"{where} 中填写")
 
     @staticmethod
     def _request_with_retry(

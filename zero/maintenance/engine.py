@@ -42,11 +42,9 @@ class MaintenanceEngine:
         self._maintenance = config.maintenance
         summary = config.resolve_runtime('session_summary')
         memory = config.resolve_runtime('memory')
-        self._summary_provider = OpenAI(
-            summary.llm_runtime.provider, summary.llm_runtime.provider_key)
+        self._summary_provider = OpenAI(summary.llm_runtime.provider)
         self._summary_runtime: AgentRuntimeConfig = summary
-        self._memory_provider = OpenAI(
-            memory.llm_runtime.provider, memory.llm_runtime.provider_key)
+        self._memory_provider = OpenAI(memory.llm_runtime.provider)
         self._memory_runtime: AgentRuntimeConfig = memory
         self._state_lock = asyncio.Lock()
 

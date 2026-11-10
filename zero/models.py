@@ -362,9 +362,6 @@ class LLMRuntime(Base):
     # 由 resolve_runtime 显式传入；不设默认值，避免与 ModelSpec 的同名
     # 默认值形成第二份真相（两处各写一个窗口，迟早漂移）。
     context_window_tokens: int
-    # 注册表里的 provider 键（dashscope / deepseek / zhipu），仅用于报错时
-    # 指明该去补哪个 providers.<键>，不参与请求。
-    provider_key: str = ''
 
 
 class AgentRuntimeConfig(AgentRuntimeSpec):

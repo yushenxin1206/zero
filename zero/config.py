@@ -48,11 +48,11 @@ TOOL_RESULT_MAX_CHARS = 10000
 
 
 class Config(BaseSettings):
-    # 模型注册表：键 = API 模型名，值 = 接入事实（provider / 上下文窗口）
-    models: dict[str, ModelSpec] = Field(default_factory=dict)
     # 每个任务一套 agent runtime：default 主对话 / compact / session_summary / memory
     agent_runtimes: AgentRuntimeSpecs = Field(default_factory=AgentRuntimeSpecs)
     providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
+    # 模型注册表：键 = API 模型名，值 = 接入事实（provider / 上下文窗口）
+    models: dict[str, ModelSpec] = Field(default_factory=dict)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
     compact: CompactConfig = Field(default_factory=CompactConfig)
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
@@ -101,7 +101,6 @@ class Config(BaseSettings):
             llm_runtime=LLMRuntime(
                 provider=self._resolve_provider(ms.provider),
                 context_window_tokens=ms.context_window_tokens,
-                provider_key=ms.provider,
             ),
         )
 
