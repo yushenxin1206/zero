@@ -8,6 +8,7 @@ import asyncio
 import logging
 import time
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from zero.bus.queue import MessageBus
@@ -28,6 +29,11 @@ logger = logging.getLogger(__name__)
 # 摘要里错误原因的最大长度：够看清是什么错，又不至于把一行日志撕成多行
 # （换行会被压成空格，见 _format_turn）。
 _ERROR_MAX_CHARS = 200
+
+# 轮次结束回调：参数为触发消息、轮次状态（completed/error/cancelled）与
+# 错误原因。用于把真实执行结果交给领域侧（如定时任务回写终态），core
+# 不反向依赖这些模块。
+TurnFinishedHook = Callable[[MessageIn, str, str], Awaitable[None]]
 
 
 @dataclass
@@ -90,6 +96,7 @@ class AgentLoop:
             tool_registry: ToolRegistry | None = None,
             *,
             hooks: Hooks,
+            on_turn_finished: TurnFinishedHook | None = None,
     ):
         self.msg_bus = msg_bus
         self.config = config
@@ -100,6 +107,8 @@ class AgentLoop:
         self.tool_registry = tool_registry
         # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
         self.hooks = hooks
+        # 可选：轮次真正结束（成功/失败/取消）后的回调，组合根按需接线
+        self.on_turn_finished = on_turn_finished
         # 当前活跃 turn（(channel, session_id, turn_id)）与其 stop_event；
         # 由 _run_stop_consumer 消费旁路停止信号后置位
         self._current: tuple[str, str, str] | None = None
@@ -149,6 +158,17 @@ class AgentLoop:
                 raise
             finally:
                 logger.info(_format_turn(stat))
+                await self._notify_turn_finished(msg_in, stat)
+
+    async def _notify_turn_finished(
+            self, msg_in: MessageIn, stat: TurnStat) -> None:
+        """把真实结果交给组合根接的回调；回调失败不改变本轮结局。"""
+        if self.on_turn_finished is None:
+            return
+        try:
+            await self.on_turn_finished(msg_in, stat.status, stat.error)
+        except Exception:  # noqa: BLE001 - 观测/回写失败不能吞掉原轮结果
+            logger.exception("轮次结束回调失败：turn=%s", stat.turn_id)
 
     async def _run_turn(
             self, msg_in: MessageIn, stop_event: asyncio.Event,

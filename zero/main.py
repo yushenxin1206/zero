@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookChain, Hooks
-from zero.core.loop import AgentLoop
+from zero.core.loop import AgentLoop, TurnFinishedHook
 from zero.channels.cli import CLIChannel
 from zero.channels.feishu import FeishuChannel
 from zero.maintenance import MaintenanceEngine
@@ -68,7 +68,8 @@ def build_agent_loop(msg_bus: MessageBus,
                      config: Config,
                      session_store: SessionStore,
                      data_paths: DataPaths,
-                     sandbox_available: bool) -> AgentLoop:
+                     sandbox_available: bool,
+                     on_turn_finished: TurnFinishedHook | None = None) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=config,
@@ -77,6 +78,7 @@ def build_agent_loop(msg_bus: MessageBus,
         sandbox_available=sandbox_available,
         tool_registry=tool_registry,
         hooks=hooks,
+        on_turn_finished=on_turn_finished,
     )
 
 
@@ -124,10 +126,14 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
         hooks=hooks,
     )
     registry.register(SubagentTool(subagent_manager))
+    # 定时任务的终态由轮次真正结束时回写：dispatch 只标 running，
+    # Scheduler.finish_turn 负责落 done/failed/cancelled
+    scheduler = Scheduler(msg_bus=msg_bus, store=scheduler_store)
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,
         config=config, session_store=session_store, data_paths=data_paths,
-        sandbox_available=sandbox_available)
+        sandbox_available=sandbox_available,
+        on_turn_finished=scheduler.finish_turn)
     return CoreRuntime(
         msg_bus=msg_bus,
         session_store=session_store,
@@ -137,7 +143,7 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
         hooks=hooks,
         subagent_manager=subagent_manager,
         agent_loop=agent_loop,
-        scheduler=Scheduler(msg_bus=msg_bus, store=scheduler_store),
+        scheduler=scheduler,
         maintenance=build_maintenance_engine(
             config, session_store, data_paths),
     )

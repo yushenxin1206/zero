@@ -12,6 +12,9 @@ from zero.models import Base
 
 ScheduleType = Literal["once", "recurring"]
 TaskStatus = Literal["pending", "running", "done", "failed", "cancelled"]
+# 一轮实际执行的结果；与任务状态区分：recurring 执行失败后任务仍回到
+# pending 等待下一次触发，失败事实记录在 last_status / last_error 上。
+RunOutcome = Literal["ok", "failed", "cancelled"]
 
 
 class ScheduleTask(Base):
@@ -29,3 +32,6 @@ class ScheduleTask(Base):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     last_run_at: datetime | None = None
+    # 最近一轮真实执行的结果与失败原因（空串表示还没跑过）
+    last_status: RunOutcome | Literal[""] = ""
+    last_error: str = ""

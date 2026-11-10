@@ -10,7 +10,7 @@ one ScheduleTask per line, keyed by task id.
 from datetime import datetime
 from pathlib import Path
 
-from zero.scheduler.models import ScheduleTask, TaskStatus
+from zero.scheduler.models import RunOutcome, ScheduleTask, TaskStatus
 
 
 class SchedulerStore:
@@ -83,5 +83,32 @@ class SchedulerStore:
         task.trigger_at = trigger_at
         task.last_run_at = last_run_at
         task.status = "pending"
+        task.updated_at = datetime.now()
+        self._save_tasks(tasks)
+
+    def finish_run(self, task_id: str, *, outcome: RunOutcome,
+                   error: str = "") -> None:
+        """一轮真正结束后回写结果。
+
+        once 在这一刻才进入终态（done / failed / cancelled）——派发入队
+        只是"已开始"，不是"已完成"。recurring 已由 dispatch 推进到下一次
+        触发并回到 pending，这里只记录本轮结果，不覆盖任务状态。
+
+        进程在轮次中途崩溃时，once 会停留在 running，重启后仍会被
+        find_due 捞出重跑（at-least-once），不会永久卡住。
+        """
+        tasks = self._load_tasks()
+        task = tasks.get(task_id)
+        if task is None:
+            return
+        task.last_status = outcome
+        task.last_error = "" if outcome == "ok" else error
+        task.last_run_at = datetime.now()
+        if task.schedule_type == "once":
+            task.status = {
+                "ok": "done",
+                "failed": "failed",
+                "cancelled": "cancelled",
+            }[outcome]
         task.updated_at = datetime.now()
         self._save_tasks(tasks)
