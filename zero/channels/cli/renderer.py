@@ -40,6 +40,9 @@ _FRAME_MIN_LINES = 6
 # 会话选择器展示/可选的最大条目数（renderer 展示与 commands 校验共用）
 SESSION_LIST_LIMIT = 20
 
+# 任务指令展示宽度：任务表与后台结果副标题保持一致
+TASK_INSTRUCTION_MAX = 40
+
 
 class CliRenderer:
     """rich-based presentation layer for one terminal channel."""
@@ -336,7 +339,7 @@ class CliRenderer:
             task = self.service.task(rec.origin.task_id)
             if task is not None:
                 instruction = task.instruction.removeprefix(SCHEDULED_TASK_PREFIX)
-                subtitle_parts.append(escape(self.clip(instruction, 40)))
+                subtitle_parts.append(escape(self.clip(instruction, TASK_INSTRUCTION_MAX)))
         subtitle = " · ".join(subtitle_parts) or None
         print_above = lambda renderable: self.print_above_prompt(  # noqa: E731
             renderable, prompt_active=prompt_active)

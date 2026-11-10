@@ -17,7 +17,8 @@ from rich.table import Table
 
 from zero.channels.cli.input import CliInput
 from zero.channels.cli.prompt import COMMANDS
-from zero.channels.cli.renderer import SESSION_LIST_LIMIT, CliRenderer
+from zero.channels.cli.renderer import (
+    SESSION_LIST_LIMIT, TASK_INSTRUCTION_MAX, CliRenderer)
 from zero.channels.service import ChannelService
 from zero.models import SHORT_ID_LEN
 from zero.scheduler.models import (
@@ -203,7 +204,7 @@ class CliCommands:
                 task.schedule_type + (f" {task.cron}" if task.cron else ""),
                 _fmt(task.trigger_at),
                 _fmt(task.last_run_at),
-                escape(self.renderer.clip(instruction, 40)),
+                escape(self.renderer.clip(instruction, TASK_INSTRUCTION_MAX)),
                 task.id[:SHORT_ID_LEN],
             )
         self.console.print(table)
