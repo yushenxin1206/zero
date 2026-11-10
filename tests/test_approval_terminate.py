@@ -16,7 +16,7 @@ from zero.models import MessageBody, MessageIn
 from zero.session.store import SessionStore
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
-from tests.support import make_test_config
+from tests.support import make_test_config, wait_turn_closed
 
 
 class _DummyTool(Tool):
@@ -89,6 +89,9 @@ async def run_case() -> dict:
             msg_out = await asyncio.wait_for(bus.out_queue.dequeue(), 1)
         except Exception:
             msg_out = None
+        # 取消收尾先把 done/MessageOut 入队、再落 end_turn；不等闭合就读历史
+        # 会把本轮当成崩溃残留（见 SessionStore.load_history）
+        await wait_turn_closed("cli", "s-approve-stop", msg.id)
         loop_task.cancel()
         try:
             await loop_task

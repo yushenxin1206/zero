@@ -10,7 +10,7 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
 from zero.session.store import SessionStore
-from tests.support import make_test_config
+from tests.support import make_test_config, wait_turn_closed
 
 
 class FakeProvider:
@@ -83,6 +83,9 @@ async def main() -> dict:
                 break
         # 最终 MessageOut
         msg_out = await asyncio.wait_for(bus.out_queue.dequeue(), 1)
+        # MessageOut 先于 end_turn 入队：必须等轮次真正闭合，否则
+        # load_history 会把这一轮当成崩溃残留整轮丢弃
+        await wait_turn_closed("cli", "s-test-stop", msg.id)
 
         loop_task.cancel()
         try:
