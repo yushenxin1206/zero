@@ -78,9 +78,11 @@ class HookChain(Hooks):
 
 - `on()` 可作装饰器使用；`register()` 接收 `Hooks` 子类实例，用绑定的方法
   注册，因此签名校验看到的是去掉 `self` 后的三个位置参数。
-- **注册期校验**：handler 必须是 `async def`，且接受 3 个位置参数（或
-  `*args`）。签名漂移若留到分发期，会被 `_safe` 的宽 `except` 吞成静默
-  no-op——对 fail-open 的护栏来说等于护栏不存在，所以在注册处直接 `TypeError`。
+- **注册期校验**：handler 必须是 `async def`，且参数个数与 `Hooks` 基类
+  同名方法一致（不含 `self`，当前为 3 个；声明 `*args` 可豁免）。期望个数
+  由基类签名推导（`_expected_arity`），新增点位无需改校验。签名漂移若留到
+  分发期，会被 `_safe` 的宽 `except` 吞成静默 no-op——对 fail-open 的护栏
+  来说等于护栏不存在，所以在注册处直接 `TypeError`。
 
 ## 3. 分发语义
 

@@ -80,8 +80,21 @@ HookHandler = Callable[[str, dict, HookContext], Awaitable[ToolCallDecision | No
 HOOK_NAMES: tuple[HookName, ...] = ("before_tool_call",)
 
 
+def _expected_arity(hook_name: HookName) -> int:
+    """该点位 handler 应接收的位置参数个数。
+
+    直接从 ``Hooks`` 基类同名方法推导（去掉 self），不维护手写的
+    「点位 → 参数个数」对照表：新增点位只需在基类定义方法并加入
+    ``HOOK_NAMES``，校验自动跟随，不会出现基类改了、校验没改的漂移。
+    """
+    params = inspect.signature(getattr(Hooks, hook_name)).parameters
+    return sum(
+        1 for p in params.values()
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)) - 1
+
+
 def _check_handler(hook_name: HookName, fn: HookHandler) -> None:
-    """注册期校验 handler 契约：必须是 async、且接受 3 个位置参数。
+    """注册期校验 handler 契约：必须是 async、且参数个数与基类同名方法一致。
 
     签名漂移如果在分发时才暴露，会被 ``_safe`` 的宽 except 吞成静默 no-op
     ——对 fail-open 的护栏来说等于护栏不存在。所以在注册处直接报错。
@@ -103,11 +116,12 @@ def _check_handler(hook_name: HookName, fn: HookHandler) -> None:
     positional = [
         p for p in params
         if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    expected = _expected_arity(hook_name)
     if not any(p.kind is p.VAR_POSITIONAL for p in params) \
-            and len(positional) != 3:
+            and len(positional) != expected:
         raise TypeError(
-            f"hook '{hook_name}' handler {fn!r} 必须接受 3 个位置参数"
-            f"（tool_name, kwargs, ctx），实际 {len(positional)} 个")
+            f"hook '{hook_name}' handler {fn!r} 必须接受 {expected} 个位置参数"
+            f"（与 Hooks.{hook_name} 一致），实际 {len(positional)} 个")
 
 
 # ---------------------------------------------------------------------------
