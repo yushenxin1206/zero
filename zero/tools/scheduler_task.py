@@ -8,7 +8,7 @@ and the result is routed back to the originating session), or cancel a task
 that has not finished yet.
 """
 from zero.models import ToolContext
-from zero.scheduler.models import SCHEDULE_ONCE
+from zero.scheduler.models import SCHEDULE_ONCE, TASK_CANCELLED
 from zero.scheduler.service import cancel_task, create_task
 from zero.scheduler.store import SchedulerStore
 from zero.tools.base import Tool
@@ -147,6 +147,6 @@ class CancelScheduledTask(Tool):
         return {
             "success": True,
             "task_id": task.id,
-            "status": "cancelled",
+            "status": TASK_CANCELLED,
             "message": f"Scheduled task {task.id} cancelled.",
         }

@@ -11,7 +11,8 @@ from datetime import datetime
 import logging
 from pathlib import Path
 
-from zero.scheduler.models import SCHEDULE_ONCE, ScheduleTask, TaskStatus
+from zero.scheduler.models import (
+    SCHEDULE_ONCE, TASK_PENDING, TASK_RUNNING, ScheduleTask, TaskStatus)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ class SchedulerStore:
     def find_due(self, now: datetime) -> list[ScheduleTask]:
         due: list[ScheduleTask] = []
         for task in self._load_tasks().values():
-            if task.status not in ("pending", "running"):
+            if task.status not in (TASK_PENDING, TASK_RUNNING):
                 continue
             if task.trigger_at is not None and task.trigger_at <= now:
                 due.append(task)
@@ -94,7 +95,7 @@ class SchedulerStore:
             return
         task.trigger_at = trigger_at
         task.last_run_at = last_run_at
-        task.status = "pending"
+        task.status = TASK_PENDING
         task.updated_at = datetime.now()
         self._save_tasks(tasks)
 

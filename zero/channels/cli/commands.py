@@ -19,6 +19,9 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.prompt import COMMANDS
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
+from zero.scheduler.models import (
+    TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED, TASK_PENDING, TASK_RUNNING,
+    TaskStatus)
 
 # alias -> canonical command (canonical names defined in prompt.COMMANDS)
 _COMMAND_ALIASES = {
@@ -175,9 +178,9 @@ class CliCommands:
             self.console.print(f"[dim]暂无定时任务{hint}[/dim]")
             return
 
-        status_style = {
-            "pending": "yellow", "running": "green",
-            "completed": "dim", "failed": "red", "cancelled": "dim",
+        status_style: dict[TaskStatus, str] = {
+            TASK_PENDING: "yellow", TASK_RUNNING: "green",
+            TASK_COMPLETED: "dim", TASK_FAILED: "red", TASK_CANCELLED: "dim",
         }
         table = Table(
             title=f"定时任务（{'全部' if show_all else '当前会话'}）", expand=True)

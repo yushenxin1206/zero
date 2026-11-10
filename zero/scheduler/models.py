@@ -14,6 +14,11 @@ ScheduleType = Literal["once", "recurring"]
 SCHEDULE_ONCE: ScheduleType = "once"
 SCHEDULE_RECURRING: ScheduleType = "recurring"
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+TASK_PENDING: TaskStatus = "pending"
+TASK_RUNNING: TaskStatus = "running"
+TASK_COMPLETED: TaskStatus = "completed"
+TASK_FAILED: TaskStatus = "failed"
+TASK_CANCELLED: TaskStatus = "cancelled"
 
 
 class ScheduleTask(Base):
@@ -25,7 +30,7 @@ class ScheduleTask(Base):
     schedule_type: ScheduleType = SCHEDULE_ONCE
     trigger_at: datetime | None = None  # once: 执行时刻；recurring: 下次执行时刻
     cron: str = ""  # recurring: 5 字段 cron 表达式
-    status: TaskStatus = "pending"
+    status: TaskStatus = TASK_PENDING
     # 渠道侧会话标识（飞书 chat_id、cli source_id），结果回投寻址用
     channel_session_id: str = ""
     created_at: datetime = Field(default_factory=datetime.now)

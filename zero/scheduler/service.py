@@ -8,7 +8,8 @@ CreateScheduledTask tool is a thin wrapper around this module.
 from datetime import datetime, timedelta
 
 from zero.scheduler.models import (
-    SCHEDULE_ONCE, SCHEDULE_RECURRING, ScheduleTask, ScheduleType)
+    SCHEDULE_ONCE, SCHEDULE_RECURRING, TASK_CANCELLED, TASK_COMPLETED,
+    TASK_FAILED, TASK_PENDING, ScheduleTask, ScheduleType)
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -62,7 +63,7 @@ def create_task(
         schedule_type=schedule_type,
         trigger_at=trigger_at,
         cron=cron,
-        status="pending",
+        status=TASK_PENDING,
         channel_session_id=channel_session_id,
     )
     store.create(task)
@@ -82,9 +83,9 @@ def cancel_task(
         raise ValueError(f"Scheduled task not found: {task_id!r}")
     if task.session_id != session_id:
         raise ValueError(f"Scheduled task {task_id!r} does not belong to this session.")
-    if task.status in ("completed", "failed", "cancelled"):
+    if task.status in (TASK_COMPLETED, TASK_FAILED, TASK_CANCELLED):
         raise ValueError(f"Scheduled task {task_id!r} is already {task.status}, cannot cancel.")
 
-    store.update_status(task_id, "cancelled")
-    task.status = "cancelled"
+    store.update_status(task_id, TASK_CANCELLED)
+    task.status = TASK_CANCELLED
     return task

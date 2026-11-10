@@ -20,7 +20,8 @@ from zero.bus.queue import BusQueueFull, MessageBus
 from zero.models import (
     ORIGIN_SCHEDULER, MessageBody, MessageIn, Origin, TurnStatus)
 from zero.scheduler.models import (
-    SCHEDULE_RECURRING, ScheduleTask, TaskStatus)
+    SCHEDULE_RECURRING, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
+    TASK_RUNNING, ScheduleTask, TaskStatus)
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -32,9 +33,9 @@ POLL_INTERVAL_SECONDS = 10
 # 的状态不会自动获得映射，未知值一律按失败处理，防止轮次的状态空间通过
 # 默认分支渗进任务存储。
 _TURN_STATUS_TO_TASK_STATUS: dict[TurnStatus, TaskStatus] = {
-    "completed": "completed",
-    "error": "failed",
-    "cancelled": "cancelled",
+    "completed": TASK_COMPLETED,
+    "error": TASK_FAILED,
+    "cancelled": TASK_CANCELLED,
 }
 
 
@@ -88,7 +89,7 @@ class Scheduler:
                 "入站队列已满，定时任务 %s 本轮未派发，下轮重试", task.id)
             return
         self._in_flight.add(task.id)
-        self.store.update_status(task.id, "running")
+        self.store.update_status(task.id, TASK_RUNNING)
 
         if task.schedule_type == SCHEDULE_RECURRING:
             # 推进到 cron 的下一次触发，任务回到 pending 继续参与调度
@@ -96,7 +97,7 @@ class Scheduler:
                 next_trigger = next_run(task.cron, now)
             except ValueError as e:
                 logger.warning("Recurring task %s invalid cron: %s", task.id, e)
-                self.store.update_status(task.id, "failed")
+                self.store.update_status(task.id, TASK_FAILED)
                 return
             self.store.reschedule(
                 task.id, trigger_at=next_trigger, last_run_at=now)
@@ -115,7 +116,7 @@ class Scheduler:
             return
         task_id = origin.task_id
         self._in_flight.discard(task_id)
-        task_status = _TURN_STATUS_TO_TASK_STATUS.get(status, "failed")
+        task_status = _TURN_STATUS_TO_TASK_STATUS.get(status, TASK_FAILED)
         try:
             await asyncio.to_thread(
                 self.store.finish_run, task_id, status=task_status)
