@@ -12,9 +12,6 @@ from zero.models import Base
 
 ScheduleType = Literal["once", "recurring"]
 TaskStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
-# 轮次状态：调度器自己声明入口词汇，不 import core 的同名类型。两边各自
-# 独立演进，loop 将来新增的状态不会自动成为调度器接受的输入。
-TurnStatus = Literal["completed", "error", "cancelled"]
 
 
 class ScheduleTask(Base):

@@ -17,8 +17,8 @@ import logging
 from datetime import datetime
 
 from zero.bus.queue import BusQueueFull, MessageBus
-from zero.models import MessageBody, MessageIn, Origin
-from zero.scheduler.models import ScheduleTask, TaskStatus, TurnStatus
+from zero.models import MessageBody, MessageIn, Origin, TurnStatus
+from zero.scheduler.models import ScheduleTask, TaskStatus
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
 
@@ -26,9 +26,9 @@ logger = logging.getLogger(__name__)
 
 POLL_INTERVAL_SECONDS = 10
 
-# 边界守卫：只把调度器声明过的轮次状态映射成任务终态。它不是名字翻译表——
-# loop 将来新增的状态不会自动获得映射，未知值一律按失败处理，防止 core 的
-# 状态空间渗进任务存储。
+# 边界守卫：把轮次状态映射成任务终态。它不是名字翻译表——loop 将来新增
+# 的状态不会自动获得映射，未知值一律按失败处理，防止轮次的状态空间通过
+# 默认分支渗进任务存储。
 _TURN_STATUS_TO_TASK_STATUS: dict[TurnStatus, TaskStatus] = {
     "completed": "completed",
     "error": "failed",
