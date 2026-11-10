@@ -9,6 +9,7 @@ from zero.config import (
     Config,
     ConfigWriteError,
     load_config,
+    render_template,
     save_config,
 )
 from zero.paths import current
@@ -31,6 +32,22 @@ def _write(path: Path, data: dict) -> None:
 
 def _snapshot(path: Path) -> tuple[str, int]:
     return path.read_text(encoding="utf-8"), path.stat().st_mtime_ns
+
+
+def test_template_ignores_environment(monkeypatch):
+    """模板只含字段默认值：环境变量不能混进模板（否则 --write 会把它固化）。"""
+    monkeypatch.setenv(
+        "MODELS",
+        json.dumps({"env-m": {"provider": "deepseek", "contextWindowTokens": 1}}),
+    )
+    assert Config().models, "环境变量确实会被 settings 读进来"
+    assert json.loads(render_template())["models"] == {}
+
+
+def test_template_is_a_valid_config():
+    """模板必须能重新通过校验：未来新增必填字段或校验器会在这里变红。"""
+    template = json.loads(render_template())
+    Config.model_validate(template)
 
 
 def test_template_command_never_touches_existing_config(capsys):

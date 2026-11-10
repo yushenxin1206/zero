@@ -165,10 +165,14 @@ class ConfigWriteError(RuntimeError):
 def render_template() -> str:
     """完整默认值模板（只供展示 / 新建文件，绝不用于回写已有配置）。
 
-    用 ``model_validate({})`` 而不是 ``Config()``：后者会读环境变量，
-    模板里混进环境变量再存盘，就等于把环境变量固化成了配置。
+    用 ``model_construct()`` 而不是 ``model_validate({})``：``Config`` 继承
+    BaseSettings，它的校验路径会走 settings 的 init，环境变量（如 ``MODELS``）
+    仍会被读进来——那等于把环境变量混进模板、再被 ``--write`` 固化到磁盘。
+    ``model_construct`` 只填字段默认值，不读任何来源，也不做校验；模板只是
+    展示默认结构，不需要校验。默认值本身的合法性由测试
+    ``test_template_is_a_valid_config`` 兜底。
     """
-    return Config.model_validate({}).model_dump_json(indent=2, by_alias=True)
+    return Config.model_construct().model_dump_json(indent=2, by_alias=True)
 
 
 def write_template(path: Path | None = None) -> Path:
