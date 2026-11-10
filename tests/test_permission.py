@@ -381,7 +381,7 @@ def test_shell_network_by_source():
 # ---------------------------------------------------------------------------
 
 @DARWIN_ONLY
-def test_launchd_mutation_blocked():
+def test_launchd_mutation_blocked(isolated_state):
     """锁住「launchd 只能读、不能变」这一语义。
 
     实测（本机 macOS）：沙箱内 `launchctl print gui/<uid>` 成功——读走的是每个
@@ -399,7 +399,7 @@ def test_launchd_mutation_blocked():
     uid = os.getuid()
     tag = uuid4().hex[:8]
     label = f"com.example.zero-permission-probe.{tag}"
-    plist = Path(f"zero-permission-probe-{tag}.plist")
+    plist = isolated_state / f"zero-permission-probe-{tag}.plist"
     escape = Path.home() / f"zero-permission-escape-{tag}.txt"
     plist.write_text(
         '<?xml version="1.0" encoding="UTF-8"?>\n'
