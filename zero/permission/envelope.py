@@ -436,12 +436,18 @@ class PermissionState:
 # CLI：zero-permission
 # ---------------------------------------------------------------------------
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *,
+         data_paths: DataPaths | None = None) -> int:
+    """``zero-permission`` CLI。
+
+    ``main`` 是进程边界：未注入 ``data_paths`` 时按 ``DataPaths.default()``
+    构造；测试/嵌入方传入隔离根即可，无需改 HOME。
+    """
     args = list(sys.argv[1:] if argv is None else argv)
     cmd = args[0] if args else "check"
 
-    # CLI 是进程边界：按默认数据根自建状态对象，不依赖任何已注入的组合根
-    data_paths = DataPaths.default()
+    if data_paths is None:
+        data_paths = DataPaths.default()
     state = PermissionState(
         data_paths, SessionStore(data_paths.sessions))
 

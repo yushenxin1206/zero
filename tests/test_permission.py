@@ -113,6 +113,15 @@ def outside(name: str) -> str:
     return str(Path.home() / name)
 
 
+def test_permission_cli_accepts_data_paths(capsys, permission):
+    """CLI 入口支持显式 DataPaths：不读默认 ~/.zero。"""
+    from zero.permission.envelope import main
+
+    assert main(["list"], data_paths=permission.data_paths) == 0
+    out = capsys.readouterr().out
+    assert str(envelope._real(permission.data_paths.profile_file)) in out
+
+
 # ---------------------------------------------------------------------------
 # 1. 渲染
 # ---------------------------------------------------------------------------
