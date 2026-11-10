@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pydantic.alias_generators import to_camel
 
 
@@ -179,6 +179,12 @@ class CompactRecord(Base):
     created_at: datetime = Field(default_factory=datetime.now)
 
 
+StreamEventKind = Literal[
+    "delta", "reasoning", "tool_call", "done", "error", "approval",
+    "subagent_result",
+]
+
+
 class StreamEvent(Base):
     """Incremental agent output event, published on the bus stream queue.
 
@@ -207,7 +213,7 @@ class StreamEvent(Base):
     channel: str = ""
     session_id: str = ""
     turn_id: str = ""  # id of the MessageIn this event belongs to
-    kind: str = "delta"
+    kind: StreamEventKind = "delta"
     content: str = ""
     origin: Origin = Field(default_factory=Origin)
     # 仅 done 事件携带：本轮模型调用的 token 用量（厂商未上报则 None）
@@ -216,6 +222,19 @@ class StreamEvent(Base):
     cancelled: bool = False
     # 仅第三方插件扩展使用；核心代码不读不写
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    def approval_request(self) -> "ApprovalRequest | None":
+        """kind == "approval" 时解析 content 承载的审批协议。
+
+        非审批事件或坏包返回 None。协议形状只在这里定义一次，消费端不再
+        各自 ``json.loads`` 猜键名。
+        """
+        if self.kind != "approval":
+            return None
+        try:
+            return ApprovalRequest.model_validate_json(self.content)
+        except ValidationError:
+            return None
 
 
 # ---------------------------------------------------------------------------

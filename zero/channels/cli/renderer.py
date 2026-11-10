@@ -9,6 +9,7 @@ decides *what* to show; this module decides *how* it looks.
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -23,6 +24,9 @@ from prompt_toolkit.shortcuts import print_formatted_text
 
 from zero.channels.service import ChannelService, SessionView
 from zero.models import Message
+
+if TYPE_CHECKING:
+    from zero.channels.cli.background import BackgroundRecord
 
 TRUNCATED = "...truncated"
 
@@ -316,14 +320,15 @@ class CliRenderer:
         else:
             self.console.print(renderable, end=end)
 
-    def render_async_record(self, rec: dict, *, prompt_active: bool) -> None:
+    def render_async_record(
+            self, rec: BackgroundRecord, *, prompt_active: bool) -> None:
         """Render one completed background turn / notification record."""
         subtitle_parts = []
-        title = self.service.title(rec["session_id"])
+        title = self.service.title(rec.session_id)
         if title:
             subtitle_parts.append(f"会话「{escape(title)}」")
-        if rec["source"] == "scheduler" and rec["task_id"]:
-            task = self.service.task(rec["task_id"])
+        if rec.origin.kind == "scheduler" and rec.origin.task_id:
+            task = self.service.task(rec.origin.task_id)
             if task is not None:
                 instruction = task.instruction.removeprefix("[Scheduled Task]")
                 subtitle_parts.append(escape(self.clip(instruction, 40)))
@@ -331,35 +336,36 @@ class CliRenderer:
         print_above = lambda renderable: self.print_above_prompt(  # noqa: E731
             renderable, prompt_active=prompt_active)
 
-        if rec.get("kind") == "subagent_result":
+        if rec.kind == "subagent_result":
             print_above(self.panel(
-                Markdown(rec["text"]), title=f"zero · 子任务 {rec['task_id']}",
+                Markdown(rec.text),
+                title=f"zero · 子任务 {rec.origin.task_id}",
                 title_align="left", border_style="magenta", subtitle=subtitle))
-        elif rec.get("kind") == "approval_blocked":
+        elif rec.kind == "approval_blocked":
             print_above(self.panel(
-                Markdown(rec["text"]), title="zero · 审批未受理",
+                Markdown(rec.text), title="zero · 审批未受理",
                 title_align="left", border_style="red", subtitle=subtitle))
-        elif rec["error"]:
+        elif rec.error:
             # 出错标题按来源区分：此前写死「定时任务出错」，导致子任务回投轮
             # 或用户后台轮出错时被错标成定时任务
             error_title = {
                 "scheduler": "zero · 定时任务出错",
                 "subagent": "zero · 子任务出错",
-            }.get(rec["source"], "zero · 后台回答出错")
+            }.get(rec.origin.kind, "zero · 后台回答出错")
             print_above(self.panel(
-                escape(rec["text"]), title=error_title,
+                escape(rec.text), title=error_title,
                 title_align="left", border_style="red", subtitle=subtitle))
-        elif rec["source"] == "scheduler":
-            if rec["streamed"]:
+        elif rec.origin.kind == "scheduler":
+            if rec.streamed:
                 # /bgstream 模式下正文已流式输出，只补一行完成提示
                 print_above(
                     "\n[green]✅ 定时任务完成[/green]"
                     + (f" [dim]{subtitle}[/dim]" if subtitle else ""))
                 return
             print_above(self.panel(
-                Markdown(rec["text"]), title="zero · 定时任务",
+                Markdown(rec.text), title="zero · 定时任务",
                 title_align="left", border_style="yellow", subtitle=subtitle))
         else:
             print_above(self.panel(
-                Markdown(rec["text"]), title="zero · 后台回答",
+                Markdown(rec.text), title="zero · 后台回答",
                 title_align="left", border_style="blue", subtitle=subtitle))

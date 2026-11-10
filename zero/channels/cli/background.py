@@ -10,8 +10,9 @@ first one wins and the second is discarded, so each result renders once.
 from __future__ import annotations
 
 import asyncio
-import json
 import time
+from dataclasses import dataclass, field
+from typing import Literal
 
 from rich.text import Text
 
@@ -19,6 +20,24 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
 from zero.models import MessageOut, Origin, StreamEvent
 from zero.utils.notify import toast
+
+BackgroundKind = Literal["turn", "approval_blocked", "subagent_result"]
+
+
+@dataclass
+class BackgroundRecord:
+    """一条待异步渲染的后台结果。
+
+    origin 同时承载「谁触发的」（user/scheduler/subagent）与对应 id，
+    取代此前 source/task_id 两个平行字符串——二者本就来自同一个 Origin。
+    """
+    turn_id: str
+    session_id: str
+    text: str
+    origin: Origin = field(default_factory=Origin)
+    error: bool = False
+    streamed: bool = False
+    kind: BackgroundKind = "turn"
 
 
 class CliBackground:
@@ -35,7 +54,7 @@ class CliBackground:
         # turn_ids already finalized (dedup stream-done vs MessageOut)
         self._finalized: set[str] = set()
         # completed results waiting to be rendered (FIFO worker)
-        self._results: asyncio.Queue[dict] = asyncio.Queue()
+        self._results: asyncio.Queue[BackgroundRecord] = asyncio.Queue()
 
     def mark_finalized(self, turn_id: str) -> None:
         """Remember a turn as done so late duplicates are dropped."""
@@ -102,12 +121,12 @@ class CliBackground:
                 self._renderer.render_async_record(
                     rec, prompt_active=self._input.active)
             self._input.mark_unread()
-            if rec["source"] == "scheduler":
-                toast("zero · 定时任务完成", rec["text"])
-            elif rec.get("kind") == "approval_blocked":
-                toast("zero · 审批未受理", rec["text"])
-            elif rec.get("kind") == "subagent_result":
-                toast("zero · 子任务完成", rec["text"])
+            if rec.origin.kind == "scheduler":
+                toast("zero · 定时任务完成", rec.text)
+            elif rec.kind == "approval_blocked":
+                toast("zero · 审批未受理", rec.text)
+            elif rec.kind == "subagent_result":
+                toast("zero · 子任务完成", rec.text)
 
     # ------------------------------------------------------------------
     # Internals
@@ -115,37 +134,31 @@ class CliBackground:
 
     def _notify_approval_blocked(self, event: StreamEvent) -> None:
         """后台 turn 的审批请求无法就地回答，提示用户该命令将按超时拒绝。"""
-        try:
-            cmd = json.loads(event.content).get("command", "")
-        except json.JSONDecodeError:
-            cmd = ""
+        req = event.approval_request()
         text = ("有 shell 命令需要人工审批，但当前 turn 已转入后台，无法就地"
                 "回答，将按超时自动拒绝。")
-        if cmd:
-            text += f"\n\n命令：`{cmd}`"
-        self._results.put_nowait({
-            "turn_id": event.turn_id,
-            "session_id": event.session_id,
-            "text": text,
-            "error": False,
-            "streamed": False,
-            "source": "",
-            "task_id": "",
-            "kind": "approval_blocked",
-        })
+        if req is not None and req.summary:
+            text += f"\n\n命令：`{req.summary}`"
+        self._results.put_nowait(BackgroundRecord(
+            turn_id=event.turn_id,
+            session_id=event.session_id,
+            text=text,
+            origin=event.origin,
+            kind="approval_blocked",
+        ))
 
     def _notify_subagent_result(self, event: StreamEvent) -> None:
         """子 agent 结果原文：直接送入异步结果管线，独立面板原样展示。"""
-        self._results.put_nowait({
-            "turn_id": event.turn_id,
-            "session_id": event.session_id,
-            "text": event.content,
-            "error": False,
-            "streamed": False,
-            "source": "subagent",
-            "task_id": event.origin.task_id or event.turn_id,
-            "kind": "subagent_result",
-        })
+        origin = event.origin
+        if not origin.task_id:
+            origin = Origin(kind="subagent", task_id=event.turn_id)
+        self._results.put_nowait(BackgroundRecord(
+            turn_id=event.turn_id,
+            session_id=event.session_id,
+            text=event.content,
+            origin=origin,
+            kind="subagent_result",
+        ))
 
     def _push(self, acc: dict, chunk: str) -> None:
         """Live-print background output above the prompt (/bgstream on).
@@ -184,12 +197,11 @@ class CliBackground:
         text = (text or "").strip()
         if not text:
             return
-        self._results.put_nowait({
-            "turn_id": turn_id,
-            "session_id": session_id,
-            "text": text,
-            "error": error,
-            "streamed": streamed,
-            "source": origin.kind,
-            "task_id": origin.task_id or "",
-        })
+        self._results.put_nowait(BackgroundRecord(
+            turn_id=turn_id,
+            session_id=session_id,
+            text=text,
+            origin=origin,
+            error=error,
+            streamed=streamed,
+        ))
