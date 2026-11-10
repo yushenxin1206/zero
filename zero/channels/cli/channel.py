@@ -40,7 +40,8 @@ from zero.channels.service import ChannelService
 from zero.config import Config
 from zero.models import (
     CHANNEL_CLI, EVENT_APPROVAL, EVENT_DELTA, EVENT_DONE, EVENT_ERROR,
-    EVENT_REASONING, EVENT_TOOL_CALL, MessageOut, StreamEvent, TokenUsage)
+    EVENT_REASONING, EVENT_TOOL_CALL, MessageOut, SHORT_ID_LEN, StreamEvent,
+    TokenUsage)
 from zero.data_paths import DataPaths
 from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore
@@ -106,7 +107,7 @@ class CLIChannel(BusChannel):
             title = self.service.title()
             title_part = f"「{title}」" if title else ""
             self.console.print(
-                f"[dim]已恢复会话 {self.service.session_id[:8]}{title_part}"
+                f"[dim]已恢复会话 {self.service.session_id[:SHORT_ID_LEN]}{title_part}"
                 "（输入 /sessions 可切换）[/dim]")
             if not self.commands.confirm_or_switch():
                 return
@@ -133,7 +134,7 @@ class CLIChannel(BusChannel):
         """常驻底部状态行：展示本会话当前生效模型（channel 无关查询）。"""
         model = self.service.current_model() or "?"
         return (f" model: {model} "
-                f"· session: {self.service.session_id[:8]}")
+                f"· session: {self.service.session_id[:SHORT_ID_LEN]}")
 
     # ------------------------------------------------------------------
     # Chat loop

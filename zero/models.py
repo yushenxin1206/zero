@@ -24,6 +24,10 @@ class Base(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
 
+# 日志/UI 中短 ID 的前缀长度（完整 ID 仍用于寻址）
+SHORT_ID_LEN = 8
+
+
 # ---------------------------------------------------------------------------
 # Message models
 # ---------------------------------------------------------------------------

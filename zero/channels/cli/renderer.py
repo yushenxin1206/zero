@@ -23,7 +23,8 @@ from prompt_toolkit.formatted_text import ANSI as PtkANSI
 from prompt_toolkit.shortcuts import print_formatted_text
 
 from zero.channels.service import ChannelService, SessionView
-from zero.models import ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, Message
+from zero.models import (
+    Message, ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, SHORT_ID_LEN)
 from zero.scheduler.models import SCHEDULED_TASK_PREFIX
 
 if TYPE_CHECKING:
@@ -221,7 +222,7 @@ class CliRenderer:
         title_part = f" · [bold]{escape(title)}[/bold]" if title else ""
         self.console.print(self.panel(
             "[bold]zero[/bold] · cli channel\n"
-            f"session [dim]{session_id[:8]}[/dim]{title_part} · "
+            f"session [dim]{session_id[:SHORT_ID_LEN]}[/dim]{title_part} · "
             "commands: /new /sessions /title /tasks /bgstream /history /help /quit",
             border_style="cyan",
         ))

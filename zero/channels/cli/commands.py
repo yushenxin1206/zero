@@ -19,6 +19,7 @@ from zero.channels.cli.input import CliInput
 from zero.channels.cli.prompt import COMMANDS
 from zero.channels.cli.renderer import CliRenderer
 from zero.channels.service import ChannelService
+from zero.models import SHORT_ID_LEN
 from zero.scheduler.models import (
     SCHEDULED_TASK_PREFIX, TASK_CANCELLED, TASK_COMPLETED, TASK_FAILED,
     TASK_PENDING, TASK_RUNNING, TaskStatus)
@@ -203,7 +204,7 @@ class CliCommands:
                 _fmt(task.trigger_at),
                 _fmt(task.last_run_at),
                 escape(self.renderer.clip(instruction, 40)),
-                task.id[:8],
+                task.id[:SHORT_ID_LEN],
             )
         self.console.print(table)
 

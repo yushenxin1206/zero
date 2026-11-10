@@ -10,7 +10,8 @@ import datetime as dt
 import json
 import logging
 
-from zero.models import AgentRuntimeConfig, MaintenanceConfig, Message
+from zero.models import (
+    AgentRuntimeConfig, MaintenanceConfig, Message, SHORT_ID_LEN)
 from zero.providers.base import Provider
 from zero.session.models import SessionSummary
 from zero.session.store import SessionStore
@@ -147,7 +148,7 @@ async def _summarize_session(
         _build_messages(prev, tail),
         maintenance_cfg.session_summary_max_tokens,
         runtime.reasoning_token_headroom,
-        label=f"会话复盘({session_id[:8]})",
+        label=f"会话复盘({session_id[:SHORT_ID_LEN]})",
     )
     if not text:
         return
