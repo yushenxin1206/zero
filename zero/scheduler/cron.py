@@ -93,3 +93,15 @@ def next_run(cron: str, after: datetime.datetime, window_minutes: int = 1_048_57
             return cur
         cur += datetime.timedelta(minutes=1)
     raise ValueError(f"No matching time for cron expression within window: {cron!r}")
+
+
+def interval(cron: str, after: datetime.datetime,
+             window_minutes: int = 1_048_576) -> datetime.timedelta:
+    """相邻两次触发之间的间隔（取 `after` 之后最近的两个触发点）。
+
+    维护任务用它把复盘/补跑窗口与 cron 同步：日任务约 24h、周任务约 7d。
+    月任务受月份天数影响，取值会略长于上一个周期（只会多覆盖，不会漏）。
+    """
+    first = next_run(cron, after, window_minutes)
+    second = next_run(cron, first, window_minutes)
+    return second - first

@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 # 启动补跑延迟（秒）：错过的最近槽位在启动 60s 后补跑
 CATCHUP_DELAY = 60
 
-# 最近槽位回溯上限（分钟）：覆盖一天足够常规 cron
-_SLOT_SCAN_MINUTES = 24 * 60
-
 
 class MaintenanceEngine:
     """维护任务调度引擎：由 main.py 构造并挂为后台任务。"""
@@ -67,28 +64,38 @@ class MaintenanceEngine:
                     self._maintenance.memory_cron if self._maintenance.memory_enabled else None)
         await asyncio.gather(*loops)
 
-    async def _run_session_summary(self) -> None:
+    async def _run_session_summary(self, window: dt.timedelta) -> None:
         await run_session_summary(
             self._summary_provider, self._summary_runtime,
-            self._maintenance, self._session_store)
+            self._maintenance, self._session_store, window)
 
-    async def _run_memory(self) -> None:
+    async def _run_memory(self, window: dt.timedelta) -> None:
         await run_memory(
             self._memory_provider, self._memory_runtime,
-            self._maintenance, self._session_store, self._data_paths)
+            self._maintenance, self._session_store, self._data_paths, window)
 
     async def _loop(self, name: str, cron_expr: str, fn) -> None:
-        """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。"""
+        """单任务调度循环：错过最近槽位 → 补跑；否则睡到下个槽位。
+
+        复盘/补跑窗口取 cron 相邻两次触发的间隔，改 cron 即同步生效。
+        """
+        try:
+            window = cron.interval(cron_expr, dt.datetime.now())
+        except ValueError:
+            logger.error("maintenance 任务 %s 的 cron 表达式 %r 无效，该循环终止",
+                         name, cron_expr)
+            return
+        lookback_minutes = max(int(window.total_seconds() // 60) + 1, 1)
         while True:
             now = dt.datetime.now()
             async with self._state_lock:
                 state = await asyncio.to_thread(self._load_state)
             last_run = _parse_dt(state.get(name, {}).get("last_run_at"))
-            slot = _last_slot(cron_expr, now)
+            slot = _last_slot(cron_expr, now, lookback_minutes)
             if slot is not None and (last_run is None or last_run < slot):
                 # 从未运行或错过最近槽位 → 延迟补跑一次
                 await asyncio.sleep(CATCHUP_DELAY)
-                await self._execute(name, fn, slot)
+                await self._execute(name, fn, slot, window)
                 continue
             ref = now if last_run is None else max(now, last_run)
             try:
@@ -98,12 +105,13 @@ class MaintenanceEngine:
                              name, cron_expr)
                 return
             await asyncio.sleep(max((target - dt.datetime.now()).total_seconds(), 0))
-            await self._execute(name, fn, target)
+            await self._execute(name, fn, target, window)
 
-    async def _execute(self, name: str, fn, slot: dt.datetime) -> None:
+    async def _execute(self, name: str, fn, slot: dt.datetime,
+                       window: dt.timedelta) -> None:
         """执行一次任务并把触发槽位记入状态（槽位而非完成时间，重跑判断更精确）。"""
         try:
-            await fn()
+            await fn(window)
         except Exception:  # noqa: BLE001 - 维护任务失败不能杀死循环
             logger.exception("maintenance 任务 %s 执行失败", name)
         async with self._state_lock:
@@ -146,10 +154,11 @@ def _parse_dt(value) -> dt.datetime | None:
     return None
 
 
-def _last_slot(cron_expr: str, now: dt.datetime) -> dt.datetime | None:
+def _last_slot(cron_expr: str, now: dt.datetime,
+               lookback_minutes: int) -> dt.datetime | None:
     """now 之前（含当分钟）最近一次匹配 cron 的时间；找不到返回 None。"""
     cur = now.replace(second=0, microsecond=0)
-    for _ in range(_SLOT_SCAN_MINUTES):
+    for _ in range(lookback_minutes):
         if cron.matches(cron_expr, cur):
             return cur
         cur -= dt.timedelta(minutes=1)

@@ -1,6 +1,6 @@
 """长期记忆沉淀（memory）维护任务。
 
-读取 24h 内活跃会话的 summary.json（SessionSummary）与当前
+读取一个 cron 周期内活跃会话的 summary.json（SessionSummary）与当前
 ~/.zero/memory.md，交给 LLM 合并出新的记忆文件并全量重写。空输出防护、
 .bak 备份、tmp+replace 原子写。
 """
@@ -18,9 +18,6 @@ from zero.session.store import SessionStore
 from zero.maintenance.llm import complete_text
 
 logger = logging.getLogger(__name__)
-
-# 会话筛选窗口
-MEMORY_WINDOW = dt.timedelta(hours=24)
 
 
 MEMORY_PROMPT = """You are maintaining the assistant's long-term memory file (Markdown).
@@ -47,9 +44,10 @@ async def run_memory(
         maintenance_cfg: MaintenanceConfig,
         session_store: SessionStore,
         data_paths: DataPaths,
+        window: dt.timedelta,
 ) -> None:
-    """入口：把 24h 活跃会话的复盘提炼进长期记忆。"""
-    since = dt.datetime.now() - MEMORY_WINDOW
+    """入口：把一个 cron 周期内活跃会话的复盘提炼进长期记忆。"""
+    since = dt.datetime.now() - window
     # 会话索引/复盘读取是阻塞文件 IO：整批放线程池，事件循环只等结果
     summaries = await asyncio.to_thread(
         _collect_summaries, since, session_store)

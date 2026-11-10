@@ -488,10 +488,10 @@ class MaintenanceConfig(Base):
     余量仍走 agentRuntimes 对应条目，本区块只放"开关/频率/输出上限"策略。
     """
     session_summary_enabled: bool = True
-    session_summary_cron: str = "0 23 * * *"  # 会话复盘：每天 23:00 复盘 24h 内活跃会话
+    session_summary_cron: str = "0 23 * * *"  # 会话复盘：默认每天 23:00，窗口=该 cron 的触发周期
     session_summary_max_tokens: int = 2000   # 复盘正文（六字段 JSON）的输出上限
     memory_enabled: bool = True
-    memory_cron: str = "30 23 * * *"  # 记忆沉淀：每天 23:30 从复盘提炼长期记忆
+    memory_cron: str = "30 23 * * *"  # 记忆沉淀：默认每天 23:30，窗口=该 cron 的触发周期
     memory_max_tokens: int = 8000     # 记忆文件重写输出上限（约束 ~100 行 Markdown）
 
 

@@ -1,6 +1,6 @@
 """会话复盘（session_summary）维护任务。
 
-筛选各渠道 24 小时内活跃（messages.jsonl 的 mtime）的会话，逐会话调
+筛选各渠道一个 cron 周期内活跃（messages.jsonl 的 mtime）的会话，逐会话调
 LLM 生成结构化复盘，写入会话级 summary.json（SessionSummary），并把
 title / description 回写到渠道索引。增量锚点 covered_upto 让重复运行
 只把新消息送入 LLM，无新消息则跳过（幂等省 token）。
@@ -18,9 +18,6 @@ from zero.session.store import SessionStore
 from zero.maintenance.llm import complete_text
 
 logger = logging.getLogger(__name__)
-
-# 会话筛选窗口
-SESSION_SUMMARY_WINDOW = dt.timedelta(hours=24)
 
 SESSION_SUMMARY_PROMPT = """You are reviewing a conversation session to produce a structured retrospective summary.
 
@@ -53,9 +50,10 @@ async def run_session_summary(
         runtime: AgentRuntimeConfig,
         maintenance_cfg: MaintenanceConfig,
         session_store: SessionStore,
+        window: dt.timedelta,
 ) -> None:
-    """入口：复盘所有渠道 24h 内活跃的会话。单会话失败不中断批次。"""
-    since = dt.datetime.now() - SESSION_SUMMARY_WINDOW
+    """入口：复盘一个 cron 周期内活跃的会话。单会话失败不中断批次。"""
+    since = dt.datetime.now() - window
     # 索引扫描是阻塞 IO：先在线程池筛出目标会话，再逐个异步复盘
     targets = await asyncio.to_thread(_collect_targets, since, session_store)
     for channel, session_id in targets:
@@ -167,7 +165,7 @@ async def _summarize_session(
     await asyncio.to_thread(
         store.save_summary, channel, session_id, summary)
     # 回写索引只改标题/描述；活跃时间只由 messages.jsonl 推导，复盘不会
-    # 让会话在 24h 过滤里重新变「活跃」
+    # 让会话在窗口过滤里重新变「活跃」
     await asyncio.to_thread(
         store.update_meta_by_summary,
         channel, session_id,
