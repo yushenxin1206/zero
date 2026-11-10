@@ -267,6 +267,10 @@ class StreamEvent(Base):
 # Approval protocol
 # ---------------------------------------------------------------------------
 
+# 审批默认超时（秒）：发起方据此写 deadline，展示端只在请求没带 deadline 时兜底
+APPROVAL_TIMEOUT_SECONDS = 180
+
+
 class ApprovalOption(Base):
     """单键审批选项：key 为作答字符，label 为动作名，description 为含义。"""
     key: str

@@ -21,7 +21,7 @@ from rich.panel import Panel
 from pydantic import ValidationError
 
 from zero.bus.queue import ApprovalBroker
-from zero.models import ApprovalRequest, StreamEvent
+from zero.models import APPROVAL_TIMEOUT_SECONDS, ApprovalRequest, StreamEvent
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,8 @@ class CliApproval:
         opts = " · ".join(f"{o.key}={o.label}" for o in req.options)
         self.console.print(
             f"[bold yellow]允许执行？[/bold yellow] [dim]{opts}[/dim]")
-        deadline = req.deadline or (time.time() + 180)
+        # 正常路径以请求携带的 deadline 为准；没带才用共享默认值兜底
+        deadline = req.deadline or (time.time() + APPROVAL_TIMEOUT_SECONDS)
         keys = "".join(o.key for o in req.options)
         answer = self._read_key_until(deadline, keys, abort)
         if answer:

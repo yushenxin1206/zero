@@ -23,14 +23,12 @@ from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import (
-    EVENT_APPROVAL, ApprovalOption, ApprovalRequest, StreamEvent)
+    APPROVAL_TIMEOUT_SECONDS, EVENT_APPROVAL, ApprovalOption, ApprovalRequest,
+    StreamEvent)
 from zero.permission import envelope
 from zero.permission.envelope import PermissionState
 
 logger = logging.getLogger(__name__)
-
-# 等待用户作答的最长时间；超时按拒绝处理
-TIMEOUT = 180
 
 # 面板选项 key 必须是单字符（CLI 按 key 逐键作答）。
 # 扩权是长期能力，不给「本次」——否则又要回到 TTL/轮次那套状态机。
@@ -91,19 +89,20 @@ async def request(
                 detail=detail,
                 options=list(options),
                 timeout_hint=_TIMEOUT_HINT,
-                deadline=time.time() + TIMEOUT,
+                deadline=time.time() + APPROVAL_TIMEOUT_SECONDS,
             ).model_dump_json(),
         ))
         stop_task: asyncio.Task | None = None
         if ctx.stop_event is not None:
             # 审批是最长的 await 点，必须与终止信号竞争；否则用户终止后
-            # runner 仍会挂满 TIMEOUT。
+            # runner 仍会挂满审批超时。
             stop_task = asyncio.create_task(ctx.stop_event.wait())
         try:
             if stop_task is None:
-                return await asyncio.wait_for(fut, timeout=TIMEOUT)
+                return await asyncio.wait_for(
+                    fut, timeout=APPROVAL_TIMEOUT_SECONDS)
             done, _pending = await asyncio.wait(
-                {fut, stop_task}, timeout=TIMEOUT,
+                {fut, stop_task}, timeout=APPROVAL_TIMEOUT_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED)
             if ctx.stop_event.is_set():
                 raise TurnCancelled()
