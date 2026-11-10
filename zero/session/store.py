@@ -47,7 +47,9 @@ try:
 except ImportError:  # pragma: no cover - Windows 无 fcntl，退化为仅进程内锁
     fcntl = None
 
-from zero.models import Message, MessageBody, MessageTool, CompactRecord
+from zero.models import (
+    SENDER_ASSISTANT, SENDER_TOOL, SENDER_USER, Message, MessageBody,
+    MessageTool, CompactRecord)
 from zero.session.models import SessionMeta, SessionSummary, TurnMarker
 from zero.utils.file import save_or_create_file
 
@@ -83,7 +85,7 @@ def compact_message(
     return Message(
         session_id=session_id,
         channel=channel,
-        sender="user",
+        sender=SENDER_USER,
         recipient="assistant",
         body=MessageBody(content=rec.content),
         compact=True,
@@ -413,7 +415,7 @@ class SessionStore:
                     m = Message.model_validate_json(line)
                 except ValueError:
                     continue
-                if m.sender == "user" and m.body.content:
+                if m.sender == SENDER_USER and m.body.content:
                     return m.body.content
         return ""
 
@@ -507,7 +509,7 @@ class SessionStore:
             id=f"repaired-{tool_call_id}",
             session_id=session_id,
             channel=channel,
-            sender="tool",
+            sender=SENDER_TOOL,
             recipient="assistant",
             body=MessageBody(
                 content=json.dumps(
@@ -543,11 +545,11 @@ class SessionStore:
 
         for m in messages:
             tool_calls = m.body.tool_calls or []
-            if m.sender == "assistant" and tool_calls:
+            if m.sender == SENDER_ASSISTANT and tool_calls:
                 settle()
                 repaired.append(m)
                 pending = {tc.id: tc.id for tc in tool_calls}
-            elif m.sender == "tool" and m.body.tool_call_id:
+            elif m.sender == SENDER_TOOL and m.body.tool_call_id:
                 pending.pop(m.body.tool_call_id, None)
                 repaired.append(m)
             else:

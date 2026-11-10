@@ -20,6 +20,7 @@ from typing import Any
 
 from zero.core.context import Context
 from zero.models import (
+    SENDER_TOOL,
     AgentRuntimeConfig,
     CompactConfig,
     CompactRecord,
@@ -92,7 +93,7 @@ def find_tail_boundary(raw: list[Message], tail_budget: int) -> int:
         total += estimate_message(raw[i])
         i -= 1
     tail_start = i + 1
-    while 0 < tail_start < len(raw) and raw[tail_start].sender == "tool":
+    while 0 < tail_start < len(raw) and raw[tail_start].sender == SENDER_TOOL:
         tail_start -= 1
     return tail_start
 

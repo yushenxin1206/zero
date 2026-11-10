@@ -21,6 +21,7 @@ from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
 from zero.core.hooks import HookContext, Hooks
 from zero.models import (
+    SENDER_TOOL,
     AgentRuntimeConfig,
     MessageBody,
     MessageOut,
@@ -388,7 +389,7 @@ class AgentRunner:
             id=str(uuid4()),
             session_id=self.context.session_id,
             channel=self.context.channel,
-            sender="tool",
+            sender=SENDER_TOOL,
             recipient="assistant",
             body=MessageBody(
                 content=content,

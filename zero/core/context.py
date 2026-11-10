@@ -14,7 +14,8 @@ from xml.sax.saxutils import escape
 
 import frontmatter
 
-from zero.models import Message, MessageBody, CompactRecord, ToolContext
+from zero.models import (
+    SENDER_TOOL, SENDER_USER, Message, MessageBody, CompactRecord, ToolContext)
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
@@ -397,7 +398,7 @@ class SubAgentContext(Context):
             Message(
                 session_id=self.session_id,
                 channel=self.channel,
-                sender="user",
+                sender=SENDER_USER,
                 recipient="assistant",
                 body=MessageBody(content=prompt),
             )
@@ -432,7 +433,7 @@ class SubAgentContext(Context):
         if total <= self._token_budget:
             return
         for m in self._messages:
-            if m.sender != "tool" or not m.body.content:
+            if m.sender != SENDER_TOOL or not m.body.content:
                 continue
             if m.body.content == SUBAGENT_TOOL_PLACEHOLDER:
                 continue

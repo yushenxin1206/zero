@@ -23,7 +23,9 @@ from prompt_toolkit.formatted_text import ANSI as PtkANSI
 from prompt_toolkit.shortcuts import print_formatted_text
 
 from zero.channels.service import ChannelService, SessionView
-from zero.models import ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, Message
+from zero.models import (
+    ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, SENDER_ASSISTANT, SENDER_TOOL,
+    SENDER_USER, Message)
 
 if TYPE_CHECKING:
     from zero.channels.cli.background import BackgroundRecord
@@ -252,11 +254,11 @@ class CliRenderer:
                 f"[dim magenta]compact ›[/dim magenta] "
                 f"{self.clip(message.body.content or '', max_len)}")
             return
-        if message.sender == "user":
+        if message.sender == SENDER_USER:
             self.console.print(
                 f"[bold cyan]you ›[/bold cyan] "
                 f"{self.clip(message.body.content or '', max_len)}")
-        elif message.sender == "assistant" and message.body.content:
+        elif message.sender == SENDER_ASSISTANT and message.body.content:
             self.console.print(
                 self.assistant_panel(
                     self.clip(message.body.content, max_len)))
@@ -265,7 +267,7 @@ class CliRenderer:
         history = self.service.history(session_id)
         if not history:
             return
-        shown = [m for m in history if m.sender in ("user", "assistant")]
+        shown = [m for m in history if m.sender in (SENDER_USER, SENDER_ASSISTANT)]
         self.console.print(
             f"[dim]—— 最近 {min(len(shown), limit)} 条历史消息 ——[/dim]")
         for message in shown[-limit:]:
@@ -277,7 +279,7 @@ class CliRenderer:
             self.console.print("[dim]当前会话暂无消息[/dim]")
             return
         # 只显示 user / assistant 会话内容，过滤 tool 等内部过程数据
-        lines = [m for m in history if m.sender != "tool"]
+        lines = [m for m in history if m.sender != SENDER_TOOL]
         if sys.platform == "win32" or not self.console.is_terminal:
             # Windows 下 console.pager() 走 pydoc tempfile_pager，用本地代码页
             # (GBK) 写临时文件再过 more.com："›" 不在 GBK 中，会被

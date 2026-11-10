@@ -99,6 +99,9 @@ CHANNEL_WEB = "web"
 CHANNEL_FEISHU = "feishu"
 
 MessageSender = Literal["user", "assistant", "tool"]
+SENDER_USER: MessageSender = "user"
+SENDER_ASSISTANT: MessageSender = "assistant"
+SENDER_TOOL: MessageSender = "tool"
 MessageRecipient = Literal["assistant", "user"]
 # 一轮执行结束时 AgentLoop 对外回报的状态；跨 core / scheduler 使用，
 # 放在依赖叶子避免调度器反向 import core。
@@ -137,14 +140,14 @@ class Message(Base):
 
     def to_openai(self) -> dict[str, Any] | None:
         """转换为 OpenAI 协议消息 dict；未知 sender 无法映射时返回 None。"""
-        if self.sender == "user":
+        if self.sender == SENDER_USER:
             return {"role": "user", "content": self.body.content}
-        if self.sender == "assistant":
+        if self.sender == SENDER_ASSISTANT:
             msg: dict[str, Any] = {"role": "assistant", "content": self.body.content}
             if self.body.tool_calls:
                 msg["tool_calls"] = [tc.model_dump() for tc in self.body.tool_calls]
             return msg
-        if self.sender == "tool":
+        if self.sender == SENDER_TOOL:
             return {
                 "role": "tool",
                 "tool_call_id": self.body.tool_call_id,
@@ -154,18 +157,19 @@ class Message(Base):
 
 
 class MessageIn(Message):
-    sender: MessageSender = "user"
+    sender: MessageSender = SENDER_USER
     recipient: MessageRecipient = "assistant"
 
 
 class MessageOut(Message):
-    sender: MessageSender = "assistant"
+    sender: MessageSender = SENDER_ASSISTANT
     recipient: MessageRecipient = "user"
 
 
 class MessageTool(Message):
     """Tool execution result message, produced by agent during tool calls."""
-    sender: MessageSender = "tool"
+
+    sender: MessageSender = SENDER_TOOL
     recipient: MessageRecipient = "assistant"
 
 
