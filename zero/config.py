@@ -89,12 +89,19 @@ class Config(BaseSettings):
             raise ValueError(
                 f"模型 {model_name!r} 不在 models 注册表中，"
                 f"已知键: {sorted(self.models)}")
+        if ms.context_window_tokens <= 0:
+            raise ValueError(
+                f"模型 {model_name!r} 未声明上下文窗口：请在 config.json 的 "
+                f"models.{model_name}.contextWindowTokens 填写该模型的上下文"
+                f"长度（单位 token）。窗口决定压缩触发点，缺失会一直不压缩，"
+                f"直到请求超窗报错")
 
         return AgentRuntimeConfig(
             **explicit,
             llm_runtime=LLMRuntime(
                 provider=self._resolve_provider(ms.provider),
                 context_window_tokens=ms.context_window_tokens,
+                provider_key=ms.provider,
             ),
         )
 

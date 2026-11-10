@@ -93,7 +93,9 @@ class Origin(Base):
 
 class Message(Base):
     id: str = Field(default_factory=lambda: str(uuid4()))
-    session_id: str = Field(default_factory=lambda: str(uuid4()))
+    # 外键，必须显式给：默认生成 uuid 会让漏传 session_id 的消息静默落进
+    # 一个随机新会话，而不是在构造时报错。
+    session_id: str
     channel: str = ""
     sender: str
     recipient: str
@@ -284,7 +286,9 @@ class ModelSpec(Base):
     上下文压缩阈值计算使用。
     """
     provider: str = ''
-    context_window_tokens: int = 65536
+    # 0 = 未声明。窗口决定压缩触发点，猜大则永不压缩直到超窗报错、猜小则
+    # 多花压缩成本，所以不给"看起来能跑"的默认值，由 resolve_runtime 拒绝。
+    context_window_tokens: int = 0
 
 
 class AgentRuntimeSpec(Base):
@@ -355,7 +359,12 @@ class LLMRuntime(Base):
     （用户写）。
     """
     provider: ProviderConfig = Field(default_factory=ProviderConfig)
-    context_window_tokens: int = 65536
+    # 由 resolve_runtime 显式传入；不设默认值，避免与 ModelSpec 的同名
+    # 默认值形成第二份真相（两处各写一个窗口，迟早漂移）。
+    context_window_tokens: int
+    # 注册表里的 provider 键（dashscope / deepseek / zhipu），仅用于报错时
+    # 指明该去补哪个 providers.<键>，不参与请求。
+    provider_key: str = ''
 
 
 class AgentRuntimeConfig(AgentRuntimeSpec):
@@ -370,7 +379,8 @@ class AgentRuntimeConfig(AgentRuntimeSpec):
     压缩记录的输出上限与压缩策略由顶层 CompactConfig（config.compact）
     决定，不在本类承载。
     """
-    llm_runtime: LLMRuntime = Field(default_factory=LLMRuntime)
+    # 必填：解析产物缺少接入事实（端点/窗口）就是无效对象，不该能凭空构造。
+    llm_runtime: LLMRuntime
 
 
 class FeishuConfig(Base):

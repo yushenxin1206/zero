@@ -55,7 +55,10 @@ class AgentRunner:
         # 独立 provider client（provider 已是结算好的 ProviderConfig 对象）
         self.runtime_config: AgentRuntimeConfig = config.resolve_runtime(
             task, model_override=model_override)
-        self.provider = OpenAI(self.runtime_config.llm_runtime.provider)
+        self.provider = OpenAI(
+            self.runtime_config.llm_runtime.provider,
+            self.runtime_config.llm_runtime.provider_key,
+        )
         compact_config = config.resolve_runtime("compact")
         self.context = running_context
         self.tool_registry = tool_registry
@@ -63,7 +66,10 @@ class AgentRunner:
         # 协作式取消：None（子 agent 单次模式等）则永不触发
         self._stop_event = stop_event
         self.compactor = Compactor(
-            provider=OpenAI(compact_config.llm_runtime.provider),
+            provider=OpenAI(
+                compact_config.llm_runtime.provider,
+                compact_config.llm_runtime.provider_key,
+            ),
             session_runtime=self.runtime_config,
             compact_runtime=compact_config,
             compact_config=config.compact,

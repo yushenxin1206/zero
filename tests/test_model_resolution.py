@@ -223,6 +223,15 @@ def test_fail_fast():
         "default", "未在 providers 中配置")
 
 
+def test_missing_context_window():
+    """注册表条目未声明窗口 → 解析即报错，并指明要补的配置键。"""
+    expect_value_error(
+        cfg(AgentRuntimeSpecs(default=AgentRuntimeSpec(
+            llm_call_options=LLMCallOptions(model="model-no-window"))),
+            models={"model-no-window": ModelSpec(provider="deepseek")}),
+        "default", "models.model-no-window.contextWindowTokens")
+
+
 def test_extra_forbid():
     # 旧键 llmConfig 立即报错
     with pytest.raises(ValueError) as excinfo:
@@ -247,8 +256,10 @@ def test_extra_forbid():
 def test_type_consistency():
     assert AgentRuntimeSpec().llm_call_options == LLMCallOptions()
     assert AgentRuntimeSpec().llm_call_options.model == ''
-    assert isinstance(AgentRuntimeConfig().llm_call_options, LLMCallOptions)
-    assert isinstance(AgentRuntimeConfig().llm_runtime, LLMRuntime)
+    # 解析产物不能凭空构造：端点是查表结算来的，窗口是注册表声明的，
+    # 缺任何一项都应在构造时报错而不是拿到一个"半有效"的默认对象。
+    with pytest.raises(ValueError):
+        AgentRuntimeConfig()
     config_like = AgentRuntimeConfig(
         llm_call_options=LLMCallOptions(model="m"),
         llm_runtime=LLMRuntime(provider=PROVIDERS.deepseek, context_window_tokens=999),

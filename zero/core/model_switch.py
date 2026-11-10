@@ -83,7 +83,10 @@ async def switch_model(
     target = config.resolve_runtime("default", model_override=new_model)
     # 旧模型运行时：压缩调用用它执行（规避新窗口装不下前缀导致溢出）
     old_runtime = config.resolve_runtime("default", model_override=old_model)
-    old_provider = OpenAI(config._resolve_provider(config.models[old_model].provider))
+    old_provider = OpenAI(
+        old_runtime.llm_runtime.provider,
+        old_runtime.llm_runtime.provider_key,
+    )
     old_llm_options: LLMCallOptions = old_runtime.llm_call_options.model_copy()
 
     # 同一进程内会话上下文的 system prompt 复用同一 Context 构建逻辑；
@@ -95,10 +98,14 @@ async def switch_model(
 
     compacted = False
     if raw:
+        compact_runtime = config.resolve_runtime("compact")
         compactor = Compactor(
-            provider=OpenAI(config.resolve_runtime("compact").llm_runtime.provider),
+            provider=OpenAI(
+                compact_runtime.llm_runtime.provider,
+                compact_runtime.llm_runtime.provider_key,
+            ),
             session_runtime=target,
-            compact_runtime=config.resolve_runtime("compact"),
+            compact_runtime=compact_runtime,
             compact_config=config.compact,
         )
         record = await compactor.compress_for_target(

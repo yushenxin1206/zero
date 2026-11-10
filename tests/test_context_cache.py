@@ -92,6 +92,8 @@ def make_compactor(fake, window=20000, max_tokens=100,
     )
     cc = AgentRuntimeConfig(
         reasoning_token_headroom=headroom,
+        llm_runtime=LLMRuntime(provider=ProviderConfig(),
+                               context_window_tokens=window),
         llm_call_options=LLMCallOptions(model="mock-model"))
     cs = CompactConfig(context_compact_max_tokens=context_compact_max)
     return Compactor(provider=fake, session_runtime=rc, compact_runtime=cc,

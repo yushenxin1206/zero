@@ -86,6 +86,8 @@ def make_compactor(fake, window=20000, enabled=True, max_tokens=100,
     # （不再取 compact 任务的 llm_call_options.max_tokens）+ compact 任务余量
     cc = AgentRuntimeConfig(
         reasoning_token_headroom=headroom,
+        llm_runtime=LLMRuntime(provider=ProviderConfig(),
+                               context_window_tokens=window),
         llm_call_options=LLMCallOptions(model="mock-model"))
     cs = CompactConfig(
         enabled=enabled, context_compact_max_tokens=context_compact_max)

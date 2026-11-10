@@ -100,7 +100,7 @@ def install_provider(monkeypatch, *scripts) -> list[ScriptedProvider]:
     queue = [list(s) for s in scripts]
     made: list[ScriptedProvider] = []
 
-    def factory(_cfg):
+    def factory(_cfg, _provider_key=''):
         p = ScriptedProvider(queue.pop(0) if queue else [[("content", "")]])
         made.append(p)
         return p
@@ -214,7 +214,8 @@ def test_error_raises(monkeypatch):
             raise RuntimeError("provider down")
             yield  # 不可达：仅用于声明 async generator
 
-    monkeypatch.setattr(runner_mod, "OpenAI", lambda _cfg: BoomProvider())
+    monkeypatch.setattr(
+        runner_mod, "OpenAI", lambda _cfg, _provider_key='': BoomProvider())
     try:
         asyncio.run(run_subagent(
             "必败任务",
