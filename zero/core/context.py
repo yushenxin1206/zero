@@ -464,24 +464,3 @@ class SubAgentContext(Context):
         """纯内存上下文无历史/提示词磁盘读取，无需预热。"""
         return
 
-
-if __name__ == "__main__":
-    # 重新生成 docs/prompt.md（提示词文档快照，由代码生成，请勿手改）
-    # 文档生成在开发机执行：这里按本机真实能力结算一次事实
-    from zero.permission.envelope import PermissionState
-
-    data_paths = DataPaths.default()
-    _store = SessionStore(data_paths.sessions)
-    _ctx = Context(
-        session_id="doc", channel="cli",
-        session_store=_store,
-        data_paths=data_paths,
-        sandbox_available=PermissionState(
-            data_paths, _store).sandbox_available())
-    _out = PKG_ROOT / "docs" / "prompt.md"
-    _out.write_text(
-        "<!-- 本文件由 `python core/context.py` 生成，请勿手改 -->\n\n"
-        + _ctx.system_prompt + "\n",
-        encoding="utf-8",
-    )
-    print(f"written: {_out}")
