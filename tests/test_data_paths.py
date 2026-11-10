@@ -7,12 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
-
 from zero.config import load_config
-from zero.data_paths import current, scope
+from zero.data_paths import DataPaths
+from zero.session.store import SessionStore
 from zero.utils.file import save_or_create_file
-from tests.support import make_store
 
 
 def test_import_zero_has_no_data_root_io():
@@ -54,32 +52,35 @@ assert not hasattr(zero.config, "default_config")
     assert "Do not" not in result.stderr
 
 
-def test_two_scopes_do_not_interfere(tmp_path):
-    """同一进程内两个数据根：会话、配置、记忆各写各的。"""
-    root_a = tmp_path / "a"
-    root_b = tmp_path / "b"
+def test_two_data_roots_do_not_interfere(tmp_path):
+    """同一进程内两个数据根：会话、配置、记忆各写各的。
 
-    async def worker(root: Path, marker: str) -> dict:
-        with scope(root):
-            sid = make_store().create_session("cli", f"src-{marker}")
-            save_or_create_file(current().config, json.dumps({
-                "models": {marker: {
-                    "provider": "deepseek",
-                    "contextWindowTokens": 65536,
-                }},
-                "providers": {"deepseek": {
-                    "apiBase": "https://test.local", "apiKey": "test"}},
-            }))
-            current().memory.parent.mkdir(parents=True, exist_ok=True)
-            current().memory.write_text(marker, encoding="utf-8")
-            await asyncio.sleep(0)  # 让两个任务真正交错
-            return {
-                "root": current().root,
-                "sid": sid,
-                "models": set(load_config().models),
-                "memory": current().memory.read_text(encoding="utf-8"),
-                "session_dir": make_store().session_dir("cli", sid),
-            }
+    不依赖进程级 current()：每个任务持有自己的 DataPaths 并显式注入。
+    """
+    root_a = DataPaths(tmp_path / "a")
+    root_b = DataPaths(tmp_path / "b")
+
+    async def worker(data_paths: DataPaths, marker: str) -> dict:
+        store = SessionStore(data_paths.sessions)
+        sid = store.create_session("cli", f"src-{marker}")
+        save_or_create_file(data_paths.config, json.dumps({
+            "models": {marker: {
+                "provider": "deepseek",
+                "contextWindowTokens": 65536,
+            }},
+            "providers": {"deepseek": {
+                "apiBase": "https://test.local", "apiKey": "test"}},
+        }))
+        data_paths.memory.parent.mkdir(parents=True, exist_ok=True)
+        data_paths.memory.write_text(marker, encoding="utf-8")
+        await asyncio.sleep(0)  # 让两个任务真正交错
+        return {
+            "root": data_paths.root,
+            "sid": sid,
+            "models": set(load_config(data_paths.config).models),
+            "memory": data_paths.memory.read_text(encoding="utf-8"),
+            "session_dir": store.session_dir("cli", sid),
+        }
 
     async def run() -> list[dict]:
         return await asyncio.gather(
@@ -89,26 +90,14 @@ def test_two_scopes_do_not_interfere(tmp_path):
 
     a, b = asyncio.run(run())
 
-    assert a["root"] == root_a
-    assert b["root"] == root_b
+    assert a["root"] == root_a.root
+    assert b["root"] == root_b.root
     assert a["sid"] != b["sid"]
     assert a["models"] == {"a"}
     assert b["models"] == {"b"}
     assert a["memory"] == "a"
     assert b["memory"] == "b"
-    assert a["session_dir"].is_relative_to(root_a)
-    assert b["session_dir"].is_relative_to(root_b)
-    assert (root_a / "sessions" / "cli" / "index.json").exists()
-    assert (root_b / "sessions" / "cli" / "index.json").exists()
-
-    # 退出 scope 后回到 conftest 配置的进程根
-    assert current().root == tmp_path / ".zero"
-
-
-@pytest.mark.parametrize("marker", ["x", "y"])
-def test_scope_resets_on_exit(tmp_path, marker):
-    """scope 退出后必须回落到进程根，不泄漏到后续代码。"""
-    outer = current().root
-    with scope(tmp_path / marker):
-        assert current().root == tmp_path / marker
-    assert current().root == outer
+    assert a["session_dir"].is_relative_to(root_a.root)
+    assert b["session_dir"].is_relative_to(root_b.root)
+    assert (root_a.sessions / "cli" / "index.json").exists()
+    assert (root_b.sessions / "cli" / "index.json").exists()

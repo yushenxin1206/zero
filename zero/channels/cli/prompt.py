@@ -19,13 +19,6 @@ from prompt_toolkit.auto_suggest import AutoSuggest, Suggestion
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import InMemoryHistory
 
-from zero.data_paths import current
-
-# 命令使用频次落盘路径在调用时结算（而不是 import 时），
-# 便于测试/嵌入方用 data_paths.configure() 重定向数据根。
-def stats_path() -> Path:
-    return current().sessions / "cli" / ".cli_stats.json"
-
 # Canonical slash commands (keep in sync with CliCommands.dispatch)
 COMMANDS: list[tuple[str, str]] = [
     ("/new", "新建会话"),
@@ -43,8 +36,8 @@ COMMANDS: list[tuple[str, str]] = [
 class CommandStats:
     """Persistent per-command usage counts used for ranking."""
 
-    def __init__(self, path: Path | None = None):
-        self._path = path or stats_path()
+    def __init__(self, path: Path):
+        self._path = path
         self._counts: dict[str, int] = {}
         if self._path.exists():
             try:
@@ -106,8 +99,7 @@ class SlashAutoSuggest(AutoSuggest):
         return None
 
 
-def build_prompt_session(stats: CommandStats | None = None) -> PromptSession:
-    stats = stats or CommandStats()
+def build_prompt_session(stats: CommandStats) -> PromptSession:
     return PromptSession(
         history=InMemoryHistory(),
         completer=SlashCommandCompleter(stats),

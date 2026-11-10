@@ -161,9 +161,9 @@ def render_template() -> str:
     return Config.model_construct().model_dump_json(indent=2, by_alias=True)
 
 
-def write_template(path: Path | None = None) -> Path:
+def write_template(path: Path) -> Path:
     """把模板写成一份新配置；目标已存在则拒绝，绝不覆盖手写内容。"""
-    target = path or current().config
+    target = path
     if target.exists():
         raise ConfigWriteError(
             f'{target} 已存在，拒绝覆盖：模板只用于新建，改配置请手动编辑')
@@ -171,13 +171,13 @@ def write_template(path: Path | None = None) -> Path:
     return target
 
 
-def load_config(path: Path | None = None) -> Config:
+def load_config(path: Path) -> Config:
     """显式读取配置。import 时绝不调用；调用方自己决定读取时机。
 
-    ``path`` 缺省取当前数据根的 ``config.json``，不存在时返回全默认 Config。
-    配置没有运行时写入口：只有人手写文件，或用模板命令新建。
+    路径由调用方提供（组合根传 ``DataPaths.config``）；不存在时返回全默认
+    Config。配置没有运行时写入口：只有人手写文件，或用模板命令新建。
     """
-    target = path or current().config
+    target = path
     if target.exists():
         with open(target, 'r', encoding='utf-8') as f:
             return Config.model_validate(json.load(f))
@@ -198,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
         print(render_template())
         return 0
     try:
-        target = write_template()
+        target = write_template(current().config)
     except ConfigWriteError as exc:
         print(f'未写入：{exc}', file=sys.stderr)
         return 1

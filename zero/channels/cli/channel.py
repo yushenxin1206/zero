@@ -71,7 +71,9 @@ class CLIChannel(BusChannel):
             permission=permission, config=config,
             tool_registry=tool_registry)
         self.renderer = CliRenderer(self.console, self.service)
-        self.input = CliInput(self.console, toolbar=self._toolbar_line)
+        self.input = CliInput(
+            self.console, toolbar=self._toolbar_line,
+            stats_file=data_paths.sessions / CHANNEL / ".cli_stats.json")
         self.approval = CliApproval(
             self.console, msg_bus.approvals, use_ptk=self.input.uses_ptk)
         self.commands = CliCommands(

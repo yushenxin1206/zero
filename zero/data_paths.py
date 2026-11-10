@@ -6,18 +6,13 @@
 ``current()`` 取一次路径，再把 ``DataPaths`` 显式传给核心对象；核心域不在
 调用点回读进程根。
 
-``scope()`` 给同一进程内的多实例/集成测试一个轻量入口：``with
-scope(root):`` 期间该协程上下文读到另一个根。没有 override 时回落到
-``configure()`` 设的进程根，因此后台线程（如飞书 WS 线程）行为不变。
+同进程多实例不依赖隐式全局：直接构造 ``DataPaths`` 并注入即可。
 """
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 
 def default_root() -> Path:
@@ -71,7 +66,6 @@ class DataPaths:
 
 
 _global_paths = DataPaths(default_root())
-_override: ContextVar[DataPaths | None] = ContextVar("zero_paths", default=None)
 
 
 def configure(root: Path | None = None, *,
@@ -85,21 +79,6 @@ def configure(root: Path | None = None, *,
     return _global_paths
 
 
-@contextmanager
-def scope(root: Path, *, project_memory: Path | None = None) -> Iterator[DataPaths]:
-    """在当前协程上下文内临时切换到另一个数据根。
-
-    异步任务在创建时复制上下文，因此两个任务可以各持一个根并发运行；
-    未进入 scope 的线程仍读进程根。
-    """
-    data_paths = DataPaths(Path(root), project_memory=project_memory)
-    token = _override.set(data_paths)
-    try:
-        yield data_paths
-    finally:
-        _override.reset(token)
-
-
 def current() -> DataPaths:
-    """当前生效的数据根：协程级 override 优先，否则进程根。"""
-    return _override.get() or _global_paths
+    """当前进程配置的数据根。只供 CLI 入口与测试边界使用。"""
+    return _global_paths

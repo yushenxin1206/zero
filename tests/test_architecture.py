@@ -35,3 +35,33 @@ def test_core_does_not_access_metadata():
     assert not offenders, (
         "核心层禁止访问 metadata 口袋，请提升为类型化字段：\n"
         + "\n".join(offenders))
+
+
+# current() 只允许出现在进程边界；核心对象必须在构造时接收 DataPaths。
+CURRENT_BOUNDARY = {
+    "config.py",                # python -m zero.config 子命令
+    "permission/envelope.py",   # zero-permission CLI
+}
+
+
+def _current_calls(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    rel = path.relative_to(ROOT).as_posix()
+    found: list[str] = []
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "current"):
+            found.append(f"{rel}:{node.lineno}: current()")
+    return found
+
+
+def test_current_is_boundary_only():
+    offenders: list[str] = []
+    for path in sorted(ROOT.rglob("*.py")):
+        if path.relative_to(ROOT).as_posix() in CURRENT_BOUNDARY:
+            continue
+        offenders.extend(_current_calls(path))
+    assert not offenders, (
+        "current() 只允许在 CLI 入口调用；核心对象请接收显式 DataPaths：\n"
+        + "\n".join(offenders))

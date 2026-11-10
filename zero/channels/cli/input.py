@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 from typing import Callable
 
 from prompt_toolkit.patch_stdout import patch_stdout
@@ -28,10 +29,11 @@ _PROMPT_STYLE = Style.from_dict({"prompt": "bold ansicyan"})
 class CliInput:
     """Reads one line at a time, keeping the prompt state observable."""
 
-    def __init__(self, console: Console, *, toolbar: Callable[[], str]):
+    def __init__(self, console: Console, *, toolbar: Callable[[], str],
+                 stats_file: Path):
         self.console = console
         self._toolbar = toolbar
-        self.stats = CommandStats()
+        self.stats = CommandStats(stats_file)
         # prompt_toolkit needs a real console — fall back to plain input()
         # when stdin/stdout are piped (e.g. CI, tests, shell pipes)
         self._use_ptk = sys.stdin.isatty() and sys.stdout.isatty()

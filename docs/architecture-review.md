@@ -139,8 +139,10 @@
 > **落地状态（2026-11）**：第一步与第二步都已完成，下面的"现象/改进方案"保留为
 > 整改前快照。
 >
-> - `zero.paths.configure()` 在组合根显式调用；`Paths` 作为普通参数向下传，
->   `current()` 只保留在 CLI / 工具等进程边界。
+> - `zero.data_paths.configure()` 在组合根显式调用；`DataPaths` 作为普通参数
+>   向下传，`current()` 只保留在 CLI 入口（`zero-permission`、`python -m
+>   zero.config`），并有 `tests/test_architecture.py::test_current_is_boundary_only`
+>   守住。
 > - `SessionStore` / `SchedulerStore` 改为实例类，构造时接收路径，由
 >   `main.build_core()` 创建并注入 `AgentLoop`、`Context`、`ChannelService`、
 >   `MaintenanceEngine`、`Scheduler` 等。
@@ -148,7 +150,8 @@
 >   `PermissionState`，`guard` / `Shell` / `Context` 显式接收；`seatbelt` 的
 >   profiles 目录改为显式参数。
 > - `tests/conftest.py` 的 `isolated_state` 通过 `configure()` 隔离数据根，
->   测试不再 monkeypatch 模块常量。
+>   测试不再 monkeypatch 模块常量；同进程多实例直接构造 `DataPaths` 注入，
+>   旧的 `scope()` 已移除。
 
 **现象**
 

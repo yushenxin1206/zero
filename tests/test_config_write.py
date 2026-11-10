@@ -64,7 +64,7 @@ def test_template_write_creates_only_new_file():
     assert config_module.main(["--write"]) == 0
     assert target.exists()
     # 模板是完整默认值，所以加载后必然能解析出结构
-    loaded = load_config()
+    loaded = load_config(target)
     assert "agentRuntimes" in loaded.model_dump(by_alias=True)
 
 
@@ -74,7 +74,7 @@ def test_load_config_keeps_explicit_field_set():
     _write(target, MINIMAL)
     before = _snapshot(target)
 
-    loaded = load_config()
+    loaded = load_config(target)
     assert loaded.model_dump(mode="json", by_alias=True, exclude_unset=True) == MINIMAL
     # 读路径零写盘
     assert _snapshot(target) == before
@@ -86,6 +86,6 @@ def test_compact_inherits_default_max_tokens():
     data["agentRuntimes"]["default"]["llmCallOptions"]["maxTokens"] = 1234
     _write(current().config, data)
 
-    runtime = load_config().resolve_runtime("compact")
+    runtime = load_config(current().config).resolve_runtime("compact")
     assert runtime.llm_call_options.temperature == 0.9
     assert runtime.llm_call_options.max_tokens == 1234
