@@ -35,8 +35,10 @@ _ERROR_MAX_CHARS = 200
 # 错误原因。它是参数而不是 hook 点位：
 # 1. 目前只有调度器一个消费者（组合根接线）。出现第二个消费者时，正确做法
 #    是升级成进程内小发布器（AgentLoop 发、多方订阅），而不是再加参数。
-# 2. 异常必须向上抛，不能 fail-open——这与 hook 链相反：hook 崩了会被吞成
-#    「不干预」，而状态回写被吞会让定时任务永远停在 running 且无人知晓。
+# 2. 回调异常不向上抛：_notify_turn_finished 会 catch 后记 logger.exception。
+#    状态回写失败不该掩盖本轮真实异常，更不该带停 loop，所以选择吞掉并留痕；
+#    兜底是 once 任务停在 running，重启后仍按到期重跑（at-least-once）。代价是
+#    同一进程内任务列表暂时分不清"正在跑"与"写失败卡住"，只能看错误日志。
 # 3. 在轮次 finally 中调用，成功/取消/异常三条出口共用，调用时状态已落盘；
 #    因此它拿到的是最终结论，不能用来干预进行中的事。
 TurnFinishedHook = Callable[[MessageIn, TurnStatus, str], Awaitable[None]]
