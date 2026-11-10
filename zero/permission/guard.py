@@ -261,14 +261,14 @@ class PermissionGuard:
         argv = shlex.split(command) if command else []
 
         # ---- 沙箱不可用：没有「包络内免审批」，每次都要问（fail-closed）----
-        if not self.permission.available():
+        if not self.permission.sandbox_available():
             if not self._attended(ctx):
                 return ToolCallDecision(proceed=False, reason=_DEGRADED_UNATTENDED)
             answer = await request(
                 self.msg_bus, ctx,
                 title="shell 命令审批（内核沙箱不可用）",
                 summary=command,
-                detail=self.permission.unavailable_reason(),
+                detail=self.permission.sandbox_unavailable_reason(),
                 options=_YN,
             )
             if answer == "y":

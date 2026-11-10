@@ -220,15 +220,15 @@ def test_wrap(permission):
 
 def test_probe(permission):
     if sys.platform != "darwin":
-        assert not permission.available()
+        assert not permission.sandbox_available()
         return
-    assert permission.available(), permission.unavailable_reason()
+    assert permission.sandbox_available(), permission.sandbox_unavailable_reason()
 
 
 @DARWIN_ONLY
 def test_network_probe(permission):
     """断网档双向探针：宿主能连、沙箱内必须连不上。"""
-    if not permission.available():
+    if not permission.sandbox_available():
         pytest.skip("内核沙箱不可用，跳过断网探针")
     assert permission.network_enforced(), "断网档未生效（(deny network*) 没起作用）"
 
@@ -244,7 +244,7 @@ def test_guard_basics(permission):
 
         assert await guard("read", {}, make_ctx()) is None, "非 shell 应放行"
 
-        if permission.available():
+        if permission.sandbox_available():
             assert await guard("shell", {"command": "ls -la"},
                                make_ctx()) is None, "P 档应放行"
 
@@ -278,7 +278,7 @@ def test_guard_unattended_expand_fail_closed(permission):
 
 
 def test_guard_tiers(permission):
-    if not permission.available():
+    if not permission.sandbox_available():
         pytest.skip("内核沙箱不可用，跳过 D/G 档语义")
 
     async def main():
@@ -328,7 +328,7 @@ def test_guard_tiers(permission):
 
 @DARWIN_ONLY
 def test_shell_denied_roundtrip(permission):
-    if not permission.available():
+    if not permission.sandbox_available():
         pytest.skip("内核沙箱不可用，跳过 shell 拒绝回投")
 
     shell = make_shell(permission)
@@ -358,7 +358,7 @@ def test_shell_network_by_source(permission):
     指出的外泄形态；且拒绝时 stderr 带 ``Operation not permitted``，能同时
     验证 sandbox_denied 与断网 hint 的回投链路。
     """
-    if not permission.available():
+    if not permission.sandbox_available():
         pytest.skip("内核沙箱不可用，跳过断网端到端")
 
     import shlex
@@ -406,7 +406,7 @@ def test_launchd_mutation_blocked(isolated_state, permission):
     对照步（先跑沙箱外）是刻意的：证明该向量本身真实存在，避免"沙箱内失败"
     是因为命令压根不可用而变成空测试。
     """
-    if not permission.available():
+    if not permission.sandbox_available():
         pytest.skip("内核沙箱不可用，跳过 launchd 变更面")
 
     uid = os.getuid()

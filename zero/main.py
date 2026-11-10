@@ -68,13 +68,13 @@ def build_agent_loop(msg_bus: MessageBus,
                      config: Config,
                      session_store: SessionStore,
                      data_paths: DataPaths,
-                     permission: PermissionState) -> AgentLoop:
+                     sandbox_available: bool) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
         config=config,
         session_store=session_store,
         data_paths=data_paths,
-        permission=permission,
+        sandbox_available=sandbox_available,
         tool_registry=tool_registry,
         hooks=hooks,
     )
@@ -107,6 +107,9 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
     session_store = SessionStore(data_paths.sessions)
     scheduler_store = SchedulerStore(data_paths.tasks)
     permission = PermissionState(data_paths, session_store)
+    # 能力事实在组合根结算一次：核心层只接收布尔事实，不持有权限对象、
+    # 也不在构建提示词时触发探针
+    sandbox_available = permission.sandbox_available()
     registry = build_tool_registry(session_store, scheduler_store, permission)
     hooks = build_hooks(msg_bus, permission)
     # 子 agent 管理器：工具集与主对话同源（仅剔除递归 subagent），hooks 共用
@@ -116,7 +119,7 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
         config=config,
         session_store=session_store,
         data_paths=data_paths,
-        permission=permission,
+        sandbox_available=sandbox_available,
         tool_registry=registry.subset(exclude=SUBAGENT_EXCLUDED_TOOLS),
         hooks=hooks,
     )
@@ -124,7 +127,7 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
     agent_loop = build_agent_loop(
         msg_bus, tool_registry=registry, hooks=hooks,
         config=config, session_store=session_store, data_paths=data_paths,
-        permission=permission)
+        sandbox_available=sandbox_available)
     return CoreRuntime(
         msg_bus=msg_bus,
         session_store=session_store,

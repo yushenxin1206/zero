@@ -91,7 +91,7 @@ class Shell(Tool):
         argv: list[str] = []
         if not is_windows:
             argv = shlex.split(command)
-            if (self.permission.available()
+            if (self.permission.sandbox_available()
                     and not self.permission.matches_unsandbox(argv)):
                 env = self.permission.envelope(context)
                 profile = self.permission.render_profile(env)

@@ -8,7 +8,7 @@ macOS 内核沙箱后端（Seatbelt / sandbox-exec）。
 ``deny_read`` / ``write_roots()`` / ``network`` 三个成员），因此依赖方向是
 ``envelope → seatbelt`` 单向，不会成环。
 
-非 macOS 上本模块的逻辑仍可调用，只是 ``PermissionState.available()`` 会返回
+非 macOS 上本模块的逻辑仍可调用，只是 ``PermissionState.sandbox_available()`` 会返回
 False。
 
 profiles 目录由调用方显式传入（通常是 ``PermissionState.data_paths.profiles``）：

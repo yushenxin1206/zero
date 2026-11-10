@@ -12,8 +12,9 @@
     D  不可授予  → 永不进面板，结构化拒绝
 
 平台相关的部分（SBPL 渲染、sandbox-exec 包裹、自检执行）在 ``seatbelt``
-后端里；本模块通过 ``PermissionState.available()`` 向它提问。非 macOS 上
-这里的逻辑照常成立，只是 ``available()`` 为 False，于是没有「包络内免审批」。
+后端里；本模块通过 ``PermissionState.sandbox_available()`` 向它提问。非 macOS
+上这里的逻辑照常成立，只是 ``sandbox_available()`` 为 False，于是没有
+「包络内免审批」。
 """
 
 from __future__ import annotations
@@ -197,14 +198,14 @@ class PermissionState:
     # 能力探测（fail-closed 闸门）—— 向 seatbelt 后端确认「内核强制真的在跑」
     # ------------------------------------------------------------------
 
-    def unavailable_reason(self) -> str:
+    def sandbox_unavailable_reason(self) -> str:
         if not seatbelt.supported_platform():
             return "非 macOS，无 Seatbelt"
         if not seatbelt.executable_present():
             return f"{seatbelt.SEATBELT_EXEC} 不存在"
         return "自检探针未通过（基线或 deny 任一侧失败）"
 
-    def available(self, root: Path | None = None) -> bool:
+    def sandbox_available(self, root: Path | None = None) -> bool:
         """内核沙箱是否真的可用：平台 + sandbox-exec + 双向探针。
 
         不通过就不许自称"沙箱内免审批"，降级为每次审批。
@@ -452,10 +453,10 @@ def main(argv: list[str] | None = None, *,
         data_paths, SessionStore(data_paths.sessions))
 
     if cmd == "check":
-        ok = state.available()
+        ok = state.sandbox_available()
         print(f"内核沙箱：{'可用' if ok else '不可用'}")
         if not ok:
-            print(f"原因：{state.unavailable_reason()}")
+            print(f"原因：{state.sandbox_unavailable_reason()}")
             print("影响：shell 命令一律走审批，没有「沙箱内免审批」")
         else:
             net = state.network_enforced()

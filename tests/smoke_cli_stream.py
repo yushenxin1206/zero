@@ -7,7 +7,7 @@ from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import StreamEvent
-from tests.support import make_data_paths, make_permission, make_store
+from tests.support import make_data_paths, make_store
 
 
 class FakeProvider:
@@ -31,7 +31,7 @@ def test_runner_stream(monkeypatch):
     monkeypatch.setattr(runner_mod, "OpenAI", FakeProvider)
     cfg = make_config()
     ctx = Context(session_id="smoke-test-session", channel="cli",
-                  session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
+                  session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
     runner = AgentRunner(cfg, ctx, hooks=Hooks())
 
     async def scenario():

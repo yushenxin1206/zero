@@ -15,7 +15,6 @@ from xml.sax.saxutils import escape
 import frontmatter
 
 from zero.models import Message, MessageBody, CompactRecord, ToolContext
-from zero.permission.envelope import PermissionState
 from zero.session.store import SessionStore, apply_compact
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
@@ -96,17 +95,17 @@ class Context:
             channel: str,
             session_store: SessionStore,
             data_paths: DataPaths,
-            permission: PermissionState,
+            sandbox_available: bool,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
     ):
         self.session_id = session_id
         self.channel = channel
-        # 会话存储、数据根与权限状态由组合根/上层上下文显式传入：
-        # 本类不读进程级路径
+        # 会话存储、数据根与沙箱能力事实由组合根/上层上下文显式传入：
+        # 本类不读进程级路径，也不触发能力探针
         self.session_store = session_store
         self.data_paths = data_paths
-        self.permission = permission
+        self.sandbox_available = sandbox_available
         self.tool_registry = tool_registry
         self.tool_context = tool_context or ToolContext(
             channel=channel,
@@ -217,8 +216,9 @@ class Context:
         session_dir = (self._session_dir
                        or self.session_store.session_dir(
                            self.channel, self.session_id))
-        # 沙箱是否真的在跑以探针为准（可用时包络内免审批，否则每条 shell 走审批）
-        sandbox_note = (SHELL_SANDBOX_NOTE if self.permission.available()
+        # 沙箱是否真的在跑以组合根结算的事实为准（可用时包络内免审批，
+        # 否则每条 shell 走审批）；prompt 构建本身不触发探针
+        sandbox_note = (SHELL_SANDBOX_NOTE if self.sandbox_available
                         else SHELL_APPROVAL_NOTE)
         return f"""\
 ## Environment
@@ -374,7 +374,7 @@ class SubAgentContext(Context):
             *,
             session_store: SessionStore,
             data_paths: DataPaths,
-            permission: PermissionState,
+            sandbox_available: bool,
             tool_registry: ToolRegistry | None = None,
             tool_context: ToolContext | None = None,
             system_prompt: str | None = None,
@@ -387,7 +387,7 @@ class SubAgentContext(Context):
             channel=tc.channel,
             session_store=session_store,
             data_paths=data_paths,
-            permission=permission,
+            sandbox_available=sandbox_available,
             tool_registry=tool_registry,
             tool_context=tc,
         )
@@ -467,13 +467,17 @@ class SubAgentContext(Context):
 
 if __name__ == "__main__":
     # 重新生成 docs/prompt.md（提示词文档快照，由代码生成，请勿手改）
+    # 文档生成在开发机执行：这里按本机真实能力结算一次事实
+    from zero.permission.envelope import PermissionState
+
     data_paths = DataPaths.default()
+    _store = SessionStore(data_paths.sessions)
     _ctx = Context(
         session_id="doc", channel="cli",
-        session_store=SessionStore(data_paths.sessions),
+        session_store=_store,
         data_paths=data_paths,
-        permission=PermissionState(
-            data_paths, SessionStore(data_paths.sessions)))
+        sandbox_available=PermissionState(
+            data_paths, _store).sandbox_available())
     _out = PKG_ROOT / "docs" / "prompt.md"
     _out.write_text(
         "<!-- 本文件由 `python core/context.py` 生成，请勿手改 -->\n\n"

@@ -34,7 +34,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
 
         async def scenario() -> list:
             context = Ctx(session_id="s-hard", channel="cli",
-                          session_store=make_store(), data_paths=make_data_paths(), permission=make_permission())
+                          session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
             runner = AgentRunner(config=make_test_config(),
                                  running_context=context, hooks=Hooks())
             runner.provider = ToolsProvider()

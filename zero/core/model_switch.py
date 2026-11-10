@@ -26,7 +26,6 @@ from zero.core.compactor import Compactor
 from zero.core.context import Context
 from zero.models import LLMCallOptions
 from zero.data_paths import DataPaths
-from zero.permission.envelope import PermissionState
 from zero.providers.openai import OpenAI
 from zero.session.store import SessionStore
 
@@ -64,7 +63,7 @@ async def switch_model(
         *,
         session_store: SessionStore,
         data_paths: DataPaths,
-        permission: PermissionState,
+        sandbox_available: bool,
         tools: list[dict] | None = None,
 ) -> ModelSwitchResult:
     """把会话绑定模型切换到 new_model（config.models 注册表键）。
@@ -98,7 +97,8 @@ async def switch_model(
     # 历史/压缩记录/提示词全部在线程池读完再进入压缩调用，事件循环不等盘
     ctx = Context(
         session_id=session_id, channel=channel,
-        session_store=session_store, data_paths=data_paths, permission=permission)
+        session_store=session_store, data_paths=data_paths,
+        sandbox_available=sandbox_available)
     await ctx.aprepare()
     raw = ctx.raw_history
     rec = ctx.compact_record

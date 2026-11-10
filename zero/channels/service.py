@@ -75,8 +75,8 @@ class ChannelService:
         self.session_store = session_store
         self.scheduler_store = scheduler_store
         self.data_paths = data_paths
-        # 切换模型时要重建 Context（含环境段），权限状态随之显式传入
-        self.permission = permission
+        # 切换模型时要重建 Context（含环境段）：沙箱能力在构造时结算为纯事实
+        self.sandbox_available = permission.sandbox_available()
         self._binding_path = (
             session_store.root / channel / f".{channel}_current.json")
 
@@ -242,7 +242,7 @@ class ChannelService:
             config=self.config, channel=self.channel,
             session_id=self.session_id, new_model=name,
             session_store=self.session_store, data_paths=self.data_paths,
-            permission=self.permission, tools=tools)
+            sandbox_available=self.sandbox_available, tools=tools)
 
     # ------------------------------------------------------------------
     # Turns

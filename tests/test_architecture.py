@@ -37,6 +37,30 @@ def test_core_does_not_access_metadata():
         + "\n".join(offenders))
 
 
+def test_core_does_not_import_permission_layer():
+    """权限对象不得进入核心层：能力事实由组合根结算后以纯数据注入。
+
+    只检查模块级 import——``context.py`` 的 ``__main__`` 文档生成块允许局部
+    导入真实权限状态来结算本机事实，它不参与运行路径。
+    """
+    offenders: list[str] = []
+    for path in sorted((ROOT / "core").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        rel = path.relative_to(ROOT).as_posix()
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom) \
+                    and (node.module or "").startswith("zero.permission"):
+                offenders.append(f"{rel}:{node.lineno}: from {node.module}")
+            elif isinstance(node, ast.Import):
+                offenders.extend(
+                    f"{rel}:{node.lineno}: import {alias.name}"
+                    for alias in node.names
+                    if alias.name.startswith("zero.permission"))
+    assert not offenders, (
+        "核心层不得依赖权限对象；沙箱能力事实由组合根结算后以布尔值注入：\n"
+        + "\n".join(offenders))
+
+
 def test_data_paths_module_has_no_process_global():
     """路径模块只做推导：进程根必须显式构造并注入，不得重新引入全局根。"""
     import zero.data_paths as data_paths
