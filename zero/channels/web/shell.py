@@ -21,12 +21,27 @@ logger = logging.getLogger(__name__)
 
 STATIC_PATH = Path(__file__).with_name("static") / "index.html"
 
+THEMES = ("light", "dark")
+DEFAULT_THEME = "light"
+
+
+def _read_theme(path: Path | None) -> str:
+    """读取用户上次选择的主题；缺失或非法时回落到日间。"""
+    if path is None:
+        return DEFAULT_THEME
+    try:
+        value = path.read_text(encoding="utf-8").strip().lower()
+    except OSError:
+        return DEFAULT_THEME
+    return value if value in THEMES else DEFAULT_THEME
+
 
 class _BootstrapApi:
-    """Minimal js_api surface: startup info only."""
+    """Minimal js_api surface: startup info + theme persistence."""
 
-    def __init__(self, holder: dict[str, Any]):
+    def __init__(self, holder: dict[str, Any], theme_path: Path | None = None):
         self._holder = holder
+        self._theme_path = theme_path
 
     def bootstrap(self) -> dict[str, Any]:
         return {
@@ -36,6 +51,21 @@ class _BootstrapApi:
             "error": self._holder.get("error", ""),
         }
 
+    def set_theme(self, theme: str) -> bool:
+        """持久化主题选择。file:// 下 localStorage 不可用，所以写文件。"""
+        value = str(theme or "").strip().lower()
+        if value not in THEMES:
+            return False
+        if self._theme_path is None:
+            return True
+        try:
+            self._theme_path.parent.mkdir(parents=True, exist_ok=True)
+            self._theme_path.write_text(value + "\n", encoding="utf-8")
+        except OSError:
+            logger.warning("failed to persist web theme", exc_info=True)
+            return False
+        return True
+
 
 def run_desktop(
         backend: Callable[[dict[str, Any]], Awaitable[None]],
@@ -43,6 +73,7 @@ def run_desktop(
         width: int,
         height: int,
         title: str = "zero",
+        theme_path: Path | None = None,
 ) -> None:
     """Open the desktop window and run ``backend(holder)`` in a worker thread."""
     try:
@@ -53,8 +84,14 @@ def run_desktop(
             "  uv pip install -e \".[web]\"") from exc
 
     holder: dict[str, Any] = {}
-    api = _BootstrapApi(holder)
-    html = STATIC_PATH.read_text(encoding="utf-8")
+    api = _BootstrapApi(holder, theme_path)
+    theme = _read_theme(theme_path)
+    # 在首屏渲染前注入主题属性，避免先白后黑 / 先黑后白的抖动
+    html = STATIC_PATH.read_text(encoding="utf-8").replace(
+        '<html lang="zh-CN">',
+        f'<html lang="zh-CN" data-theme="{theme}">',
+        1,
+    )
 
     window = webview.create_window(
         title,

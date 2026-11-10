@@ -284,6 +284,7 @@ def run_web_desktop(config: Config, data_paths: DataPaths):
         title="zero",
         width=web_cfg.width,
         height=web_cfg.height,
+        theme_path=data_paths.root / "web-theme",
     )
 
 
