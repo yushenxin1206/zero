@@ -23,7 +23,7 @@ from prompt_toolkit.formatted_text import ANSI as PtkANSI
 from prompt_toolkit.shortcuts import print_formatted_text
 
 from zero.channels.service import ChannelService, SessionView
-from zero.models import Message
+from zero.models import ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, Message
 
 if TYPE_CHECKING:
     from zero.channels.cli.background import BackgroundRecord
@@ -327,7 +327,7 @@ class CliRenderer:
         title = self.service.title(rec.session_id)
         if title:
             subtitle_parts.append(f"会话「{escape(title)}」")
-        if rec.origin.kind == "scheduler" and rec.origin.task_id:
+        if rec.origin.kind == ORIGIN_SCHEDULER and rec.origin.task_id:
             task = self.service.task(rec.origin.task_id)
             if task is not None:
                 instruction = task.instruction.removeprefix("[Scheduled Task]")
@@ -349,13 +349,13 @@ class CliRenderer:
             # 出错标题按来源区分：此前写死「定时任务出错」，导致子任务回投轮
             # 或用户后台轮出错时被错标成定时任务
             error_title = {
-                "scheduler": "zero · 定时任务出错",
-                "subagent": "zero · 子任务出错",
+                ORIGIN_SCHEDULER: "zero · 定时任务出错",
+                ORIGIN_SUBAGENT: "zero · 子任务出错",
             }.get(rec.origin.kind, "zero · 后台回答出错")
             print_above(self.panel(
                 escape(rec.text), title=error_title,
                 title_align="left", border_style="red", subtitle=subtitle))
-        elif rec.origin.kind == "scheduler":
+        elif rec.origin.kind == ORIGIN_SCHEDULER:
             if rec.streamed:
                 # /bgstream 模式下正文已流式输出，只补一行完成提示
                 print_above(

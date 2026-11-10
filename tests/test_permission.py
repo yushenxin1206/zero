@@ -32,7 +32,9 @@ from zero.permission.envelope import PermissionState
 
 from zero.bus.queue import MessageBus
 from zero.core.hooks import HookContext
-from zero.models import ApprovalRequest, Origin, ToolContext
+from zero.models import (
+    ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, ORIGIN_USER, ApprovalRequest, Origin,
+    OriginKind, ToolContext)
 from zero.permission.guard import HANDLED_TOOLS, PermissionGuard
 from zero.tools.shell import Shell
 from zero.tools.write import Write
@@ -91,7 +93,7 @@ def test_unattended_channels_never_prompt_or_network(permission):
         assert not current_envelope(ctx, permission).network, name
 
 
-def make_ctx(channel: str = "cli", kind: str = "user") -> HookContext:
+def make_ctx(channel: str = "cli", kind: OriginKind = ORIGIN_USER) -> HookContext:
     session_id = str(uuid4())
     tc = ToolContext(channel=channel, session_id=session_id,
                      turn_id="t1", origin=Origin(kind=kind))
@@ -167,8 +169,8 @@ def test_network_policy_by_source(permission):
     assert current_envelope(ToolContext(channel="cli"), permission).network
 
     unattended = (
-        ToolContext(channel="cli", origin=Origin(kind="scheduler")),
-        ToolContext(channel="cli", origin=Origin(kind="subagent")),
+        ToolContext(channel="cli", origin=Origin(kind=ORIGIN_SCHEDULER)),
+        ToolContext(channel="cli", origin=Origin(kind=ORIGIN_SUBAGENT)),
         ToolContext(channel="feishu"),
         None,
     )
@@ -249,7 +251,7 @@ def test_guard_basics(permission):
                                make_ctx()) is None, "P 档应放行"
 
         # 无人值守 + 需扩权 → fail-closed，且不进面板
-        ctx = make_ctx(kind="scheduler")
+        ctx = make_ctx(kind=ORIGIN_SCHEDULER)
         worker = answer_next(bus, "s")
         d = await guard("shell", {"command": "echo x",
                                   "write_paths": [outside("zero-out-selftest")]},
@@ -372,14 +374,14 @@ def test_shell_network_by_source(permission):
     command = shlex.join([sys.executable, "-B", "-c", code])
     try:
         attended_ctx = ToolContext(
-            channel="cli", session_id=str(uuid4()), origin=Origin(kind="user"))
+            channel="cli", session_id=str(uuid4()), origin=Origin(kind=ORIGIN_USER))
         result = asyncio.run(
             make_shell(permission).run(context=attended_ctx, command=command))
         assert result["returncode"] == 0, result
 
         unattended_ctx = ToolContext(
             channel="cli", session_id=str(uuid4()),
-            origin=Origin(kind="scheduler"))
+            origin=Origin(kind=ORIGIN_SCHEDULER))
         result = asyncio.run(
             make_shell(permission).run(context=unattended_ctx, command=command))
         assert result["returncode"] != 0, result
@@ -527,7 +529,7 @@ def test_file_tools_use_approval_gate(permission):
 
         # write 越界 + 无人值守：fail-closed
         d = await guard("write", {"file_path": outside("zero-stageB-unattended.txt"),
-                                  "content": "x"}, make_ctx(kind="scheduler"))
+                                  "content": "x"}, make_ctx(kind=ORIGIN_SCHEDULER))
         assert d is not None and d.proceed is False, d
         assert "无人值守" in d.reason, d.reason
 

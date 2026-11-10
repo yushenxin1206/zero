@@ -22,7 +22,8 @@ from zero.core.compactor import Compactor
 from zero.core.context import Context
 from zero.core.hooks import HookChain, HookContext, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner, run_subagent
-from zero.models import MessageBody, MessageIn, ToolContext
+from zero.models import (
+    ORIGIN_SUBAGENT, ORIGIN_USER, MessageBody, MessageIn, ToolContext)
 from zero.subagent.manager import SubagentManager
 from zero.tools.base import Tool
 from zero.tools.registry import ToolRegistry
@@ -314,7 +315,7 @@ def test_tool_context_inherited(monkeypatch):
     # run_subagent 原样透传父轮 tool_context（含 origin）。把 origin 盖章为
     # subagent（以便 permission.guard 对需审批命令 fail-closed）是派发方
     # SubagentManager 的职责，见测试 10；执行层不改写调用方给的路由字段。
-    assert tool.contexts[0].origin.kind == "user"
+    assert tool.contexts[0].origin.kind == ORIGIN_USER
     assert seen["turn_id"] == "turn-42" and seen["channel"] == CHANNEL
 
 
@@ -377,7 +378,7 @@ def test_empty_reply_raises(monkeypatch):
 
 def test_subagent_shell_fail_closed():
     from zero.permission.guard import PermissionGuard
-    from zero.models import Origin
+    from zero.models import ORIGIN_SUBAGENT, Origin
 
     guard = PermissionGuard(
         msg_bus=object(), permission=make_permission())   # 有总线，但无人值守来源应短路
@@ -385,7 +386,7 @@ def test_subagent_shell_fail_closed():
         channel="cli", session_id="sid", turn_id="sub-1",
         tool_context=ToolContext(
             channel="cli", session_id="sid", turn_id="sub-1",
-            origin=Origin(kind="subagent", task_id="sub-1")),
+            origin=Origin(kind=ORIGIN_SUBAGENT, task_id="sub-1")),
         stop_event=None,
     )
     # 需要扩权（G 档）的命令在无人值守来源下须立即拒绝，不得等待审批
@@ -431,11 +432,11 @@ def test_manager_stamps_subagent_origin(monkeypatch):
 
     sid = asyncio.run(drive())
     # 工具在子 agent 内执行时收到的 origin 已被盖章为 subagent（含任务 id）
-    assert tool.contexts[0].origin.kind == "subagent"
+    assert tool.contexts[0].origin.kind == ORIGIN_SUBAGENT
     assert tool.contexts[0].origin.task_id == sid
     # 回投消息与结果事件都带 subagent origin，channel 端据此区分后台来源
     msg = bus.in_queue.queue.get_nowait()
-    assert msg.origin.kind == "subagent" and msg.origin.task_id == sid
+    assert msg.origin.kind == ORIGIN_SUBAGENT and msg.origin.task_id == sid
     event = bus.stream_queue.queue.get_nowait()
-    assert event.kind == "subagent_result" and event.origin.kind == "subagent"
+    assert event.kind == "subagent_result" and event.origin.kind == ORIGIN_SUBAGENT
 

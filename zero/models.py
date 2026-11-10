@@ -75,11 +75,20 @@ class MessageBody(Base):
     token_usage: TokenUsage | None = None  # only on assistant messages; None = 厂商未上报
 
 
+# 消息来源：类型与取值常量。字符串字面量只在下面出现一次，构造与比较
+# 一律引用常量——仓库没有 mypy 常驻，拼错名字会立刻 NameError，比注解
+# 更能挡住运行期"静默比成 false 走错分支"。
+OriginKind = Literal["user", "scheduler", "subagent"]
+ORIGIN_USER: OriginKind = "user"
+ORIGIN_SCHEDULER: OriginKind = "scheduler"
+ORIGIN_SUBAGENT: OriginKind = "subagent"
+
+
 class Origin(Base):
     """消息来源：谁触发了这一轮。"""
-    kind: Literal["user", "scheduler", "subagent"] = "user"
-    # kind == "scheduler" 时为 ScheduleTask.id；kind == "subagent" 时
-    # 为 SubagentManager 分配的子任务 id（回投消息据此标识来源）
+    kind: OriginKind = ORIGIN_USER
+    # kind == ORIGIN_SCHEDULER 时为 ScheduleTask.id；kind == ORIGIN_SUBAGENT
+    # 时为 SubagentManager 分配的子任务 id（回投消息据此标识来源）
     task_id: str | None = None
 
 

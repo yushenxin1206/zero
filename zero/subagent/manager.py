@@ -20,7 +20,7 @@ from zero.config import Config
 from zero.core.hooks import Hooks
 from zero.core.runner import run_subagent
 from zero.models import (
-    MessageBody, MessageIn, Origin, StreamEvent, ToolContext)
+    ORIGIN_SUBAGENT, MessageBody, MessageIn, Origin, StreamEvent, ToolContext)
 from zero.data_paths import DataPaths
 from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
@@ -88,7 +88,7 @@ class SubagentManager:
         # 审批的命令直接 fail-closed，而不是发审批请求后干等超时。回投与
         # 结果事件仍用父轮 tool_context 路由。
         sub_tool_context = tool_context.model_copy(update={
-            "origin": Origin(kind="subagent", task_id=sid)})
+            "origin": Origin(kind=ORIGIN_SUBAGENT, task_id=sid)})
         try:
             async with self._sem:
                 result = await run_subagent(
@@ -131,7 +131,7 @@ class SubagentManager:
             turn_id=sid,
             kind="subagent_result",
             content=result,
-            origin=Origin(kind="subagent", task_id=sid),
+            origin=Origin(kind=ORIGIN_SUBAGENT, task_id=sid),
         ))
 
     async def _dispatch_back(
@@ -150,7 +150,7 @@ class SubagentManager:
                 session_id=tool_context.session_id,
                 channel=tool_context.channel,
                 body=MessageBody(content=_render_back(sid, desc, result)),
-                origin=Origin(kind="subagent", task_id=sid),
+                origin=Origin(kind=ORIGIN_SUBAGENT, task_id=sid),
                 channel_message_id=tool_context.channel_message_id,
                 channel_sender_id=tool_context.channel_sender_id,
                 channel_session_id=tool_context.channel_session_id,

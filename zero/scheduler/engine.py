@@ -17,7 +17,8 @@ import logging
 from datetime import datetime
 
 from zero.bus.queue import BusQueueFull, MessageBus
-from zero.models import MessageBody, MessageIn, Origin, TurnStatus
+from zero.models import (
+    ORIGIN_SCHEDULER, MessageBody, MessageIn, Origin, TurnStatus)
 from zero.scheduler.models import ScheduleTask, TaskStatus
 from zero.scheduler.cron import next_run
 from zero.scheduler.store import SchedulerStore
@@ -77,7 +78,7 @@ class Scheduler:
                     session_id=task.session_id,
                     channel=task.channel,
                     body=MessageBody(content=task.instruction),
-                    origin=Origin(kind="scheduler", task_id=task.id),
+                    origin=Origin(kind=ORIGIN_SCHEDULER, task_id=task.id),
                     channel_session_id=task.channel_session_id,
                 )
             )
@@ -109,7 +110,7 @@ class Scheduler:
         已由 loop 的轮次摘要记录，任务侧不再存一份（没有读取方）。
         """
         origin = msg_in.origin
-        if origin.kind != "scheduler" or not origin.task_id:
+        if origin.kind != ORIGIN_SCHEDULER or not origin.task_id:
             return
         task_id = origin.task_id
         self._in_flight.discard(task_id)

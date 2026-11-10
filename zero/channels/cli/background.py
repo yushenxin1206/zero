@@ -18,7 +18,8 @@ from rich.text import Text
 
 from zero.channels.cli.input import CliInput
 from zero.channels.cli.renderer import CliRenderer
-from zero.models import MessageOut, Origin, StreamEvent
+from zero.models import (
+    ORIGIN_SCHEDULER, ORIGIN_SUBAGENT, MessageOut, Origin, StreamEvent)
 from zero.utils.notify import toast
 
 BackgroundKind = Literal["turn", "approval_blocked", "subagent_result"]
@@ -121,7 +122,7 @@ class CliBackground:
                 self._renderer.render_async_record(
                     rec, prompt_active=self._input.active)
             self._input.mark_unread()
-            if rec.origin.kind == "scheduler":
+            if rec.origin.kind == ORIGIN_SCHEDULER:
                 toast("zero · 定时任务完成", rec.text)
             elif rec.kind == "approval_blocked":
                 toast("zero · 审批未受理", rec.text)
@@ -151,7 +152,7 @@ class CliBackground:
         """子 agent 结果原文：直接送入异步结果管线，独立面板原样展示。"""
         origin = event.origin
         if not origin.task_id:
-            origin = Origin(kind="subagent", task_id=event.turn_id)
+            origin = Origin(kind=ORIGIN_SUBAGENT, task_id=event.turn_id)
         self._results.put_nowait(BackgroundRecord(
             turn_id=event.turn_id,
             session_id=event.session_id,

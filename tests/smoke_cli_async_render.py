@@ -19,7 +19,8 @@ from rich.console import Console
 import zero.channels.cli.background as background_mod
 from zero.bus.queue import MessageBus
 from zero.channels.cli import CHANNEL, CLIChannel
-from zero.models import MessageBody, MessageOut, Origin, StreamEvent
+from zero.models import (
+    ORIGIN_SCHEDULER, MessageBody, MessageOut, Origin, StreamEvent)
 from zero.scheduler.models import ScheduleTask
 from tests.support import make_data_paths, make_permission, make_scheduler_store, make_store
 
@@ -57,7 +58,7 @@ def test_scheduled_task_result_renders_once(monkeypatch):
             schedule_type="once",
         )
         make_scheduler_store().create(task)
-        origin = Origin(kind="scheduler", task_id=task.id)
+        origin = Origin(kind=ORIGIN_SCHEDULER, task_id=task.id)
         for kind, content in [("delta", "今日"), ("delta", "要闻"),
                               ("done", "今日要闻汇总")]:
             await bus.stream_queue.enqueue(StreamEvent(

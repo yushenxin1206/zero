@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta
 
 from zero.bus.queue import MessageBus
-from zero.models import MessageBody, MessageIn, Origin
+from zero.models import ORIGIN_SCHEDULER, MessageBody, MessageIn, Origin
 from zero.scheduler.engine import Scheduler
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
@@ -30,7 +30,7 @@ def _finished(task: ScheduleTask) -> MessageIn:
         session_id=task.session_id,
         channel=task.channel,
         body=MessageBody(content=task.instruction),
-        origin=Origin(kind="scheduler", task_id=task.id),
+        origin=Origin(kind=ORIGIN_SCHEDULER, task_id=task.id),
     )
 
 
