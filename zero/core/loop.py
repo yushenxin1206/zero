@@ -6,6 +6,9 @@
 """
 import asyncio
 import logging
+import time
+
+from dataclasses import dataclass, field
 
 from zero.bus.queue import MessageBus
 from zero.config import Config
@@ -19,6 +22,51 @@ from zero.session.store import SessionStore
 from zero.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
+
+# 摘要里错误原因的最大长度：够看清是什么错，又不至于把一行日志撕成多行
+# （换行会被压成空格，见 _format_turn）。
+_ERROR_MAX_CHARS = 200
+
+
+@dataclass
+class TurnStat:
+    """一轮的观测事实，供轮次结束时落一行摘要。
+
+    只装 agent loop 自己看得到的东西：模型与 token 用量来自 runner 的事件，
+    工具次数来自 tool_call 事件。刻意不含正文与工具参数。
+    """
+    turn_id: str
+    channel: str
+    session_id: str
+    model: str = "-"
+    tools: int = 0
+    tokens: TokenUsage | None = None
+    status: str = "completed"
+    error: str = ""
+    started: float = field(default_factory=time.monotonic)
+
+
+def _format_turn(stat: TurnStat) -> str:
+    """单行 key=value 摘要：一条轮次一行，可 grep ``turn status=error``。"""
+    tokens = (
+        "-" if stat.tokens is None else
+        f"{stat.tokens.prompt_tokens}/{stat.tokens.completion_tokens}/"
+        f"{stat.tokens.total_tokens}")
+    parts = [
+        f"turn status={stat.status}",
+        f"turn_id={stat.turn_id}",
+        f"channel={stat.channel}",
+        f"session={stat.channel}:{stat.session_id}",
+        f"model={stat.model}",
+        f"ms={int((time.monotonic() - stat.started) * 1000)}",
+        f"tools={stat.tools}",
+        f"tokens={tokens}",
+    ]
+    if stat.error:
+        # 压掉换行/连续空白再截断：异常信息常带多行堆栈或 SDK 的换行包装
+        reason = " ".join(stat.error.split())
+        parts.append(f"error={reason[:_ERROR_MAX_CHARS]}")
+    return " ".join(parts)
 
 
 class AgentLoop:
@@ -68,7 +116,30 @@ class AgentLoop:
             stop_task.cancel()
 
     async def _handle_turn(self, msg_in: MessageIn, stop_event: asyncio.Event):
-        """处理一轮：落盘用户消息、准备上下文、跑 runner、闭合轮次边界。
+        """处理一轮并落一行摘要。
+
+        摘要只在 finally 里输出一次，正常 / 取消 / 异常三个出口共用，
+        所以异常路径也一定留痕、且不会重复。
+        """
+        stat = TurnStat(
+            turn_id=msg_in.id, channel=msg_in.channel,
+            session_id=msg_in.session_id)
+        try:
+            await self._run_turn(msg_in, stop_event, stat)
+        except asyncio.CancelledError:
+            stat.status = "cancelled"
+            raise
+        except BaseException as e:  # noqa: BLE001 - 先留痕再原样抛出
+            stat.status = "error"
+            stat.error = f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            logger.info(_format_turn(stat))
+
+    async def _run_turn(
+            self, msg_in: MessageIn, stop_event: asyncio.Event,
+            stat: TurnStat):
+        """一轮的实际流程：落盘用户消息、准备上下文、跑 runner、闭合边界。
 
         所有阻塞文件 IO 都经 asyncio.to_thread 移出事件循环；取消分支
         直接 return（本方法是独立协程，不再位于 while 循环内）。
@@ -92,6 +163,7 @@ class AgentLoop:
         # 慢写入期间到达的停止信号：写完当前这一条就收尾，不再继续读历史、
         # 起 runner。线程里的写盘无法硬中断，但最多只多等这一次写入。
         if stop_event.is_set():
+            stat.status = "cancelled"
             await self._finish_cancelled(msg_in)
             return
 
@@ -120,6 +192,7 @@ class AgentLoop:
         await context.aprepare()
         # 历史加载期间也可能收到停止信号：同理，不再起 runner
         if stop_event.is_set():
+            stat.status = "cancelled"
             await self._finish_cancelled(msg_in)
             return
         model_override = await asyncio.to_thread(
@@ -136,6 +209,7 @@ class AgentLoop:
             model_override=model_override,
             stop_event=stop_event,
         )
+        stat.model = runner.runtime_config.llm_call_options.model
 
         # runner.run_stream() yields incremental events while
         # executing; stamp routing fields and forward them
@@ -157,6 +231,8 @@ class AgentLoop:
                         "token_usage")
                     if isinstance(usage_data, dict):
                         final_usage = TokenUsage(**usage_data)
+                elif event.kind == "tool_call":
+                    stat.tools += 1
                 elif event.kind == "error":
                     # 记录错误：LLM/工具失败（如孤儿 tool_call_id
                     # 触发 400）。不中断消费，但终止后不落盘空回复。
@@ -165,9 +241,11 @@ class AgentLoop:
             # 用户终止：部分回复已通过 delta 送达 channel。
             # 补发一个带 cancelled 标记的收尾流事件 + 最终
             # MessageOut；不落盘——部分回复不进会话历史
+            stat.status = "cancelled"
             await self._finish_cancelled(msg_in, reply_text)
             return
 
+        stat.tokens = final_usage
         content = reply_text
 
         # 出错时把原因以 [error] 标签接在正文后一并落盘。空正文
@@ -175,12 +253,11 @@ class AgentLoop:
         # 轮模型无从得知为何没有回复；部分截断也借此标明"这半句
         # 被剪断了"，避免被当成完整答复。
         if saw_error is not None:
+            stat.status = "error"
+            stat.error = saw_error
             note = f"[error] {saw_error}"
             content = (
                 f"{content}\n\n{note}" if content.strip() else note)
-            logger.warning(
-                "Turn %s failed (%s); persisted with error tag",
-                msg_in.id, saw_error)
 
         msg_out = MessageOut(
             session_id=msg_in.session_id,
@@ -232,9 +309,6 @@ class AgentLoop:
             SessionStore.end_turn,
             msg_in.channel, msg_in.session_id, msg_in.id,
             status="cancelled")
-        logger.info(
-            "Turn %s cancelled by user (partial %d chars)",
-            msg_in.id, len(partial))
 
     async def _run_stop_consumer(self) -> None:
         """消费 bus.stop_queue 的旁路终止信号。
