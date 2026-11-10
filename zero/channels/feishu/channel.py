@@ -133,9 +133,10 @@ class FeishuChannel:
             message_id = msg.message_id or ""
             sender_id = sender.sender_id.open_id if sender and sender.sender_id else ""
 
-            logger.info(
-                "Feishu message received: chat_id=%s, message_id=%s, text=%s",
-                chat_id, message_id, text[:80],
+            # 只记路由元信息：正文长期留存既无排障价值，又会把用户消息抄进日志
+            logger.debug(
+                "Feishu message received: chat_id=%s, message_id=%s, type=%s",
+                chat_id, message_id, msg.message_type,
             )
 
             msg_in = MessageIn(

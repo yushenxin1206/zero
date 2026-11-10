@@ -311,7 +311,9 @@ class Compactor:
             await asyncio.to_thread(
                 SessionStore.save_compact, channel, session_id, record)
         except OSError:
-            logger.exception("压缩记录落盘失败，跳过本轮压缩: session=%s", session_id)
+            logger.warning(
+                "压缩记录落盘失败，跳过本轮压缩: session=%s",
+                session_id, exc_info=True)
             return None
         logger.info(
             "会话压缩完成: session=%s 覆盖 %d 条消息(至 %s)",
@@ -361,7 +363,7 @@ class Compactor:
                 return None
             return "".join(parts).strip()
         except Exception:  # noqa: BLE001 - 压缩失败必须 fail-safe，跳过本轮
-            logger.exception("压缩记录生成失败，跳过本轮压缩")
+            logger.warning("压缩记录生成失败，跳过本轮压缩", exc_info=True)
             return None
 
     @staticmethod

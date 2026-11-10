@@ -54,9 +54,13 @@ class CliApproval:
         """
         try:
             req = ApprovalRequest.model_validate_json(event.content)
-        except ValidationError:
-            logger.warning("malformed approval event dropped: %r",
-                           event.content[:200])
+        except ValidationError as exc:
+            # 只记长度与出错字段：event.content 是审批 JSON，含待审批命令，
+            # 长期留存正文没必要；发起端会超时 fail-closed
+            loc = exc.errors()[0].get("loc") if exc.errors() else ()
+            logger.warning(
+                "malformed approval event dropped: len=%d loc=%s",
+                len(event.content), loc)
             return
         live.stop()
         abort = threading.Event()

@@ -20,6 +20,7 @@ from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
 from zero.config import Config, load_config
 from zero.paths import configure, current
+from zero.utils.log_setup import setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ def start_background(core: CoreRuntime) -> list[asyncio.Task]:
 def start_feishu(msg_bus: MessageBus, config: Config) -> asyncio.Task | None:
     feishu_cfg = config.channels.feishu
     if not feishu_cfg.app_id:
-        log.warning("未配置飞书 app_id，跳过 feishu channel")
+        log.info("未配置飞书 app_id，跳过 feishu channel")
         return None
     channel = FeishuChannel(config=feishu_cfg, msg_bus=msg_bus)
     # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
@@ -244,15 +245,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def quiet_third_party_loggers():
-    """第三方库自带的 stdout handler 会绕过日志文件配置直接污染终端，
-    一律移除并改为汇入 root logging（写入 debug.log）。"""
-    for name in ("Lark", "websocket"):
-        lib_logger = logging.getLogger(name)
-        lib_logger.handlers.clear()
-        lib_logger.propagate = True
-
-
 def main():
     args = parse_args()
 
@@ -261,16 +253,9 @@ def main():
     configure()
     config = load_config()
 
-    # 日志统一写文件（绝对路径，任意目录启动都不会散落 debug.log），
-    # 避免打断 rich 渲染的终端界面
-    log_dir = current().root
-    log_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        filename=str(log_dir / "debug.log"),
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-    quiet_third_party_loggers()
+    # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich
+    # 渲染），统一带密钥脱敏；绝对路径，任意目录启动都不会散落 debug.log
+    setup_logging(current().root)
 
     try:
         if args.web:

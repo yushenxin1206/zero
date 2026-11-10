@@ -119,7 +119,7 @@ class OpenAI(Provider):
                     asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
                 asyncio.run_coroutine_threadsafe(queue.put(None), loop)
             except Exception as e:  # noqa: BLE001 - surface any failure to consumer
-                logger.exception("Streaming request failed")
+                # 不在这里记栈：异常会经队列交给 runner，由它统一记一次
                 asyncio.run_coroutine_threadsafe(queue.put(e), loop)
 
         thread = threading.Thread(target=producer, daemon=True)

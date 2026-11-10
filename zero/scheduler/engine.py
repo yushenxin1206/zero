@@ -71,7 +71,7 @@ class Scheduler:
             try:
                 next_trigger = next_run(task.cron, now)
             except ValueError as e:
-                logger.error("Recurring task %s invalid cron: %s", task.id, e)
+                logger.warning("Recurring task %s invalid cron: %s", task.id, e)
                 SchedulerStore.update_status(task.id, "failed")
                 return
             SchedulerStore.reschedule(task.id, trigger_at=next_trigger, last_run_at=now)

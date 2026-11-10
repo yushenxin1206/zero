@@ -194,7 +194,7 @@ def available(root: Path | None = None) -> bool:
     if key not in _probe_cache:
         ok = _probe(root)
         _probe_cache[key] = ok
-        logger.info("内核沙箱探针 %s：%s", root, "通过" if ok else "未通过")
+        logger.debug("内核沙箱探针 %s：%s", root, "通过" if ok else "未通过")
     return _probe_cache[key]
 
 
@@ -211,7 +211,7 @@ def network_enforced(root: Path | None = None) -> bool:
     if key not in _network_probe_cache:
         ok = _probe_network(root)
         _network_probe_cache[key] = ok
-        logger.info("断网探针 %s：%s", root, "通过" if ok else "未通过")
+        logger.debug("断网探针 %s：%s", root, "通过" if ok else "未通过")
     return _network_probe_cache[key]
 
 
