@@ -1,9 +1,10 @@
 """进程数据根目录的唯一来源：显式配置，惰性读取。
 
-import 本模块只做路径算术：不读文件、不建目录、不实例化 Config。
+本模块只做路径算术：不读文件、不建目录、不实例化 Config。
 进程启动时由 ``main()`` 调 ``configure()``；测试由 pytest fixture 调
-``configure(tmp_path)``。业务模块一律在调用点通过 ``current()`` 取路径，
-而不是在 import 时把路径冻结成模块常量。
+``configure(tmp_path)``。组合根与进程边界（CLI / 工具 / 子命令）通过
+``current()`` 取一次路径，再把 ``Paths`` 显式传给核心对象；核心域不在
+调用点回读进程根。
 
 ``scope()`` 给同一进程内的多实例/集成测试一个轻量入口：``with
 scope(root):`` 期间该协程上下文读到另一个根。没有 override 时回落到
