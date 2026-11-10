@@ -4,6 +4,7 @@ import asyncio
 import zero.core.runner as runner_mod
 from zero.config import Config
 from zero.core.context import Context
+from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import StreamEvent
 from zero.session.store import SessionStore
@@ -30,7 +31,7 @@ def test_runner_stream(monkeypatch):
     monkeypatch.setattr(runner_mod, "OpenAI", FakeProvider)
     cfg = make_config()
     ctx = Context(session_id="smoke-test-session", channel="cli")
-    runner = AgentRunner(cfg, ctx)
+    runner = AgentRunner(cfg, ctx, hooks=Hooks())
 
     async def scenario():
         events = [ev async for ev in runner.run_stream()]

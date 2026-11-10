@@ -7,6 +7,7 @@ import unittest
 
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
+from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest, ProviderConfig
 from zero.session.store import SessionStore
@@ -28,7 +29,7 @@ class FakeProvider:
 async def main() -> dict:
     bus = MessageBus()
     cfg = make_test_config()
-    loop = AgentLoop(msg_bus=bus, config=cfg)
+    loop = AgentLoop(msg_bus=bus, config=cfg, hooks=Hooks())
 
     from zero.core.runner import AgentRunner
 
@@ -36,10 +37,11 @@ async def main() -> dict:
     orig_init = AgentRunner.__init__
 
     def patched_init(self, config, running_context, task="default",
-                     tool_registry=None, hooks=None, model_override=None,
+                     tool_registry=None, *, hooks, model_override=None,
                      stop_event=None):
-        orig_init(self, config, running_context, task, tool_registry, hooks,
-                  model_override, stop_event)
+        orig_init(self, config, running_context, task, tool_registry,
+                  hooks=hooks, model_override=model_override,
+                  stop_event=stop_event)
         self.provider = fake
         fake.stop_event = stop_event
 
@@ -145,8 +147,9 @@ class TestTurnStop(unittest.TestCase):
             cfg = make_test_config()
             context = Context(session_id="s-repair", channel="cli")
             stop_event = asyncio.Event()
-            runner = AgentRunner(config=cfg, running_context=context,
-                                 stop_event=stop_event)
+            runner = AgentRunner(
+                config=cfg, running_context=context,
+                hooks=Hooks(), stop_event=stop_event)
             runner.provider = ToolsProvider()
 
             # 门控第一个工具的执行：取消信号在『第一个工具执行中』到达，
@@ -227,7 +230,8 @@ class TestStopDuringSilentThinking(unittest.TestCase):
 
         async def scenario() -> dict:
             bus = MessageBus()
-            loop = AgentLoop(msg_bus=bus, config=make_test_config())
+            loop = AgentLoop(
+                msg_bus=bus, config=make_test_config(), hooks=Hooks())
 
             prov = OpenAI(ProviderConfig(api_base="http://stub", api_key="k"))
             # turn1 思考期 3s（终止应打断它）；turn2 立即完整输出
@@ -237,10 +241,11 @@ class TestStopDuringSilentThinking(unittest.TestCase):
             orig_init = AgentRunner.__init__
 
             def patched_init(self, config, running_context, task="default",
-                             tool_registry=None, hooks=None,
+                             tool_registry=None, *, hooks,
                              model_override=None, stop_event=None):
-                orig_init(self, config, running_context, task,
-                          tool_registry, hooks, model_override, stop_event)
+                orig_init(self, config, running_context, task, tool_registry,
+                          hooks=hooks, model_override=model_override,
+                          stop_event=stop_event)
                 self.provider = prov
 
             AgentRunner.__init__ = patched_init

@@ -5,6 +5,7 @@ import time
 from unittest.mock import patch
 
 from zero.bus.queue import MessageBus
+from zero.core.hooks import Hooks
 from zero.core.loop import AgentLoop
 from zero.models import MessageBody, MessageIn, StopRequest
 from zero.session.store import SessionStore
@@ -23,10 +24,11 @@ def _patch_provider(provider) -> patch:
     orig_init = AgentRunner.__init__
 
     def patched_init(self, config, running_context, task="default",
-                     tool_registry=None, hooks=None, model_override=None,
+                     tool_registry=None, *, hooks, model_override=None,
                      stop_event=None):
-        orig_init(self, config, running_context, task, tool_registry, hooks,
-                  model_override, stop_event)
+        orig_init(self, config, running_context, task, tool_registry,
+                  hooks=hooks, model_override=model_override,
+                  stop_event=stop_event)
         self.provider = provider
 
     return patch.object(AgentRunner, "__init__", patched_init)
@@ -37,7 +39,8 @@ def test_event_loop_stays_responsive_during_slow_session_write():
 
     async def scenario() -> int:
         bus = MessageBus()
-        loop = AgentLoop(msg_bus=bus, config=make_test_config())
+        loop = AgentLoop(
+            msg_bus=bus, config=make_test_config(), hooks=Hooks())
         ticks = 0
 
         async def heartbeat():
@@ -86,7 +89,8 @@ def test_stop_takes_effect_during_slow_write():
 
     async def scenario() -> dict:
         bus = MessageBus()
-        loop = AgentLoop(msg_bus=bus, config=make_test_config())
+        loop = AgentLoop(
+            msg_bus=bus, config=make_test_config(), hooks=Hooks())
         loop_task = asyncio.create_task(loop.run())
         await asyncio.sleep(0.05)
 

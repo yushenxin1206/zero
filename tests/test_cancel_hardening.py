@@ -11,6 +11,7 @@ from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from tests.support import make_test_config
+from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
 from zero.models import Message, MessageBody, MessageOut, StopRequest
 from zero.paths import current
@@ -36,7 +37,7 @@ class TestCancelledErrorRepairsHistory(unittest.TestCase):
         async def scenario() -> list:
             context = Ctx(session_id="s-hard", channel="cli")
             runner = AgentRunner(config=make_test_config(),
-                                 running_context=context)
+                                 running_context=context, hooks=Hooks())
             runner.provider = ToolsProvider()
 
             async def cancelled_exec(tc):

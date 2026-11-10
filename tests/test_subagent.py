@@ -20,7 +20,7 @@ from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.compactor import Compactor
 from zero.core.context import Context
-from zero.core.hooks import HookChain, HookContext, ToolCallDecision
+from zero.core.hooks import HookChain, HookContext, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner, run_subagent
 from zero.models import MessageBody, MessageIn, ToolContext
 from zero.paths import current
@@ -143,6 +143,7 @@ def test_single_shot_with_tools(monkeypatch):
     reply = asyncio.run(run_subagent(
         "做点事",
         config=stub_config(),
+        hooks=Hooks(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
     ))
@@ -176,6 +177,7 @@ def test_isolation_from_session_store(monkeypatch):
     reply = asyncio.run(run_subagent(
         "子任务",
         config=stub_config(),
+        hooks=Hooks(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         tool_registry=make_registry(tool),
         tool_context=ToolContext(channel=CHANNEL, session_id=sid, turn_id="t1"),
@@ -197,6 +199,7 @@ def test_custom_system_prompt(monkeypatch):
     asyncio.run(run_subagent(
         "翻译任务",
         config=stub_config(),
+        hooks=Hooks(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         system_prompt="你是翻译代理，只输出译文。",
     ))
@@ -219,6 +222,7 @@ def test_error_raises(monkeypatch):
         asyncio.run(run_subagent(
             "必败任务",
             config=stub_config(),
+            hooks=Hooks(),
             # 根配置：运行时配置在 AgentRunner 内按 task 解析
         ))
         raise AssertionError("run_subagent 应当抛 RuntimeError")
@@ -244,6 +248,7 @@ def test_compression_gate(monkeypatch):
     asyncio.run(run_subagent(
         "任务",
         config=stub_config(),
+        hooks=Hooks(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
     ))
     assert spy["calls"] == 0, "子 agent 不应触发上下文压缩"
@@ -257,6 +262,7 @@ def test_compression_gate(monkeypatch):
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
         running_context=context,
         tool_registry=registry,
+        hooks=Hooks(),
     )
 
     async def drain():
@@ -349,7 +355,8 @@ def test_empty_reply_raises(monkeypatch):
         [[("content", "")]],             # compactor.provider（未使用）
     )
     try:
-        asyncio.run(run_subagent("写一篇作文", config=stub_config()))
+        asyncio.run(run_subagent(
+            "写一篇作文", config=stub_config(), hooks=Hooks()))
         raise AssertionError("空正文应抛 RuntimeError")
     except RuntimeError as e:
         assert "空正文" in str(e) or "截断" in str(e), \

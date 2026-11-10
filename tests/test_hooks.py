@@ -12,9 +12,12 @@ import asyncio
 import json
 from uuid import uuid4
 
+import pytest
+
+from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.context import Context
-from zero.core.hooks import HookChain, Hooks, ToolCallDecision
+from zero.core.hooks import HOOK_NAMES, HookChain, Hooks, ToolCallDecision
 from zero.core.runner import AgentRunner
 from zero.models import ToolContext
 from zero.session.store import SessionStore
@@ -247,4 +250,57 @@ def test_truncation_after_hook():
     content = history_summary(sid)[1][1]
     assert content.endswith(TRUNC_SUFFIX)
     assert len(content) == 10000 + len(TRUNC_SUFFIX)
+
+
+# ---------------------------------------------------------------------------
+# 6. 注册期契约：HOOK_NAMES 与基类一致、async/参数个数、handlers_for
+# ---------------------------------------------------------------------------
+
+def test_hook_names_match_base_methods():
+    public = {name for name in dir(Hooks) if not name.startswith("_")}
+    assert set(HOOK_NAMES) == public
+
+
+def test_sync_handler_rejected_at_registration():
+    chain = HookChain()
+
+    def sync_handler(tool_name, kwargs, ctx):
+        return None
+
+    with pytest.raises(TypeError, match="async"):
+        chain.on_before_tool_call(sync_handler)
+
+
+def test_wrong_arity_handler_rejected_at_registration():
+    chain = HookChain()
+
+    async def too_few(tool_name, kwargs):
+        return None
+
+    with pytest.raises(TypeError, match="3 个位置参数"):
+        chain.on("before_tool_call", too_few)
+
+
+def test_handlers_for_returns_registration_order():
+    chain = HookChain()
+
+    async def first(tool_name, kwargs, ctx):
+        return None
+
+    async def second(tool_name, kwargs, ctx):
+        return None
+
+    chain.on_before_tool_call(first)
+    chain.on_before_tool_call(second)
+    assert chain.handlers_for("before_tool_call") == (first, second)
+
+
+def test_build_hooks_requires_guard(monkeypatch):
+    """守卫装不上时启动期硬失败，而不是带着空链静默 fail-open。"""
+    import zero.permission.guard as guard_mod
+    from zero.main import build_hooks
+
+    monkeypatch.setattr(guard_mod, "install", lambda chain, bus: None)
+    with pytest.raises(AssertionError, match="permission guard"):
+        build_hooks(MessageBus())
 

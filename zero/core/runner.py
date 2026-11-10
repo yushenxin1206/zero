@@ -46,7 +46,8 @@ class AgentRunner:
             running_context: Context,
             task: str = "default",
             tool_registry: ToolRegistry | None = None,
-            hooks: Hooks | None = None,
+            *,
+            hooks: Hooks,
             model_override: str | None = None,
             stop_event: asyncio.Event | None = None,
     ):
@@ -59,7 +60,8 @@ class AgentRunner:
         compact_config = config.resolve_runtime("compact")
         self.context = running_context
         self.tool_registry = tool_registry
-        self.hooks = hooks or Hooks()
+        # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
+        self.hooks = hooks
         # 协作式取消：None（子 agent 单次模式等）则永不触发
         self._stop_event = stop_event
         self.compactor = Compactor(
@@ -393,9 +395,9 @@ async def run_subagent(
         prompt: str,
         *,
         config: Config,
+        hooks: Hooks,
         task: str = "default",
         tool_registry: ToolRegistry | None = None,
-        hooks: Hooks | None = None,
         tool_context: ToolContext | None = None,
         system_prompt: str | None = None,
 ) -> str:

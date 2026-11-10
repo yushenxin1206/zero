@@ -60,10 +60,11 @@ async def run_case() -> dict:
     orig = AgentRunner.__init__
 
     def patched(self, config, running_context, task="default",
-                tool_registry=None, hooks=None, model_override=None,
+                tool_registry=None, *, hooks, model_override=None,
                 stop_event=None):
-        orig(self, config, running_context, task, tool_registry, hooks,
-             model_override, stop_event)
+        orig(self, config, running_context, task, tool_registry,
+             hooks=hooks, model_override=model_override,
+             stop_event=stop_event)
         self.provider = FakeProvider()
 
     AgentRunner.__init__ = patched

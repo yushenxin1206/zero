@@ -83,12 +83,14 @@ class AgentLoop:
             msg_bus: MessageBus,
             config: Config,
             tool_registry: ToolRegistry | None = None,
-            hooks: Hooks | None = None,
+            *,
+            hooks: Hooks,
     ):
         self.msg_bus = msg_bus
         self.config = config
         self.tool_registry = tool_registry
-        self.hooks = hooks or Hooks()
+        # 必填：静默兜底成 no-op 链会让护栏在不经意间失效（fail-open 且无提示）
+        self.hooks = hooks
         # 当前活跃 turn（(channel, session_id, turn_id)）与其 stop_event；
         # 由 _run_stop_consumer 消费旁路停止信号后置位
         self._current: tuple[str, str, str] | None = None

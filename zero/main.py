@@ -42,11 +42,16 @@ def build_tool_registry() -> ToolRegistry:
 
 
 def build_hooks(msg_bus: MessageBus) -> Hooks:
-    """组合根：构建 hook 链并挂上权限守卫。无守卫时是纯 no-op 链，
-    运行时行为与无 hooks 逐字节一致。"""
+    """组合根：构建 hook 链并挂上权限守卫。
+
+    守卫装不上（import 失败、install 提前返回）时 hook 链为空，shell
+    权限会静默 fail-open。这里在启动期硬失败，而不是等第一条危险命令。
+    """
     chain = HookChain()
     from zero.permission.guard import install
     install(chain, msg_bus)     # msg_bus 供 CLI 就地审批路由
+    assert chain.handlers_for("before_tool_call"), \
+        "permission guard 未注册到 hook 链：shell 权限将 fail-open"
     return chain
 
 

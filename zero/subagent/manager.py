@@ -37,14 +37,15 @@ class SubagentManager:
             msg_bus: MessageBus,
             config: Config,
             tool_registry: ToolRegistry,
-            hooks: Hooks | None = None,
+            *,
+            hooks: Hooks,
             max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
     ):
         self.msg_bus = msg_bus
         self.config = config
         # 子 agent 工具集（主对话全量剔除 subagent 后的子集）
         self.tool_registry = tool_registry
-        # 与主对话共用的 hook 链（shell_guard 等护栏；None 则无护栏）
+        # 与主对话共用的 hook 链（shell_guard 等护栏）
         self.hooks = hooks
         self._sem = asyncio.Semaphore(max_concurrency)
         # 在途子任务：id -> asyncio.Task，shutdown 时据此取消

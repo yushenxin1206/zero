@@ -17,10 +17,11 @@ handler 一律 async；任何 handler 抛异常只记日志、视为 no-op（fai
 TurnCancelled 是终止信号（非业务异常），必须透传，不允许被 fail-open 吞掉。
 """
 import asyncio
+import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, Literal
 
 from zero.core.cancellation import TurnCancelled
 from zero.models import ToolContext
@@ -71,7 +72,35 @@ class Hooks:
         return None
 
 
-HOOK_NAMES = ("before_tool_call",)
+HookName = Literal["before_tool_call"]
+HookHandler = Callable[[str, dict, HookContext], Awaitable[ToolCallDecision | None]]
+
+# 单点位的名字清单；HOOK_NAMES 与 Hooks 基类方法的一致性由测试锁定
+HOOK_NAMES: tuple[HookName, ...] = ("before_tool_call",)
+
+
+def _check_handler(hook_name: HookName, fn: HookHandler) -> None:
+    """注册期校验 handler 契约：必须是 async、且接受 3 个位置参数。
+
+    签名漂移如果在分发时才暴露，会被 ``_safe`` 的宽 except 吞成静默 no-op
+    ——对 fail-open 的护栏来说等于护栏不存在。所以在注册处直接报错。
+    """
+    if not inspect.iscoroutinefunction(fn):
+        raise TypeError(
+            f"hook '{hook_name}' handler {fn!r} 必须是 async 函数")
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError) as e:
+        raise TypeError(
+            f"hook '{hook_name}' handler {fn!r} 签名不可读: {e}") from e
+    positional = [
+        p for p in params
+        if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    if not any(p.kind is p.VAR_POSITIONAL for p in params) \
+            and len(positional) != 3:
+        raise TypeError(
+            f"hook '{hook_name}' handler {fn!r} 必须接受 3 个位置参数"
+            f"（tool_name, kwargs, ctx），实际 {len(positional)} 个")
 
 
 # ---------------------------------------------------------------------------
@@ -86,17 +115,19 @@ class HookChain(Hooks):
     """
 
     def __init__(self):
-        self._handlers: dict[str, list[Callable]] = {n: [] for n in HOOK_NAMES}
+        self._handlers: dict[HookName, list[HookHandler]] = {
+            n: [] for n in HOOK_NAMES}
 
     # ------------------------------------------------------------------
     # 注册
     # ------------------------------------------------------------------
 
-    def on(self, hook_name: str, fn: Callable) -> Callable:
+    def on(self, hook_name: HookName, fn: HookHandler) -> HookHandler:
         """注册 handler（签名与 Hooks 同名方法一致）。可作装饰器使用。"""
         if hook_name not in self._handlers:
             raise ValueError(
                 f"unknown hook '{hook_name}', expected one of {HOOK_NAMES}")
+        _check_handler(hook_name, fn)
         self._handlers[hook_name].append(fn)
         return fn
 
@@ -106,8 +137,12 @@ class HookChain(Hooks):
             if getattr(type(hooks), name) is not getattr(Hooks, name):
                 self.on(name, getattr(hooks, name))
 
-    def on_before_tool_call(self, fn: Callable) -> Callable:
+    def on_before_tool_call(self, fn: HookHandler) -> HookHandler:
         return self.on("before_tool_call", fn)
+
+    def handlers_for(self, hook_name: HookName) -> tuple[HookHandler, ...]:
+        """该点位已注册的 handler 快照（按注册顺序，只读）。"""
+        return tuple(self._handlers[hook_name])
 
     # ------------------------------------------------------------------
     # 分发
@@ -133,7 +168,7 @@ class HookChain(Hooks):
             self, tool_name: str, kwargs: dict, ctx: HookContext,
     ) -> ToolCallDecision | None:
         notes: list[str] = []
-        for fn in self._handlers["before_tool_call"]:
+        for fn in self.handlers_for("before_tool_call"):
             d = await self._safe(fn, tool_name, kwargs, ctx)
             if d is None:
                 continue
