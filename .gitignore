@@ -57,6 +57,9 @@ httpd.plist
 *.sublime-workspace
 *.sublime-project
 
+# 项目级记忆（运行期由 agent 写入当前工作目录）
+.zero/
+
 # =====================
 # Environment & Config
 # =====================
