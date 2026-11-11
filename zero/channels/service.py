@@ -9,21 +9,31 @@ instead of being re-implemented per channel.
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 from uuid import uuid4
+
+import requests
 
 from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.permission.envelope import PermissionState
-from zero.models import ApprovalRecord, Message, MessageBody, MessageIn, StopRequest
+from zero.models import (
+    ApprovalRecord, LLMCallOptions, Message, MessageBody, MessageIn,
+    StopRequest)
+from zero.providers.base import LLMPayload
+from zero.providers.openai import OpenAI
 from zero.data_paths import DataPaths
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
 from zero.session.models import SessionMeta
 from zero.session.store import SessionStore
+from zero.skill_catalog import list_skills, parse_skill_meta, read_skill_body
 from zero.tools.registry import ToolRegistry
 
 
@@ -42,6 +52,21 @@ class SessionView:
     title_is_derived: bool
     date: str
     last_updated_at: datetime
+
+
+def _http_error_text(exc: requests.exceptions.HTTPError) -> str:
+    """把厂商返回的 HTTP 状态翻成用户能照着改的提示。"""
+    response = exc.response
+    code = response.status_code if response is not None else 0
+    if code in (401, 403):
+        return f"认证失败（HTTP {code}）：apiKey 无效或没有该模型权限"
+    if code == 404:
+        return "接口或模型不存在（HTTP 404）：检查 apiBase 与模型名"
+    if code == 429:
+        return "请求过于频繁（HTTP 429）：稍后重试或检查额度"
+    if code >= 500:
+        return f"厂商服务异常（HTTP {code}）：稍后重试"
+    return f"请求失败（HTTP {code}）"
 
 
 class ChannelService:
@@ -205,6 +230,68 @@ class ChannelService:
         """Audit records for approvals that happened in this session."""
         return self.session_store.load_approvals(
             self.channel, session_id or self.session_id)
+
+    # ------------------------------------------------------------------
+    # Skills
+    # ------------------------------------------------------------------
+
+    def skills(self) -> list[dict[str, Any]]:
+        """Package skills with metadata and rendered skill.md body for viewing."""
+        return [{
+            "name": skill.name,
+            "description": skill.description,
+            "location": str(skill.location),
+            "meta": parse_skill_meta(skill.location),
+            "content": read_skill_body(skill.location),
+        } for skill in list_skills()]
+
+    # ------------------------------------------------------------------
+    # Config
+    # ------------------------------------------------------------------
+
+    async def test_connection(
+            self, config: Config, timeout: float = 20.0) -> dict[str, Any]:
+        """用草稿配置发一条最小请求，验证端点 / 密钥 / 模型名是否可用。
+
+        不修改任何状态，也不要求当前进程的 config 已经可用——引导页保存前
+        就要能测。只取首个流式片段：拿到任意输出即视为连通。
+        """
+        runtime = config.resolve_runtime("default")
+        provider = OpenAI(runtime.llm_runtime.provider)
+        payload = LLMPayload(
+            messages=[{"role": "user", "content": "ping"}],
+            llm_call_options=LLMCallOptions(
+                model=runtime.llm_call_options.model,
+                max_tokens=1,
+                temperature=0,
+                stream=True,
+            ),
+        )
+        started = time.monotonic()
+        stream = provider.stream_chunks(payload)
+        try:
+            await asyncio.wait_for(stream.__anext__(), timeout)
+        except StopAsyncIteration:
+            pass
+        except (asyncio.TimeoutError, TimeoutError):
+            return {"ok": False, "error": f"连接超时：{int(timeout)} 秒内无响应"}
+        except requests.exceptions.HTTPError as exc:
+            return {"ok": False, "error": _http_error_text(exc)}
+        except requests.exceptions.Timeout:
+            return {"ok": False, "error": "请求超时：检查 apiBase 与网络"}
+        except requests.exceptions.ConnectionError:
+            return {"ok": False, "error": "无法连接到 apiBase：检查地址、端口与网络"}
+        except Exception as exc:  # noqa: BLE001 - 测试失败要回显而不是中断连接
+            return {"ok": False, "error": f"连接测试失败：{type(exc).__name__}: {exc}"}
+        finally:
+            try:
+                await stream.aclose()
+            except Exception:  # noqa: BLE001 - 已被超时取消时关闭可能失败
+                pass
+        return {
+            "ok": True,
+            "latencyMs": int((time.monotonic() - started) * 1000),
+        }
 
     # ------------------------------------------------------------------
     # Scheduled tasks

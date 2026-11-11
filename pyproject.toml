@@ -61,6 +61,11 @@ packages = [
 # web 通道的前端资源随包分发（editable 安装直接读源码目录）
 [tool.setuptools.package-data]
 "zero.channels.web" = ["static/*.html"]
+"zero" = [
+    "skills/*/skill.md",
+    "skills/*/scripts/*.py",
+    "skills/*/references/*.md",
+]
 
 # ---------------------------------------------------------------------------
 # 测试与静态检查

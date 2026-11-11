@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import sys
 from dataclasses import dataclass
 
 from zero.bus.queue import MessageBus
@@ -18,7 +19,7 @@ from zero.tools.edit import Edit
 from zero.tools.shell import Shell
 from zero.tools.scheduler_task import CancelScheduledTask, CreateScheduledTask
 from zero.tools.subagent import SubagentTool
-from zero.config import Config, load_config
+from zero.config import Config, ConfigManager
 from zero.data_paths import DataPaths
 from zero.models import CHANNEL_FEISHU
 from zero.permission.envelope import PermissionState
@@ -216,7 +217,8 @@ async def run(config: Config, data_paths: DataPaths, cli_only: bool = False):
             log.error("%s task failed", task_names.get(t, "unknown"), exc_info=exc)
 
 
-def run_web_desktop(config: Config, data_paths: DataPaths):
+def run_web_desktop(config: Config, data_paths: DataPaths,
+                    config_manager: ConfigManager | None = None):
     """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。"""
     from zero.channels.web.shell import run_desktop
 
@@ -234,7 +236,8 @@ def run_web_desktop(config: Config, data_paths: DataPaths):
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
             scheduler_store=core.scheduler_store, data_paths=data_paths,
-            permission=core.permission, config=config)
+            permission=core.permission, config=config,
+            config_manager=config_manager)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()
@@ -307,7 +310,10 @@ def main():
     # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
     # 显式 Config / DataPaths / Store，不再访问模块级单例。
     data_paths = DataPaths.default()
-    config = load_config(data_paths.config)
+    # ConfigManager 负责状态判定与后续 Web 端读写：缺配置/坏配置都不抛，
+    # 由 Web 引导页接管；CLI 没有引导页，稍后给出可操作的提示。
+    manager = ConfigManager(data_paths.config)
+    config = manager.load()
 
     # 日志脚手架：文件 DEBUG（2MB × 3 轮转）+ 控制台 ERROR（不打断 rich
     # 渲染），统一带密钥脱敏；日志固定落在数据根的 logs 目录，任意目录启动
@@ -316,12 +322,21 @@ def main():
 
     try:
         if args.web:
-            run_web_desktop(config, data_paths)
+            run_web_desktop(config, data_paths, manager)
+        elif manager.needs_setup:
+            print(
+                "尚未完成配置：请先运行 `zero --web` 在桌面窗口里完成首次配置，"
+                f"或编辑 {data_paths.config}（可先执行 "
+                "`python -m zero.config --write` 生成骨架）。",
+                file=sys.stderr,
+            )
+            return 1
         else:
             asyncio.run(run(config, data_paths, cli_only=args.cli))
     except KeyboardInterrupt:
         pass
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

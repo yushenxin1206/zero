@@ -37,20 +37,39 @@ class MaintenanceEngine:
                  data_paths: DataPaths):
         """入参是根配置：两个维护任务各按自己的任务名解析运行时配置
         （模型/provider 可与主对话不同），并各构造独立 provider client。
-        维护任务是进程级常量，不跟会话级模型切换走，故只解析一次。"""
+        维护任务是进程级常量，不跟会话级模型切换走，故只解析一次。
+
+        解析推迟到 ``run()``：首次使用（还没写 config.json）时进程要能起
+        来交给引导页，不能因为维护任务绑不到模型就整体崩溃。
+        """
+        self._config = config
         self._maintenance = config.maintenance
         # 会话复盘/记忆沉淀读取的会话存储与状态文件路径，由组合根显式传入
         self._session_store = session_store
         self._data_paths = data_paths
-        summary = config.resolve_runtime('session_summary')
-        memory = config.resolve_runtime('memory')
-        self._summary_provider = OpenAI(summary.llm_runtime.provider)
-        self._summary_runtime: AgentRuntimeConfig = summary
-        self._memory_provider = OpenAI(memory.llm_runtime.provider)
-        self._memory_runtime: AgentRuntimeConfig = memory
+        self._summary_provider: OpenAI | None = None
+        self._summary_runtime: AgentRuntimeConfig | None = None
+        self._memory_provider: OpenAI | None = None
+        self._memory_runtime: AgentRuntimeConfig | None = None
         self._state_lock = asyncio.Lock()
 
+    def _resolve_runtimes(self) -> bool:
+        """解析维护任务的模型绑定；配置未就绪时记日志并放弃维护任务。"""
+        try:
+            summary = self._config.resolve_runtime('session_summary')
+            memory = self._config.resolve_runtime('memory')
+        except ValueError as exc:
+            logger.warning("维护任务未启动：配置未就绪（%s）", exc)
+            return False
+        self._summary_provider = OpenAI(summary.llm_runtime.provider)
+        self._summary_runtime = summary
+        self._memory_provider = OpenAI(memory.llm_runtime.provider)
+        self._memory_runtime = memory
+        return True
+
     async def run(self) -> None:
+        if not self._resolve_runtimes():
+            return
         loops = []
         if self._maintenance.session_summary_enabled:
             loops.append(self._loop("session_summary", self._maintenance.session_summary_cron, self._run_session_summary))
@@ -65,11 +84,15 @@ class MaintenanceEngine:
         await asyncio.gather(*loops)
 
     async def _run_session_summary(self, window: dt.timedelta) -> None:
+        if self._summary_provider is None or self._summary_runtime is None:
+            return
         await run_session_summary(
             self._summary_provider, self._summary_runtime,
             self._maintenance, self._session_store, window)
 
     async def _run_memory(self, window: dt.timedelta) -> None:
+        if self._memory_provider is None or self._memory_runtime is None:
+            return
         await run_memory(
             self._memory_provider, self._memory_runtime,
             self._maintenance, self._session_store, self._data_paths, window)

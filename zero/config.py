@@ -1,9 +1,12 @@
 import argparse
+import copy
 import json
+import os
 import sys
+from datetime import datetime
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, ValidationError
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
@@ -216,6 +219,206 @@ def load_config(path: Path) -> Config:
         with open(target, 'r', encoding='utf-8') as f:
             return Config.model_validate(json.load(f))
     return Config()
+
+
+# ---------------------------------------------------------------------------
+# 运行时配置读写（Web 引导页 / 设置面板）
+# ---------------------------------------------------------------------------
+
+# 传给前端的密钥占位：保存时仍是这个值就回填磁盘上的原 key，
+# 避免密钥进入 DOM / 被误改写成占位符。
+MASKED_SECRET = '****'
+
+
+class ConfigValidationError(ValueError):
+    """配置草稿未通过校验；issues 是给 UI 的字段级错误列表。"""
+
+    def __init__(self, issues: list[dict[str, str]]):
+        self.issues = issues
+        super().__init__(
+            '；'.join(i['message'] for i in issues) or '配置不合法')
+
+
+def _issue(path: str, message: str) -> dict[str, str]:
+    return {'path': path, 'message': message}
+
+
+def _validation_issues(exc: ValidationError) -> list[dict[str, str]]:
+    """把 pydantic 校验错误转成 {path, message}，路径直接给 UI 定位。"""
+    issues = []
+    for err in exc.errors():
+        path = '.'.join(str(part) for part in err.get('loc', ()) if part != '')
+        issues.append(_issue(path, str(err.get('msg') or '配置项不合法')))
+    return issues or [_issue('', '配置不合法')]
+
+
+def _binding_problem(cfg: Config) -> dict[str, str] | None:
+    """配置结构合法但"跑不起来"的原因（缺注册表 / 未绑模型 / 缺端点）。"""
+    if not cfg.models:
+        return _issue('models', 'models 注册表为空：至少注册一个模型')
+    try:
+        runtime = cfg.resolve_runtime('default')
+    except ValueError as exc:
+        return _issue('agentRuntimes.default.llmCallOptions.model', str(exc))
+    if not runtime.llm_runtime.provider.api_base.strip():
+        return _issue('providers', '当前模型使用的 provider 未配置 apiBase')
+    return None
+
+
+class ConfigManager:
+    """config.json 的唯一读写入口：状态判定 + 校验 + 原子落盘。
+
+    P1 语义：保存只落盘，**不在进程内替换配置**，重启后生效。这样不存在
+    "部分生效" 的中间态，也不需要为每个缓存了 config 的组件写失效逻辑。
+
+    ``config`` 与 ``raw`` 的分工：
+    - ``raw`` 是磁盘上的 JSON 文档，保存时写它——不能 ``model_dump`` 回写，
+      否则默认值和环境变量会被固化进文件；
+    - ``config`` 是本进程实际使用的解析结果，供组合根/渠道读取。
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.config: Config = Config()
+        self.raw: dict[str, Any] = json.loads(render_skeleton())
+        # ok | missing | invalid | unbound
+        self.status: str = 'missing'
+        self.issues: list[dict[str, str]] = []
+
+    @property
+    def runtime_ready(self) -> bool:
+        """本进程当前配置能否真正跑起来。
+
+        保存只改磁盘文档，不替换 ``config``，所以保存成功后这里仍为 False，
+        直到重启重新加载——这正是 P1「保存 → 重启生效」的语义来源。
+        """
+        return bool(self.config.models) and _binding_problem(self.config) is None
+
+    @property
+    def needs_setup(self) -> bool:
+        return not self.runtime_ready
+
+    def load(self) -> Config:
+        """读取并判定状态；任何失败都不抛，交给引导页展示。"""
+        self.issues = []
+        if not self.path.exists():
+            self.raw = json.loads(render_skeleton())
+            self.config = Config()
+            # 环境变量可以完整提供配置（无文件的高级用法）：能跑起来就不必
+            # 强制走引导页；否则交给首次配置向导。
+            usable = bool(self.config.models) and not _binding_problem(self.config)
+            self.status = 'ok' if usable else 'missing'
+            return self.config
+        try:
+            doc = json.loads(self.path.read_text(encoding='utf-8'))
+        except (OSError, ValueError) as exc:
+            self.status = 'invalid'
+            self.raw = {}
+            self.config = Config()
+            self.issues = [_issue('', f'无法解析 config.json：{exc}')]
+            return self.config
+        if not isinstance(doc, dict):
+            self.status = 'invalid'
+            self.raw = {}
+            self.config = Config()
+            self.issues = [_issue('', 'config.json 顶层必须是 JSON 对象')]
+            return self.config
+        try:
+            cfg = Config.model_validate(doc)
+        except ValidationError as exc:
+            self.status = 'invalid'
+            self.raw = doc
+            self.config = Config()
+            self.issues = _validation_issues(exc)
+            return self.config
+        self.raw = doc
+        self.config = cfg
+        problem = _binding_problem(cfg)
+        self.status = 'unbound' if problem else 'ok'
+        if problem:
+            self.issues = [problem]
+        return cfg
+
+    def setup_payload(self) -> dict[str, Any]:
+        """给前端的首次配置状态；required 为 True 时引导页不可跳过。"""
+        ready = self.runtime_ready
+        reason = 'ok' if ready else (
+            self.status if self.status != 'ok' else 'unbound')
+        return {
+            'required': not ready,
+            'reason': reason,
+            'configPath': str(self.path),
+            'issues': [] if ready else self.issues,
+        }
+
+    def masked_doc(self) -> dict[str, Any]:
+        """可安全下发的配置文档：apiKey 只给占位符。"""
+        doc = copy.deepcopy(self.raw)
+        providers = doc.get('providers')
+        if isinstance(providers, dict):
+            for value in providers.values():
+                if isinstance(value, dict) and value.get('apiKey'):
+                    value['apiKey'] = MASKED_SECRET
+        return doc
+
+    def restore_secrets(self, doc: dict[str, Any]) -> dict[str, Any]:
+        """把前端回传的占位符换回磁盘上的真实密钥。"""
+        doc = copy.deepcopy(doc)
+        providers = doc.get('providers')
+        if not isinstance(providers, dict):
+            return doc
+        current = self.raw.get('providers')
+        current = current if isinstance(current, dict) else {}
+        for key, value in providers.items():
+            if not isinstance(value, dict) or value.get('apiKey') != MASKED_SECRET:
+                continue
+            old = current.get(key)
+            value['apiKey'] = (
+                str(old.get('apiKey') or '') if isinstance(old, dict) else '')
+        return doc
+
+    def validate_doc(
+            self, doc: dict[str, Any]) -> tuple[Config | None, list[dict[str, str]]]:
+        """结构校验 + 可运行性校验；返回 (配置, 错误列表)。"""
+        try:
+            cfg = Config.model_validate(doc)
+        except ValidationError as exc:
+            return None, _validation_issues(exc)
+        problem = _binding_problem(cfg)
+        if problem:
+            return None, [problem]
+        return cfg, []
+
+    def save(self, doc: dict[str, Any]) -> Config:
+        """校验通过后原子写盘（0600）。保存不改变本进程正在使用的配置。"""
+        if not isinstance(doc, dict):
+            raise ConfigValidationError([_issue('', '配置必须是 JSON 对象')])
+        restored = self.restore_secrets(doc)
+        cfg, issues = self.validate_doc(restored)
+        if issues or cfg is None:
+            raise ConfigValidationError(issues or [_issue('', '配置不合法')])
+        text = json.dumps(restored, ensure_ascii=False, indent=2) + '\n'
+        save_or_create_file(self.path, text)
+        try:
+            os.chmod(self.path, 0o600)
+        except OSError:
+            pass
+        # 只更新磁盘视图：本进程继续用启动时的 config，重启后才切换
+        self.raw = restored
+        self.status = 'ok'
+        self.issues = []
+        return cfg
+
+    def reset(self) -> Path | None:
+        """备份现有文件并重建可运行骨架；返回备份路径（无旧文件则 None）。"""
+        backup = None
+        if self.path.exists():
+            stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+            backup = self.path.with_name(f'{self.path.name}.bak-{stamp}')
+            self.path.replace(backup)
+        self.load()
+        self.save(self.raw)
+        return backup
 
 
 def main(argv: list[str] | None = None, *,

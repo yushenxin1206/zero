@@ -20,14 +20,21 @@ Protocol (JSON text frames):
     {"type": "title", "title": "..."}             rename current session
     {"type": "model", "model": ""}                query / switch model
     {"type": "tasks"}                             list scheduled tasks
+    {"type": "skills"}                            list built-in skills
+    {"type": "config"}                            read config (masked)
+    {"type": "config", "op": "save", "config": {...}}    validate + persist
+    {"type": "config", "op": "test", "config": {...}}    test the draft config
+    {"type": "config", "op": "reset"}             backup + rebuild skeleton
 
   server → client
-    {"type": "state", ...}         current session / sessions / model
+    {"type": "state", ...}         current session / sessions / model / setup
     {"type": "history", ...}       session messages
     {"type": "stream", "event": {...}}   StreamEvent (delta/reasoning/...)
     {"type": "out", "message": {...}}    final MessageOut
     {"type": "sessions", ...}      session list refresh
     {"type": "tasks", ...}
+    {"type": "skills", ...}        skill metadata + skill.md content
+    {"type": "config", ...}        masked config / save result / test result
     {"type": "notice", "level": "info"|"error", "text": "..."}
 """
 import asyncio
@@ -43,7 +50,7 @@ from websockets.exceptions import ConnectionClosed
 from zero.bus.queue import BusQueueFull, MessageBus
 from zero.channels.base import BusChannel
 from zero.channels.service import ChannelService
-from zero.config import Config
+from zero.config import Config, ConfigManager, ConfigValidationError
 from zero.data_paths import DataPaths
 from zero.models import CHANNEL_WEB, MessageOut, StreamEvent
 from zero.permission.envelope import PermissionState
@@ -64,13 +71,16 @@ class WebChannel(BusChannel):
     def __init__(self, msg_bus: MessageBus, session_store: SessionStore,
                  scheduler_store: SchedulerStore, data_paths: DataPaths,
                  permission: PermissionState,
-                 config: Config | None = None):
+                 config: Config | None = None,
+                 config_manager: ConfigManager | None = None):
         super().__init__(msg_bus)
         self.service = ChannelService(
             CHANNEL, msg_bus=msg_bus, session_store=session_store,
             scheduler_store=scheduler_store, data_paths=data_paths,
             permission=permission, config=config)
         self.web_config = config.channels.web if config is not None else None
+        # 首次配置 / 设置面板的读写入口（P1：保存后需重启生效）
+        self.config_manager = config_manager
 
         self._clients: set[ServerConnection] = set()
 
@@ -194,6 +204,10 @@ class WebChannel(BusChannel):
                     "arguments": (call.function.arguments or "")[:400],
                 } for call in calls]
             messages.append(item)
+        # 只回显仍有可见消息的轮次：崩溃残留轮次会被 load_history 整轮
+        # 丢弃，但审批审计文件独立存在；不过滤就会变成无主审批卡
+        turn_ids = {
+            item["turnId"] for item in messages if item.get("turnId")}
         approvals = [{
             "reqId": rec.req_id,
             "turnId": rec.turn_id,
@@ -205,8 +219,20 @@ class WebChannel(BusChannel):
             "answer": rec.answer,
             "at": rec.created_at.timestamp() * 1000,
             "resolvedAt": rec.resolved_at.timestamp() * 1000,
-        } for rec in self.service.approvals(session_id)]
+        } for rec in self.service.approvals(session_id)
+            if rec.turn_id and rec.turn_id in turn_ids]
         return {"messages": messages, "approvals": approvals}
+
+    def _skills_sync(self) -> list[dict[str, Any]]:
+        return self.service.skills()
+
+    def _setup_payload(self) -> dict[str, Any]:
+        if self.config_manager is None:
+            return {
+                "required": False, "reason": "ok",
+                "configPath": "", "issues": [],
+            }
+        return self.config_manager.setup_payload()
 
     def _state_sync(self) -> dict[str, Any]:
         return {
@@ -219,6 +245,8 @@ class WebChannel(BusChannel):
             "sessions": self._sessions_sync(),
             "model": self.service.current_model(),
             "models": self.service.models(),
+            # 首次使用（无 config.json / 配置不可用）时前端据此打开引导页
+            "setup": self._setup_payload(),
         }
 
     def _tasks_sync(self, all_sessions: bool) -> list[dict[str, Any]]:
@@ -249,6 +277,9 @@ class WebChannel(BusChannel):
 
     async def _tasks(self, all_sessions: bool = False) -> list[dict[str, Any]]:
         return await asyncio.to_thread(self._tasks_sync, all_sessions)
+
+    async def _skills(self) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self._skills_sync)
 
     # ------------------------------------------------------------------
     # WebSocket handling
@@ -358,12 +389,124 @@ class WebChannel(BusChannel):
                 "all": all_sessions,
                 "tasks": await self._tasks(all_sessions),
             })
+        elif kind == "skills":
+            await self._send(ws, {
+                "type": "skills",
+                "skills": await self._skills(),
+            })
+        elif kind == "config":
+            await self._on_config(ws, data)
         else:
             logger.warning("unknown web message type: %r", kind)
+
+    async def _on_config(self, ws: ServerConnection, data: dict[str, Any]) -> None:
+        """配置读取 / 保存 / 测试 / 重置。
+
+        P1 语义：保存只落盘，进程内配置不变，界面提示重启后生效；
+        因此保存成功后返回 ``restartRequired=True``。
+        """
+        if self.config_manager is None:
+            await self._send(ws, {
+                "type": "notice", "level": "error", "text": "当前通道未注入配置读写入口",
+            })
+            return
+        op = str(data.get("op") or "read")
+        if op == "read":
+            await self._send(ws, {
+                "type": "config",
+                "config": await asyncio.to_thread(self.config_manager.masked_doc),
+                "setup": self._setup_payload(),
+            })
+            return
+        if op == "reset":
+            try:
+                backup = await asyncio.to_thread(self.config_manager.reset)
+            except Exception as exc:  # noqa: BLE001 - 失败要回显给设置页
+                logger.exception("config reset failed")
+                await self._send(ws, {
+                    "type": "config", "saved": False,
+                    "issues": [{"path": "", "message": f"重置失败：{exc}"}],
+                })
+                return
+            await self._send(ws, {
+                "type": "config",
+                "saved": True,
+                "restartRequired": True,
+                "backup": str(backup) if backup else "",
+                "config": self.config_manager.masked_doc(),
+                "setup": self._setup_payload(),
+            })
+            return
+
+        draft = data.get("config")
+        if not isinstance(draft, dict):
+            await self._send(ws, {
+                "type": "config", "saved": False,
+                "issues": [{"path": "", "message": "缺少配置内容"}],
+            })
+            return
+
+        if op == "test":
+            await self._on_config_test(ws, draft)
+            return
+        if op != "save":
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": f"未知的配置操作：{op}",
+            })
+            return
+
+        try:
+            await asyncio.to_thread(self.config_manager.save, draft)
+        except ConfigValidationError as exc:
+            await self._send(ws, {
+                "type": "config", "saved": False, "issues": exc.issues,
+            })
+            return
+        except OSError as exc:
+            logger.exception("config write failed")
+            await self._send(ws, {
+                "type": "config", "saved": False,
+                "issues": [{"path": "", "message": f"写入 config.json 失败：{exc}"}],
+            })
+            return
+        await self._send(ws, {
+            "type": "config",
+            "saved": True,
+            "restartRequired": True,
+            "config": self.config_manager.masked_doc(),
+            "setup": self._setup_payload(),
+        })
+
+    async def _on_config_test(
+            self, ws: ServerConnection, draft: dict[str, Any]) -> None:
+        """用前端提交的草稿配置测连通性（不落盘、不影响当前运行配置）。"""
+        restored = await asyncio.to_thread(
+            self.config_manager.restore_secrets, draft)
+        cfg, issues = await asyncio.to_thread(
+            self.config_manager.validate_doc, restored)
+        if issues or cfg is None:
+            await self._send(ws, {
+                "type": "config", "op": "test", "ok": False,
+                "issues": issues, "error": "配置本身不完整，先修正后再测试",
+            })
+            return
+        try:
+            result = await self.service.test_connection(cfg)
+        except Exception as exc:  # noqa: BLE001 - 回显失败原因，不中断连接
+            logger.exception("config connection test failed")
+            result = {"ok": False, "error": f"连接测试失败：{exc}"}
+        await self._send(ws, {"type": "config", "op": "test", **result})
 
     async def _on_send(self, ws: ServerConnection, data: dict[str, Any]) -> None:
         text = str(data.get("text") or "").strip()
         if not text:
+            return
+        if self.config_manager is not None and self.config_manager.needs_setup:
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "请先完成首次配置",
+            })
             return
         try:
             msg = await self.service.submit(text)

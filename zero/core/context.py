@@ -12,17 +12,13 @@ from pathlib import Path
 from uuid import uuid4
 from xml.sax.saxutils import escape
 
-import frontmatter
-
 from zero.models import Message, MessageBody, CompactRecord, ToolContext
 from zero.session.store import SessionStore, apply_compact
+from zero.skill_catalog import SKILLS_ROOT, parse_skill_meta
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
 from zero.data_paths import DataPaths
 
-
-# 包安装目录（skills 等内置资源所在位置），与运行目录无关
-PKG_ROOT = Path(__file__).parent.parent
 
 # shell 执行形态契约（平台固定）：Windows 走 cmd.exe，POSIX 是不带 shell 的
 # 直接 exec（管道/重定向/&& 均不可用）。
@@ -272,20 +268,9 @@ Durable facts, conventions and decisions about the current project (working dire
 </project_memory>\
 """
 
-    @staticmethod
-    def _parse_skill_meta(skill_file: Path) -> dict[str, str]:
-        """Parse YAML frontmatter of a skill.md file for name and description."""
-        try:
-            post = frontmatter.load(skill_file)
-        except (OSError, ValueError):
-            return {}
-        # 走 frontmatter.Post 的映射接口，不直接碰 .metadata 属性——
-        # 全仓库禁止核心层访问 Message/StreamEvent 的 metadata 口袋
-        return {k: str(post[k]).strip() for k in post.keys()}
-
     @property
     def _skills(self) -> str:
-        skills_path = PKG_ROOT / "skills"
+        skills_path = SKILLS_ROOT
         skill_files = sorted(skills_path.glob("*/skill.md")) if skills_path.is_dir() else []
         if not skill_files:
             return ""
@@ -302,7 +287,7 @@ Durable facts, conventions and decisions about the current project (working dire
 
         entries: list[str] = []
         for skill_file in skill_files:
-            meta = self._parse_skill_meta(skill_file)
+            meta = parse_skill_meta(skill_file)
             entries.append(
                 f"  <skill>\n"
                 f"    <name>{escape(meta.get('name', ''))}</name>\n"

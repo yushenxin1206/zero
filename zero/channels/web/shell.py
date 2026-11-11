@@ -14,6 +14,8 @@ finish and the process exit.
 """
 import asyncio
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -37,11 +39,15 @@ def _read_theme(path: Path | None) -> str:
 
 
 class _BootstrapApi:
-    """Minimal js_api surface: startup info + theme persistence."""
+    """Minimal js_api surface: startup info + theme persistence + restart."""
 
     def __init__(self, holder: dict[str, Any], theme_path: Path | None = None):
         self._holder = holder
         self._theme_path = theme_path
+        self._window: Any = None
+
+    def attach_window(self, window: Any) -> None:
+        self._window = window
 
     def bootstrap(self) -> dict[str, Any]:
         return {
@@ -50,6 +56,29 @@ class _BootstrapApi:
             "token": self._holder.get("token", ""),
             "error": self._holder.get("error", ""),
         }
+
+    def restart_app(self) -> bool:
+        """保存配置后的重启入口：停后端 → 关窗 → worker 拉起新进程。
+
+        先让后端收敛（端口/文件句柄释放），新进程由 worker 在事件循环关闭
+        后拉起；窗口必须销毁，否则 GUI 循环不会退出。关窗失败时回退为
+        False，让前端提示用户手动重启，而不是留下一个断线的窗口。
+        """
+        self._holder["restart"] = True
+        if self._window is not None:
+            try:
+                self._window.destroy()
+            except Exception:  # noqa: BLE001 - 关窗失败要回退，不能卡在半途
+                logger.warning("failed to destroy window on restart", exc_info=True)
+                self._holder["restart"] = False
+                return False
+        loop = self._holder.get("loop")
+        stop = self._holder.get("stop")
+        if loop is not None and stop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(stop.set)
+        else:
+            self._holder["closed"] = True
+        return True
 
     def set_theme(self, theme: str) -> bool:
         """持久化主题选择。file:// 下 localStorage 不可用，所以写文件。"""
@@ -65,6 +94,32 @@ class _BootstrapApi:
             logger.warning("failed to persist web theme", exc_info=True)
             return False
         return True
+
+
+def _relaunch() -> bool:
+    """按当前启动方式拉起新进程（配置保存后的重启）。
+
+    - ``python -m zero``：argv[0] 是 __main__.py，按模块方式重启；
+    - 控制台脚本 ``zero``：argv[0] 是脚本路径，用当前解释器执行它；
+    - 冻结打包：argv[0] 即可执行文件。
+    """
+    args = list(sys.argv[1:])
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, *args]
+    else:
+        entry = sys.argv[0] if sys.argv else ""
+        if not entry or entry.endswith("__main__.py"):
+            cmd = [sys.executable, "-m", "zero", *args]
+        else:
+            cmd = [sys.executable, entry, *args]
+    try:
+        # 后端已退出（端口/句柄已释放），这里拉起的新进程可以直接绑定
+        subprocess.Popen(cmd, close_fds=True, start_new_session=True)
+    except OSError:
+        logger.exception("restart failed: %s", cmd)
+        return False
+    logger.info("restarted: %s", cmd)
+    return True
 
 
 def run_desktop(
@@ -102,6 +157,7 @@ def run_desktop(
         min_size=(760, 520),
         text_select=True,
     )
+    api.attach_window(window)
 
     def on_closed():
         loop = holder.get("loop")
@@ -129,5 +185,8 @@ def run_desktop(
                 loop.run_until_complete(loop.shutdown_asyncgens())
             finally:
                 loop.close()
+                # 配置保存后的自动重启：后端已收敛，这里拉起新进程
+                if holder.get("restart") and not _relaunch():
+                    holder["error"] = "重启失败，请手动关闭并重新启动 zero"
 
     webview.start(func=worker, private_mode=False)
