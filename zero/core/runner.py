@@ -326,6 +326,9 @@ class AgentRunner:
                 tool_calls=tool_calls,
                 token_usage=usage,
             ),
+            # 中间消息也带 turn_id：Web 历史据此把同一轮的工具调用和正文
+            # 聚合成一个气泡，与实时渲染保持一致
+            turn_id=self.context.tool_context.turn_id,
         )
         await self.context.arecord(msg_out)
 
@@ -399,6 +402,7 @@ class AgentRunner:
                 content=content,
                 tool_call_id=tc.id,
             ),
+            turn_id=self.context.tool_context.turn_id,
         )
 
     async def _persist_tool_result_async(self, tc: ToolCall, content: str) -> None:

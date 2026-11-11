@@ -398,6 +398,18 @@
     transition: color var(--dur) var(--ease);
   }
   .session.active .t { color: var(--text-1); }
+  .session.unread .t { padding-right: 14px; }
+  .session.unread::after {
+    content: "";
+    position: absolute;
+    right: 11px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--danger);
+  }
   .session .m {
     margin-top: 2px;
     font: 500 10.5px/1.5 var(--mono);
@@ -852,6 +864,31 @@
     font: 600 11px/1.5 var(--mono);
   }
   .approval-foot { margin-top: 9px; font-size: 11px; color: var(--text-3); }
+  .approval.history { animation: none; }
+  .approval-choices { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+  .approval-choice {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    font-size: 12px;
+    color: var(--text-3);
+  }
+  .approval-choice.chosen {
+    color: var(--text-1);
+    border-color: var(--line-strong);
+    background: var(--fill-2);
+  }
+  .approval-choice .key {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: var(--r-xs);
+    background: var(--fill-3);
+    color: var(--text-2);
+    font: 600 11px/1.5 var(--mono);
+  }
 
   /* subagent */
   .subagent {
@@ -1113,6 +1150,44 @@
   .task-status.s-cancelled { color: var(--text-3); border-color: var(--line); }
   .task-meta { font: 500 10.5px/1.5 var(--mono); color: var(--text-3); }
   .task-text { margin-top: 5px; font-size: 13px; line-height: 1.65; color: var(--text-2); overflow-wrap: anywhere; }
+  .modal-body.tasks-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .tasks-toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line-weak);
+  }
+  .seg {
+    display: inline-flex;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--fill-2);
+  }
+  .seg-btn {
+    border: none;
+    border-radius: var(--r-pill);
+    padding: 4px 11px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .seg-btn.active { background: var(--surface-1); color: var(--text-1); box-shadow: var(--sh-1); }
+  .tasks-count { font: 500 10.5px/1.4 var(--mono); color: var(--text-3); }
+  .tasks-list { flex: 1; min-height: 0; overflow-y: auto; padding-right: 2px; }
+  .tasks-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding-top: 12px;
+    margin-top: 6px;
+    border-top: 1px solid var(--line-weak);
+  }
+  .tasks-pager span { font: 500 11px/1 var(--mono); color: var(--text-3); }
+  .tasks-pager button { padding: 4px 10px; font-size: 12px; }
   .modal-state {
     display: flex;
     flex-direction: column;
@@ -1128,7 +1203,8 @@
   /* ================= toast ================= */
   #toast {
     position: fixed;
-    left: 50%;
+    /* 相对主对话区（排除侧栏）居中，而不是整个窗口 */
+    left: calc(var(--sidebar-w) + (100% - var(--sidebar-w)) / 2);
     bottom: 96px;
     transform: translateX(-50%);
     z-index: 50;
@@ -1384,12 +1460,17 @@
     activeTurnId: "",
     active: null,
     doneTurns: new Set(),
+    otherTurns: new Set(),
+    unread: new Set(),
     connecting: false,
     reconnectCount: 0,
     booted: false,
     follow: true,
     modalKind: "",
     tasksTimer: 0,
+    tasksAll: false,
+    tasksPage: 0,
+    tasksItems: [],
   };
 
   function escapeHtml(value) {
@@ -1719,7 +1800,10 @@
     }
     const current = state.session ? state.session.id : "";
     state.sessions.forEach((s) => {
-      const row = el("div", "session" + (s.id === current ? " active" : ""));
+      const unread = state.unread.has(s.id) && s.id !== current;
+      const row = el("div", "session"
+        + (s.id === current ? " active" : "")
+        + (unread ? " unread" : ""));
       row.setAttribute("role", "listitem");
       const title = el("div", "t");
       title.textContent = s.title || "未命名会话";
@@ -1731,6 +1815,13 @@
       row.onclick = () => selectSession(s.id);
       box.appendChild(row);
     });
+  }
+
+  function markUnread(sessionId) {
+    if (!sessionId || state.unread.has(sessionId)) return;
+    if (state.session && sessionId === state.session.id) return;
+    state.unread.add(sessionId);
+    renderSessions();
   }
 
   function selectSession(id) {
@@ -1835,9 +1926,95 @@
     return row;
   }
 
+  function buildHistoryTurns(messages, approvals) {
+    const turns = [];
+    let current = null;
+    const startTurn = (user) => {
+      current = { user: user || null, entries: [], turnIds: new Set() };
+      turns.push(current);
+      return current;
+    };
+    messages.forEach((m) => {
+      if (m.compact) {
+        turns.push({ compact: m });
+        current = null;
+        return;
+      }
+      if (m.role === "user") {
+        startTurn(m);
+        return;
+      }
+      if (m.role !== "assistant") return;
+      const turnId = m.turnId || "";
+      if (!current) {
+        startTurn(null);
+      } else if (turnId && current.turnIds.size
+          && !current.turnIds.has(turnId)) {
+        startTurn(null);
+      }
+      if (turnId) current.turnIds.add(turnId);
+      const at = Number(m.at) || 0;
+      (m.toolCalls || []).forEach((call) => {
+        current.entries.push({
+          kind: "tool",
+          at,
+          text: `${call.name || ""}(${call.arguments || ""})`,
+        });
+      });
+      if ((m.content || "").trim()) {
+        current.entries.push({ kind: "text", at, text: m.content });
+      }
+    });
+
+    let lastTurn = null;
+    const byTurnId = new Map();
+    turns.forEach((t) => {
+      if (!t.entries) return;
+      lastTurn = t;
+      t.turnIds.forEach((id) => byTurnId.set(id, t));
+    });
+    (approvals || []).forEach((rec) => {
+      let target = rec.turnId ? byTurnId.get(rec.turnId) : null;
+      if (!target) target = lastTurn;
+      if (!target) target = startTurn(null);
+      target.entries.push({
+        kind: "approval",
+        at: Number(rec.at) || 0,
+        approval: rec,
+      });
+    });
+    turns.forEach((t) => {
+      if (t.entries) t.entries.sort((a, b) => a.at - b.at);
+    });
+    return turns;
+  }
+
+  function addHistoricalTurn(turn) {
+    removeEmpty();
+    const { row, bubble } = assistantRow("zero");
+    const parts = el("div", "parts");
+    bubble.appendChild(parts);
+    turn.entries.forEach((entry) => {
+      if (entry.kind === "tool") {
+        parts.appendChild(buildToolChip(entry.text, true));
+      } else if (entry.kind === "approval") {
+        parts.appendChild(buildApprovalHistoryCard(entry.approval));
+      } else {
+        const part = el("div", "part-text");
+        const md = el("div", "md");
+        md.innerHTML = renderMarkdown(entry.text);
+        part.appendChild(md);
+        parts.appendChild(part);
+      }
+    });
+    scrollBottom(false);
+    return row;
+  }
+
   function applyHistory(msg) {
     if (!state.session || msg.sessionId !== state.session.id) return;
     state.historySession = msg.sessionId;
+    if (state.unread.delete(msg.sessionId)) renderSessions();
     if (state.active && state.active.renderTimer) {
       clearTimeout(state.active.renderTimer);
     }
@@ -1847,16 +2024,21 @@
 
     const box = $("#messages");
     box.innerHTML = "";
-    const messages = msg.messages || [];
-    const rows = messages.map((m) => {
-      if (m.compact) return addCompact(m.content);
-      if (m.role === "user") return addUser(m.content);
-      return addAssistantStatic(m.content);
+    const turns = buildHistoryTurns(
+      msg.messages || [], msg.approvals || []);
+    const rows = [];
+    turns.forEach((turn) => {
+      if (turn.compact) {
+        rows.push(addCompact(turn.compact.content));
+        return;
+      }
+      if (turn.user) rows.push(addUser(turn.user.content));
+      if (turn.entries.length) rows.push(addHistoricalTurn(turn));
     });
     rows.forEach((row, index) => {
       if (row) row.style.animationDelay = Math.min(index * 14, 150) + "ms";
     });
-    if (!messages.length) {
+    if (!turns.length) {
       box.innerHTML = emptyStateHtml();
     }
     state.follow = true;
@@ -1956,20 +2138,23 @@
     scheduleRender(active);
   }
 
-  function addToolChip(active, raw) {
+  function buildToolChip(raw, done) {
     const text = String(raw || "").trim();
     const cut = text.indexOf("(");
     const name = cut > 0 ? text.slice(0, cut) : text;
     const rest = cut > 0 ? text.slice(cut) : "";
-    const item = { type: "tool", text };
-    active.items.push(item);
-    active.streamItem = null;
-    const chip = el("div", "tool-chip");
+    const chip = el("div", "tool-chip" + (done ? " done" : ""));
     chip.innerHTML = icon("terminal", "tool-ico") +
       '<span class="tool-text"><span class="tool-name">' +
       escapeHtml(clip(name, 60)) + "</span>" +
       escapeHtml(clip(rest, 220)) + "</span>";
-    active.parts.appendChild(chip);
+    return chip;
+  }
+
+  function addToolChip(active, raw) {
+    active.items.push({ type: "tool", text: String(raw || "") });
+    active.streamItem = null;
+    active.parts.appendChild(buildToolChip(raw, false));
     scrollBottom(false);
   }
 
@@ -2092,6 +2277,51 @@
     scrollBottom(false);
   }
 
+  function approvalOutcome(rec) {
+    if (rec.status === "timeout") return "已超时，按拒绝处理";
+    if (rec.status === "cancelled") return "本轮已终止，审批未完成";
+    const opt = (rec.options || []).find((o) => o.key === rec.answer);
+    return "结果：" + (opt ? opt.label : (rec.answer || "已处理"));
+  }
+
+  function buildApprovalHistoryCard(rec) {
+    const denied = rec.status === "answered" && rec.answer === "n";
+    const card = el("div", "approval history");
+    if (rec.status === "answered") card.classList.add(denied ? "no" : "ok");
+    const head = el("div", "approval-head");
+    const ok = rec.status === "answered" && !denied;
+    head.innerHTML = icon(ok ? "check" : (denied ? "x" : "alert")) +
+      `<span>${escapeHtml(rec.title || "需要确认")}</span>`;
+    card.appendChild(head);
+    if (rec.summary) {
+      const summary = el("div", "approval-summary");
+      summary.textContent = rec.summary;
+      card.appendChild(summary);
+    }
+    if (rec.detail) {
+      const detail = el("div", "approval-detail");
+      detail.textContent = rec.detail;
+      card.appendChild(detail);
+    }
+    const options = rec.options || [];
+    if (options.length) {
+      const choices = el("div", "approval-choices");
+      options.forEach((opt) => {
+        const chip = el("span",
+          "approval-choice" + (opt.key === rec.answer ? " chosen" : ""));
+        chip.innerHTML = `<span class="key">${escapeHtml(opt.key)}</span>` +
+          `<span>${escapeHtml(opt.label)}</span>`;
+        if (opt.description) chip.title = opt.description;
+        choices.appendChild(chip);
+      });
+      card.appendChild(choices);
+    }
+    const foot = el("div", "approval-foot");
+    foot.textContent = approvalOutcome(rec);
+    card.appendChild(foot);
+    return card;
+  }
+
   function finalize(turnId) {
     const active = state.active;
     if (active && (!turnId || active.turnId === turnId)) {
@@ -2120,8 +2350,15 @@
   function onStream(ev) {
     if (!ev) return;
     if (ev.sessionId && state.session && ev.sessionId !== state.session.id) {
-      toast("其它会话有新输出", "info");
-      requestSessions();
+      // 同一轮会有 reasoning/delta/tool_call/done 多个流事件：
+      // 按 turnId 去重，只在首次提示一次，避免一次回复弹出一串 toast
+      if (ev.turnId && !state.otherTurns.has(ev.turnId)) {
+        state.otherTurns.add(ev.turnId);
+        if (state.otherTurns.size > 80) state.otherTurns.clear();
+        toast("其它会话有新输出", "info");
+        requestSessions();
+      }
+      markUnread(ev.sessionId);
       return;
     }
     if (!state.session) return;
@@ -2186,6 +2423,7 @@
   function onOut(msg) {
     if (!msg) return;
     if (msg.sessionId && state.session && msg.sessionId !== state.session.id) {
+      markUnread(msg.sessionId);
       requestSessions();
       return;
     }
@@ -2227,7 +2465,11 @@
       case "tasks": {
         clearTimeout(state.tasksTimer);
         state.tasksTimer = 0;
-        if (state.modalKind === "tasks") showTasksModal(msg.tasks || []);
+        if (state.modalKind !== "tasks") break;
+        state.tasksAll = !!msg.all;
+        state.tasksItems = msg.tasks || [];
+        renderTasksScope();
+        renderTasksModal();
         break;
       }
       case "notice":
@@ -2345,7 +2587,9 @@
   function openModal(title, html, actionsHtml) {
     $("#modal-title").textContent = title;
     $("#modal-actions").innerHTML = actionsHtml || "";
-    $("#modal-body").innerHTML = html;
+    const body = $("#modal-body");
+    body.className = "modal-body";
+    body.innerHTML = html;
     $("#modal").classList.remove("hidden");
   }
 
@@ -2392,13 +2636,56 @@
     });
   }
 
+  const TASKS_PAGE_SIZE = 10;
+
   function openTasksModal() {
     state.modalKind = "tasks";
+    state.tasksAll = false;
+    state.tasksPage = 0;
+    state.tasksItems = [];
     openModal("定时任务", "",
       `<button id="tasks-refresh">${icon("refresh")}<span>刷新</span></button>` +
       `<button id="modal-close">关闭</button>`);
+    $("#modal-body").classList.add("tasks-body");
+    $("#modal-body").innerHTML =
+      `<div class="tasks-toolbar">` +
+        `<div class="seg" role="tablist" aria-label="任务范围">` +
+          `<button id="tasks-scope-session" class="seg-btn" role="tab">当前会话</button>` +
+          `<button id="tasks-scope-all" class="seg-btn" role="tab">全部会话</button>` +
+        `</div>` +
+        `<span id="tasks-count" class="tasks-count"></span>` +
+      `</div>` +
+      `<div id="tasks-list" class="tasks-list"></div>` +
+      `<div id="tasks-pager" class="tasks-pager hidden">` +
+        `<button id="tasks-prev">上一页</button>` +
+        `<span id="tasks-page-info"></span>` +
+        `<button id="tasks-next">下一页</button>` +
+      `</div>`;
     $("#modal-close").onclick = closeModal;
     $("#tasks-refresh").onclick = () => requestTasks();
+    $("#tasks-scope-session").onclick = () => switchTasksScope(false);
+    $("#tasks-scope-all").onclick = () => switchTasksScope(true);
+    $("#tasks-prev").onclick = () => changeTasksPage(-1);
+    $("#tasks-next").onclick = () => changeTasksPage(1);
+    renderTasksScope();
+    requestTasks();
+  }
+
+  function renderTasksScope() {
+    const sessionBtn = $("#tasks-scope-session");
+    const allBtn = $("#tasks-scope-all");
+    if (!sessionBtn || !allBtn) return;
+    sessionBtn.classList.toggle("active", !state.tasksAll);
+    allBtn.classList.toggle("active", state.tasksAll);
+    sessionBtn.setAttribute("aria-selected", String(!state.tasksAll));
+    allBtn.setAttribute("aria-selected", String(state.tasksAll));
+  }
+
+  function switchTasksScope(all) {
+    if (state.tasksAll === all) return;
+    state.tasksAll = all;
+    state.tasksPage = 0;
+    renderTasksScope();
     requestTasks();
   }
 
@@ -2406,11 +2693,14 @@
     clearTimeout(state.tasksTimer);
     const btn = $("#tasks-refresh");
     if (btn) btn.disabled = true;
-    $("#modal-body").innerHTML = tasksSkeletonHtml();
+    const list = $("#tasks-list");
+    if (list) list.innerHTML = tasksSkeletonHtml();
+    const pager = $("#tasks-pager");
+    if (pager) pager.classList.add("hidden");
     state.tasksTimer = setTimeout(() => {
         if (state.modalKind === "tasks") showTasksError("加载超时，请检查后端状态");
     }, 8000);
-    if (!send({ type: "tasks" })) {
+    if (!send({ type: "tasks", all: state.tasksAll })) {
       clearTimeout(state.tasksTimer);
       state.tasksTimer = 0;
       showTasksError("未连接到后端");
@@ -2427,14 +2717,16 @@
     if (state.modalKind !== "tasks") return;
     const btn = $("#tasks-refresh");
     if (btn) btn.disabled = false;
-    $("#modal-body").innerHTML =
+    const list = $("#tasks-list");
+    if (!list) return;
+    list.innerHTML =
       `<div class="modal-state">${icon("alert")}` +
       `<div>${escapeHtml(text)}</div>` +
       `<button id="tasks-retry">${icon("refresh")}<span>重试</span></button></div>`;
     $("#tasks-retry").onclick = () => requestTasks();
   }
 
-  function showTasksModal(tasks) {
+  function renderTasksModal() {
     const STATUS_LABELS = {
       pending: "等待中",
       running: "进行中",
@@ -2444,14 +2736,24 @@
     };
     const btn = $("#tasks-refresh");
     if (btn) btn.disabled = false;
-    const body = $("#modal-body");
-    body.innerHTML = "";
-    if (tasks.length === 0) {
-      body.innerHTML =
-        `<div class="modal-state">${icon("clock")}<div>当前会话暂无定时任务</div></div>`;
+    const list = $("#tasks-list");
+    if (!list) return;
+    list.innerHTML = "";
+    const items = state.tasksItems;
+    const count = $("#tasks-count");
+    if (count) count.textContent = items.length ? `共 ${items.length} 项` : "";
+    if (items.length === 0) {
+      const hint = state.tasksAll ? "暂无定时任务" : "当前会话暂无定时任务";
+      list.innerHTML =
+        `<div class="modal-state">${icon("clock")}<div>${hint}</div></div>`;
+      const pager = $("#tasks-pager");
+      if (pager) pager.classList.add("hidden");
       return;
     }
-    tasks.forEach((task) => {
+    const pages = Math.max(1, Math.ceil(items.length / TASKS_PAGE_SIZE));
+    if (state.tasksPage > pages - 1) state.tasksPage = pages - 1;
+    const start = state.tasksPage * TASKS_PAGE_SIZE;
+    items.slice(start, start + TASKS_PAGE_SIZE).forEach((task) => {
       const item = el("div", "task-item");
       const head = el("div", "task-head");
       const status = el("span", "task-status s-" + String(task.status || "pending"));
@@ -2460,14 +2762,34 @@
       const meta = el("span", "task-meta");
       const next = task.triggerAt ? " · 下次 " + task.triggerAt : "";
       const cron = task.cron ? " · " + task.cron : "";
-      meta.textContent = `${task.scheduleType || ""}${next}${cron} · ${String(task.id).slice(0, 8)}`;
+      const session = state.tasksAll && task.sessionId
+        ? " · 会话 " + String(task.sessionId).slice(0, 8) : "";
+      meta.textContent =
+        `${task.scheduleType || ""}${next}${cron}${session} · ${String(task.id).slice(0, 8)}`;
       head.appendChild(meta);
       const text = el("div", "task-text");
       text.textContent = task.instruction;
       item.appendChild(head);
       item.appendChild(text);
-      body.appendChild(item);
+      list.appendChild(item);
     });
+    const pager = $("#tasks-pager");
+    if (pager) pager.classList.toggle("hidden", pages <= 1);
+    $("#tasks-page-info").textContent = `${state.tasksPage + 1} / ${pages}`;
+    $("#tasks-prev").disabled = state.tasksPage <= 0;
+    $("#tasks-next").disabled = state.tasksPage >= pages - 1;
+  }
+
+  function changeTasksPage(delta) {
+    const pages = Math.max(1,
+      Math.ceil(state.tasksItems.length / TASKS_PAGE_SIZE));
+    const next = Math.min(pages - 1,
+      Math.max(0, state.tasksPage + delta));
+    if (next === state.tasksPage) return;
+    state.tasksPage = next;
+    renderTasksModal();
+    const list = $("#tasks-list");
+    if (list) list.scrollTop = 0;
   }
 
   /* ================= toast ================= */

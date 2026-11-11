@@ -31,6 +31,7 @@ Session-level files inside {session_dir}:
     messages.jsonl  append-only 原始消息
     compact.json    上下文压缩记录（CompactRecord）
     summary.json    会话复盘（SessionSummary，maintenance session_summary 写入）
+    approvals.jsonl 审批审计（ApprovalRecord，仅历史回显，不进模型上下文）
 """
 import json
 import logging
@@ -47,7 +48,8 @@ try:
 except ImportError:  # pragma: no cover - Windows 无 fcntl，退化为仅进程内锁
     fcntl = None
 
-from zero.models import Message, MessageBody, MessageTool, CompactRecord
+from zero.models import (
+    ApprovalRecord, CompactRecord, Message, MessageBody, MessageTool)
 from zero.session.models import SessionMeta, SessionSummary, TurnMarker
 from zero.utils.file import save_or_create_file
 
@@ -246,6 +248,9 @@ class SessionStore:
 
     def _summary_file(self, channel: str, session_id: str) -> Path:
         return self.session_dir(channel, session_id) / "summary.json"
+
+    def _approvals_file(self, channel: str, session_id: str) -> Path:
+        return self.session_dir(channel, session_id) / "approvals.jsonl"
 
     # ------------------------------------------------------------------
     # Public API
@@ -490,6 +495,48 @@ class SessionStore:
         """Atomically persist a compression record (tmp file + replace)."""
         save_or_create_file(
             self._compact_file(channel, session_id), record.model_dump_json())
+
+    # ------------------------------------------------------------------
+    # Approval audit log
+    # ------------------------------------------------------------------
+
+    def append_approval(self, record: ApprovalRecord) -> None:
+        """Append one resolved approval to the session's audit log.
+
+        与 messages.jsonl 分开存放：审批记录只服务历史回显与排查，不参与
+        turn 分组、模型上下文或压缩。写入失败由调用方决定是否忽略，避免
+        审计日志故障影响审批本身。
+        """
+        path = self._approvals_file(record.channel, record.session_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(record.model_dump_json() + "\n")
+
+    def load_approvals(
+            self, channel: str, session_id: str) -> list[ApprovalRecord]:
+        """Load approval audit records, oldest first. Bad lines are skipped."""
+        path = self._approvals_file(channel, session_id)
+        if not path.exists():
+            return []
+        records: dict[str, ApprovalRecord] = {}
+        try:
+            with path.open("r", encoding="utf-8") as f:
+                for line_number, line in enumerate(f, start=1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = ApprovalRecord.model_validate_json(line)
+                    except ValueError:
+                        logger.warning(
+                            "跳过无法解析的审批记录（%s 第 %d 行）：%s",
+                            path, line_number, line[:120])
+                        continue
+                    records[record.req_id] = record
+        except OSError:
+            logger.warning("读取审批记录失败：%s", path, exc_info=True)
+            return []
+        return sorted(records.values(), key=lambda r: r.created_at)
 
     # 加载期占位 tool 结果的固定文案：既是给 LLM 的中性说明，也是
     # 加载期补写占位的固定文案。读取方不再靠文案识别，改用 synthetic 字段。

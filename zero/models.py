@@ -298,6 +298,30 @@ class ApprovalRequest(Base):
     deadline: float = 0.0  # unix 时间戳，channel 与后端共用的权威超时点
 
 
+ApprovalStatus = Literal["answered", "timeout", "cancelled"]
+
+
+class ApprovalRecord(Base):
+    """审批的审计记录（写入会话目录，不进入模型上下文）。
+
+    只在审批结束时落一条最终态：成功作答时 ``status="answered"`` 并带上
+    选项 key；超时/终止则记录对应状态。历史回放据此渲染只读审批卡，
+    不参与 ``to_openai`` 或上下文压缩。
+    """
+    req_id: str
+    channel: str = ""
+    session_id: str = ""
+    turn_id: str = ""
+    title: str
+    summary: str
+    detail: str = ""
+    options: list[ApprovalOption] = Field(default_factory=list)
+    status: ApprovalStatus = "answered"
+    answer: str = ""
+    created_at: datetime = Field(default_factory=datetime.now)
+    resolved_at: datetime = Field(default_factory=datetime.now)
+
+
 # ---------------------------------------------------------------------------
 # Configuration models
 # ---------------------------------------------------------------------------

@@ -18,7 +18,7 @@ from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
 from zero.permission.envelope import PermissionState
-from zero.models import Message, MessageBody, MessageIn, StopRequest
+from zero.models import ApprovalRecord, Message, MessageBody, MessageIn, StopRequest
 from zero.data_paths import DataPaths
 from zero.scheduler.models import ScheduleTask
 from zero.scheduler.store import SchedulerStore
@@ -187,26 +187,49 @@ class ChannelService:
             session_id or self.session_id, self.channel)
 
     def display_history(self, session_id: str | None = None) -> list[Message]:
-        """Conversation messages a user can be shown (no tool traffic)."""
+        """Conversation messages a user can be shown (no tool traffic).
+
+        Assistant messages that only trigger tools are kept: channels use
+        their ``tool_calls`` to rebuild the same tool chips users saw live.
+        Tool result bodies are still excluded — live channels never render
+        them either.
+        """
         return [
             m for m in self.history(session_id)
-            if m.sender in ("user", "assistant") and m.body.content
+            if (m.sender == "user" and m.body.content)
+            or (m.sender == "assistant"
+                and (m.body.content or m.body.tool_calls))
         ]
+
+    def approvals(self, session_id: str | None = None) -> list[ApprovalRecord]:
+        """Audit records for approvals that happened in this session."""
+        return self.session_store.load_approvals(
+            self.channel, session_id or self.session_id)
 
     # ------------------------------------------------------------------
     # Scheduled tasks
     # ------------------------------------------------------------------
 
     def tasks(self, *, all_sessions: bool = False) -> list[ScheduleTask]:
-        """This channel's tasks for the current session (or all sessions)."""
+        """This channel's tasks for the current session (or all sessions).
+
+        Newest next-run first: recurring tasks use the advanced
+        ``trigger_at`` as their next execution time; tasks without a
+        trigger are listed last.
+        """
         tasks = [
             t for t in self.scheduler_store.load_all()
             if t.channel == self.channel
             and (all_sessions or t.session_id == self.session_id)
         ]
-        return sorted(
-            tasks, key=lambda t: (t.trigger_at is None,
-                                  t.trigger_at or t.created_at))
+        tasks.sort(
+            key=lambda t: (
+                t.trigger_at is not None,
+                t.trigger_at or datetime.min,
+            ),
+            reverse=True,
+        )
+        return tasks
 
     def task(self, task_id: str) -> ScheduleTask | None:
         """Look up a single scheduled task by id."""

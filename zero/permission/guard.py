@@ -17,16 +17,21 @@ import asyncio
 import logging
 import shlex
 import time
+from datetime import datetime
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import (
-    APPROVAL_TIMEOUT_SECONDS, EVENT_APPROVAL, ApprovalOption, ApprovalRequest,
-    StreamEvent)
+    APPROVAL_TIMEOUT_SECONDS, EVENT_APPROVAL, ApprovalOption, ApprovalRecord,
+    ApprovalRequest, ApprovalStatus, StreamEvent)
 from zero.permission import envelope
 from zero.permission.envelope import PermissionState
+
+if TYPE_CHECKING:
+    from zero.session.store import SessionStore
 
 logger = logging.getLogger(__name__)
 
@@ -70,9 +75,17 @@ async def request(
         summary: str,
         detail: str,
         options: tuple[ApprovalOption, ...],
+        store: "SessionStore | None" = None,
 ) -> str | None:
-    """发出审批请求并等待作答。返回选项 key，None = 超时/已终止。"""
+    """发出审批请求并等待作答。返回选项 key，None = 超时/已终止。
+
+    ``store`` 存在时把最终态写进会话的审批审计文件，供切会话后的历史
+    回显使用；写盘失败只记日志，不影响审批结果。
+    """
     req_id = uuid4().hex[:12]
+    created_at = datetime.now()
+    status: ApprovalStatus = "cancelled"
+    answer: str | None = None
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
     bus.approvals.register(req_id, fut)
@@ -99,22 +112,68 @@ async def request(
             stop_task = asyncio.create_task(ctx.stop_event.wait())
         try:
             if stop_task is None:
-                return await asyncio.wait_for(
+                answer = await asyncio.wait_for(
                     fut, timeout=APPROVAL_TIMEOUT_SECONDS)
+                status = "answered"
+                return answer
             done, _pending = await asyncio.wait(
                 {fut, stop_task}, timeout=APPROVAL_TIMEOUT_SECONDS,
                 return_when=asyncio.FIRST_COMPLETED)
             if ctx.stop_event.is_set():
                 raise TurnCancelled()
-            return fut.result() if fut in done else None
+            if fut in done:
+                answer = fut.result()
+                status = "answered"
+            else:
+                status = "timeout"
+            return answer
         finally:
             if stop_task is not None:
                 stop_task.cancel()
     except (asyncio.TimeoutError, TimeoutError):
+        status = "timeout"
         logger.info("permission approval %s 超时", req_id)
         return None
     finally:
+        _record_approval(
+            store, ctx, req_id=req_id, created_at=created_at,
+            title=title, summary=summary, detail=detail,
+            options=options, status=status, answer=answer)
         bus.approvals.discard(req_id)
+
+
+def _record_approval(
+        store: "SessionStore | None",
+        ctx: HookContext,
+        *,
+        req_id: str,
+        created_at: datetime,
+        title: str,
+        summary: str,
+        detail: str,
+        options: tuple[ApprovalOption, ...],
+        status: ApprovalStatus,
+        answer: str | None,
+) -> None:
+    """写审批审计记录；任何失败都只记日志，不影响审批结论。"""
+    if store is None:
+        return
+    try:
+        store.append_approval(ApprovalRecord(
+            req_id=req_id,
+            channel=ctx.channel,
+            session_id=ctx.session_id,
+            turn_id=ctx.turn_id,
+            title=title,
+            summary=summary,
+            detail=detail,
+            options=list(options),
+            status=status,
+            answer=answer or "",
+            created_at=created_at,
+        ))
+    except Exception:  # noqa: BLE001 - 审计失败不能回滚审批
+        logger.warning("审批记录写入失败：req=%s", req_id, exc_info=True)
 
 
 class PermissionGuard:
@@ -236,6 +295,7 @@ class PermissionGuard:
             summary="、".join(pending),
             detail="批准后该路径进入可写集合",
             options=_EXPAND,
+            store=self.permission.session_store,
         )
         if answer == "s":
             for p in pending:
@@ -270,6 +330,7 @@ class PermissionGuard:
                 summary=command,
                 detail=self.permission.sandbox_unavailable_reason(),
                 options=_YN,
+                store=self.permission.session_store,
             )
             if answer == "y":
                 return ToolCallDecision(
@@ -288,6 +349,7 @@ class PermissionGuard:
                 summary=command,
                 detail="该命令命中脱离沙箱白名单，将在内核沙箱外执行",
                 options=_YN,
+                store=self.permission.session_store,
             )
             if answer == "y":
                 return ToolCallDecision(
