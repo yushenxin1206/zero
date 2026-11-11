@@ -42,12 +42,30 @@ def clean(s: str) -> str:
     return "".join(ch for ch in s if ch == "\n" or ch >= " ").strip()
 
 
+def has_cjk(s: str) -> bool:
+    """True if the query contains CJK characters (Chinese/Japanese/Korean)."""
+    return any(
+        "\u4e00" <= ch <= "\u9fff" or "\u3400" <= ch <= "\u4dbf" or "\u3040" <= ch <= "\u30ff"
+        for ch in s
+    )
+
+
 def fetch(query: str, retries: int = 3) -> str:
     """Fetch Bing search results page with retry."""
-    url = "https://www.bing.com/search?q=" + urllib.parse.quote(query) + "&setlang=en"
+    # CJK queries must carry a matching market/language pair. Without it Bing
+    # redirects to cn.bing.com and serves a generic anti-bot page whose
+    # b_algo blocks are unrelated to the query (verified: multi-keyword CJK
+    # queries returned bilibili/xinpianchang results).
+    if has_cjk(query):
+        params = {"q": query, "mkt": "zh-CN", "setlang": "zh-Hans", "form": "QBLH"}
+        accept_lang = "zh-CN,zh;q=0.9,en;q=0.8"
+    else:
+        params = {"q": query, "mkt": "en-US", "setlang": "en", "form": "QBLH"}
+        accept_lang = "en-US,en;q=0.9"
+    url = "https://www.bing.com/search?" + urllib.parse.urlencode(params)
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": accept_lang,
     }
     last_err = None
     for attempt in range(1, retries + 1):
@@ -130,6 +148,48 @@ def parse(html_text: str, max_results: int):
     return results
 
 
+def relevance(results, query: str) -> float:
+    """Fraction of query tokens that appear in the result titles/snippets.
+
+    Bing (from a datacenter IP, no JS) tends to answer only the *first* token of a
+    multi-token query and fill the rest of the page with generic entity results
+    (e.g. "成都天气 今天 天气预报" -> 成都市百科 / 成都市政府). This score lets
+    main() detect that degradation and retry with a shorter query.
+    """
+    tokens = [t for t in query.split() if t]
+    if not tokens or not results:
+        return 0.0
+    text = " ".join(r["title"] + " " + r["snippet"] for r in results)
+    return sum(1 for t in tokens if t in text) / len(tokens)
+
+
+def query_variants(query: str):
+    """Progressively shorter versions of the query, longest first."""
+    tokens = query.split()
+    variants = [query]
+    for n in range(len(tokens) - 1, 0, -1):
+        cand = " ".join(tokens[:n])
+        if cand != query and cand not in variants:
+            variants.append(cand)
+    return variants
+
+
+def bing_search(query: str, max_results: int):
+    """Search Bing, retrying with shorter queries when results look off-topic."""
+    best = ([], 0.0)
+    for cand in query_variants(query):
+        try:
+            results = parse(fetch(cand), max_results)
+        except Exception:
+            continue
+        score = relevance(results, query)
+        if score > best[1]:
+            best = (results, score)
+        if score >= 0.5:  # good enough: most query tokens are present
+            break
+    return best[0]
+
+
 def main():
     setup_stdio()
     if len(sys.argv) < 2:
@@ -139,8 +199,7 @@ def main():
     max_results = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
     try:
-        page = fetch(query)
-        results = parse(page, max_results)
+        results = bing_search(query, max_results)
         if not results:
             # Fallback to DuckDuckGo if Bing returned no usable results
             page = fetch_duckduckgo(query)
