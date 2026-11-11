@@ -157,6 +157,20 @@ def test_new_api_key_overrides_masked_value():
     assert manager.raw["providers"]["deepseek"]["apiKey"] == "sk-2"
 
 
+def test_feishu_app_secret_is_masked_and_restored():
+    doc = json.loads(json.dumps(MINIMAL))
+    doc["channels"] = {"feishu": {"appId": "cli-1", "appSecret": "secret-1"}}
+    manager = ConfigManager(current().config)
+    manager.load()
+    manager.save(doc)
+
+    masked = manager.masked_doc()
+    assert masked["channels"]["feishu"]["appSecret"] == MASKED_SECRET
+
+    manager.save(masked)
+    assert manager.raw["channels"]["feishu"]["appSecret"] == "secret-1"
+
+
 def test_reset_backs_up_broken_file_and_writes_skeleton():
     _write("{ not json")
     manager = ConfigManager(current().config)

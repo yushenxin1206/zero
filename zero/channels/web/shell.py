@@ -57,6 +57,18 @@ class _BootstrapApi:
             "error": self._holder.get("error", ""),
         }
 
+    def close_window(self) -> bool:
+        """无边框窗口的关闭入口（系统标题栏已去掉）。"""
+        window = self._window
+        if window is None:
+            return False
+        try:
+            window.destroy()
+        except Exception:  # noqa: BLE001 - 关窗失败只记录，不影响进程
+            logger.warning("failed to close window", exc_info=True)
+            return False
+        return True
+
     def restart_app(self) -> bool:
         """保存配置后的重启入口：停后端 → 关窗 → worker 拉起新进程。
 
@@ -156,6 +168,9 @@ def run_desktop(
         height=height,
         min_size=(760, 520),
         text_select=True,
+        # 去掉系统标题栏：顶栏关闭按钮走 js_api，空白区域拖动靠 easy_drag
+        frameless=True,
+        easy_drag=True,
     )
     api.attach_window(window)
 

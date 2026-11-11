@@ -1443,6 +1443,26 @@
     box-shadow: var(--sh-3);
     animation: scale-in .24s var(--ease);
   }
+  .setup-head { display: flex; align-items: flex-start; gap: 12px; }
+  .setup-titles { flex: 1; min-width: 0; }
+  .setup-quit {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    color: var(--text-3);
+    border-color: var(--line-weak);
+  }
+  .setup-quit:hover:not(:disabled) {
+    color: var(--danger);
+    border-color: var(--danger-line);
+  }
+  .setup-quit .icon { width: 13px; height: 13px; }
+  .icon-btn { padding: 7px 9px; }
+  .icon-btn:hover:not(:disabled) { color: var(--danger); }
   .setup-title { font-size: 17px; font-weight: 600; color: var(--text-strong); }
   .setup-sub { margin-top: 5px; font-size: 12.5px; color: var(--text-3); }
   .setup-body { margin-top: 18px; }
@@ -1455,6 +1475,7 @@
   }
   .form-input {
     width: 100%;
+    min-height: 36px;
     padding: 8px 10px;
     font: 13px/1.5 var(--font);
     color: var(--text-1);
@@ -1526,6 +1547,86 @@
     outline: none;
   }
   .config-json:focus { border-color: var(--accent-line); }
+
+  /* schema 驱动的配置表单 */
+  .cfg-legend { margin-bottom: 10px; font-size: 11.5px; line-height: 1.7; color: var(--text-3); }
+  .cfg-req { margin-left: 3px; color: var(--danger); font-weight: 700; }
+  .cfg-section {
+    margin-bottom: 10px;
+    border: 1px solid var(--line-weak);
+    border-radius: var(--r-sm);
+    background: var(--fill-2);
+  }
+  .cfg-sec-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    font-size: 12.5px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  .cfg-sec-head::-webkit-details-marker { display: none; }
+  .cfg-sec-desc {
+    flex: 1;
+    min-width: 0;
+    font-weight: 400;
+    font-size: 11.5px;
+    color: var(--text-3);
+  }
+  .cfg-sec-caret {
+    flex: 0 0 auto;
+    width: 13px; height: 13px;
+    color: var(--text-3);
+    transition: transform var(--dur) var(--ease);
+  }
+  .cfg-section[open] .cfg-sec-caret { transform: rotate(90deg); }
+  .cfg-sec-body {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 2px 12px 12px;
+  }
+  .cfg-sub {
+    padding-top: 10px;
+    border-top: 1px dashed var(--line-weak);
+  }
+  .cfg-sub:first-child { padding-top: 0; border-top: none; }
+  .cfg-sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .cfg-sub-title { flex: 1; min-width: 0; font: 600 12px/1.6 var(--mono); color: var(--text-2); }
+  .cfg-map-row { display: flex; align-items: flex-end; gap: 8px; }
+  .cfg-map-row > .form-row { flex: 1; min-width: 0; }
+  .cfg-del {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 36px;
+    padding: 0 10px;
+    font-size: 12px;
+    color: var(--danger);
+    border-color: var(--danger-line);
+  }
+  .cfg-add {
+    align-self: flex-start;
+    display: inline-flex;
+    align-items: center;
+    min-height: 36px;
+    padding: 0 12px;
+    font-size: 12px;
+  }
+  .cfg-check { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-2); }
+  .cfg-check input { accent-color: var(--accent); }
+  .cfg-note { font-size: 11.5px; line-height: 1.7; color: var(--text-3); }
+  .cfg-json-field { min-height: 62px; resize: vertical; font: 11.5px/1.6 var(--mono); }
+  .cfg-json-field.bad { border-color: var(--danger); }
+  .cfg-inline { display: flex; align-items: stretch; gap: 6px; }
+  .cfg-inline .form-input { flex: 1; min-width: 0; }
+  .setup-foot button, .config-foot button { min-height: 36px; }
+
   #restarting {
     position: fixed;
     inset: 0;
@@ -1683,6 +1784,9 @@
           <svg class="icon"><use href="#i-cpu"/></svg>
           <span id="model-name">model</span>
         </button>
+        <button id="window-close" class="top-btn icon-btn" title="关闭窗口" aria-label="关闭窗口">
+          <svg class="icon"><use href="#i-x"/></svg>
+        </button>
       </div>
     </header>
 
@@ -1727,8 +1831,13 @@
 <div id="setup" class="hidden">
   <div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setup-title">
     <div class="setup-head">
-      <div class="setup-title" id="setup-title">先完成必要配置</div>
-      <div class="setup-sub" id="setup-sub">填写模型接入信息后才能开始使用</div>
+      <div class="setup-titles">
+        <div class="setup-title" id="setup-title">先完成必要配置</div>
+        <div class="setup-sub" id="setup-sub">填写模型接入信息后才能开始使用</div>
+      </div>
+      <button id="setup-quit" class="setup-quit" title="退出应用" aria-label="退出应用">
+        <svg class="icon"><use href="#i-x"/></svg>
+      </button>
     </div>
     <div class="setup-body" id="setup-body"></div>
     <div class="setup-foot">
@@ -3073,6 +3182,8 @@
   $("#config-dismiss").onclick = () => $("#config-banner").classList.add("hidden");
   $("#setup-save").onclick = setupSubmit;
   $("#setup-test").onclick = setupTest;
+  $("#window-close").onclick = closeWindow;
+  $("#setup-quit").onclick = closeWindow;
   $("#theme-btn").onclick = () => {
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
   };
@@ -3435,10 +3546,15 @@
     return list;
   }
 
-  function fieldRow(labelText, input, hint) {
+  function fieldRow(labelText, input, hint, required) {
     const row = el("div", "form-row");
     const label = el("label");
     label.textContent = labelText;
+    if (required) {
+      const star = el("span", "cfg-req");
+      star.textContent = "*";
+      label.appendChild(star);
+    }
     row.appendChild(label);
     row.appendChild(input);
     if (hint) {
@@ -3458,7 +3574,7 @@
     return input;
   }
 
-  function buildConfigFields(container, prefix, doc, full) {
+  function buildConfigFields(container, prefix, doc) {
     const providers = Object.keys(doc.providers || {});
     const models = Object.keys(doc.models || {});
     const def = (doc.agentRuntimes || {}).default || {};
@@ -3490,34 +3606,16 @@
     const win = formInput(prefix + "-window", "number");
     win.min = "1";
     win.value = String(spec.contextWindowTokens || 65536);
-    const temp = formInput(prefix + "-temp", "number");
-    temp.step = "0.1";
-    temp.min = "0";
-    temp.max = "2";
-    temp.value = String(opts.temperature === undefined ? 0.1 : opts.temperature);
-    const maxTokens = formInput(prefix + "-max-tokens", "number");
-    maxTokens.min = "1";
-    maxTokens.value = String(opts.maxTokens || 8192);
-    const maxIter = formInput(prefix + "-max-iter", "number");
-    maxIter.min = "1";
-    maxIter.value = String(def.maxIterations || 50);
 
     const grid = el("div", "form-grid");
     grid.appendChild(fieldRow("Provider", provider));
     grid.appendChild(fieldRow("API Base", base));
     grid.appendChild(fieldRow(
-      "API Key", key, "只写入本地 config.json（0600），界面回显始终是占位符"));
+      "API Key", key, "只写入本地 config.json，界面回显始终是占位符"));
     const modelRow = el("div", "form-split");
     modelRow.appendChild(fieldRow("模型名", model));
     modelRow.appendChild(fieldRow("上下文窗口（tokens）", win));
     grid.appendChild(modelRow);
-    if (full) {
-      const tuning = el("div", "form-split");
-      tuning.appendChild(fieldRow("Temperature", temp));
-      tuning.appendChild(fieldRow("maxTokens", maxTokens));
-      grid.appendChild(tuning);
-      grid.appendChild(fieldRow("maxIterations", maxIter));
-    }
     container.appendChild(grid);
 
     provider.onchange = () => {
@@ -3530,7 +3628,7 @@
     return { provider, base, key, model, win };
   }
 
-  function collectConfigDoc(prefix, full) {
+  function collectConfigDoc(prefix) {
     const provider = $("#" + prefix + "-provider").value;
     const apiBase = $("#" + prefix + "-base").value.trim();
     const apiKey = $("#" + prefix + "-key").value.trim();
@@ -3557,28 +3655,535 @@
     };
     doc.agentRuntimes = doc.agentRuntimes || {};
     doc.agentRuntimes.default = doc.agentRuntimes.default || {};
-    const opts = doc.agentRuntimes.default.llmCallOptions = {
+    doc.agentRuntimes.default.llmCallOptions = {
       ...(doc.agentRuntimes.default.llmCallOptions || {}),
       model,
     };
-    if (full) {
-      const temp = Number($("#" + prefix + "-temp").value);
-      const maxTokens = Number($("#" + prefix + "-max-tokens").value);
-      const maxIter = Number($("#" + prefix + "-max-iter").value);
-      if (Number.isFinite(temp)) opts.temperature = temp;
-      if (Number.isFinite(maxTokens) && maxTokens > 0) opts.maxTokens = maxTokens;
-      if (Number.isFinite(maxIter) && maxIter > 0) {
-        doc.agentRuntimes.default.maxIterations = maxIter;
-      }
-    }
     return doc;
+  }
+
+  /* ---------- schema 驱动的完整配置表单（设置页“常用”） ---------- */
+
+  const RUNTIME_TASKS = [
+    { key: "default", label: "default（主对话，必填）", required: true },
+    { key: "compact", label: "compact（上下文压缩）" },
+    { key: "session_summary", label: "session_summary（会话复盘）" },
+    { key: "memory", label: "memory（记忆沉淀）" },
+    { key: "subagent", label: "subagent（子 agent）" },
+  ];
+
+  function readPath(root, path) {
+    let cur = root;
+    for (const key of path) {
+      if (cur === null || typeof cur !== "object") return undefined;
+      cur = cur[key];
+    }
+    return cur;
+  }
+
+  function writePath(root, path, value) {
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i += 1) {
+      const key = path[i];
+      if (cur[key] === null || typeof cur[key] !== "object") cur[key] = {};
+      cur = cur[key];
+    }
+    cur[path[path.length - 1]] = value;
+  }
+
+  function deletePath(root, path) {
+    let cur = root;
+    for (let i = 0; i < path.length - 1; i += 1) {
+      const key = path[i];
+      if (cur[key] === null || typeof cur[key] !== "object") return;
+      cur = cur[key];
+    }
+    delete cur[path[path.length - 1]];
+  }
+
+  function cfgSection(container, title, desc, open) {
+    const box = el("details", "cfg-section");
+    box.open = !!open;
+    const head = el("summary", "cfg-sec-head");
+    const name = el("span");
+    name.textContent = title;
+    const note = el("span", "cfg-sec-desc");
+    note.textContent = desc || "";
+    const caret = el("span");
+    caret.innerHTML = icon("chevron", "cfg-sec-caret");
+    head.appendChild(name);
+    head.appendChild(note);
+    head.appendChild(caret);
+    box.appendChild(head);
+    const body = el("div", "cfg-sec-body");
+    box.appendChild(body);
+    container.appendChild(box);
+    return body;
+  }
+
+  function cfgText(doc, path, opts) {
+    const o = opts || {};
+    const input = el("input", "form-input");
+    if (o.numeric) input.type = "number";
+    if (o.min !== undefined) input.min = String(o.min);
+    if (o.max !== undefined) input.max = String(o.max);
+    if (o.step !== undefined) input.step = String(o.step);
+    if (o.placeholder) input.placeholder = o.placeholder;
+    const current = readPath(doc, path);
+    input.value = current === undefined || current === null ? "" : String(current);
+    input.oninput = () => {
+      const raw = input.value.trim();
+      if (!raw) {
+        // 清空 = 不写入该键（继承 default / 使用默认值）；必填项保留空串让后端报错
+        if (o.keepEmpty) writePath(doc, path, "");
+        else deletePath(doc, path);
+        return;
+      }
+      if (o.numeric) {
+        const num = Number(raw);
+        if (!Number.isFinite(num)) return;
+        writePath(doc, path, o.integer ? Math.trunc(num) : num);
+      } else {
+        writePath(doc, path, raw);
+      }
+    };
+    return input;
+  }
+
+  function cfgList(doc, path) {
+    const input = el("input", "form-input");
+    input.placeholder = "逗号分隔，例如 a, b";
+    const current = readPath(doc, path);
+    input.value = Array.isArray(current) ? current.join(", ") : "";
+    input.oninput = () => {
+      const items = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+      if (!items.length) deletePath(doc, path);
+      else writePath(doc, path, items);
+    };
+    return input;
+  }
+
+  function cfgJson(doc, path) {
+    const area = el("textarea", "form-input cfg-json-field");
+    area.rows = 3;
+    area.spellcheck = false;
+    area.placeholder = "JSON；留空 = 不写入";
+    const current = readPath(doc, path);
+    area.value = current === undefined ? "" : JSON.stringify(current, null, 2);
+    area.oninput = () => {
+      const raw = area.value.trim();
+      area.classList.remove("bad");
+      if (!raw) {
+        deletePath(doc, path);
+        return;
+      }
+      try {
+        writePath(doc, path, JSON.parse(raw));
+      } catch (err) {
+        area.classList.add("bad");
+      }
+    };
+    return area;
+  }
+
+  function cfgSecret(doc, path) {
+    const wrap = el("div", "cfg-inline");
+    const input = el("input", "form-input");
+    input.type = "password";
+    input.autocomplete = "off";
+    const current = readPath(doc, path);
+    const masked = current === MASKED_SECRET;
+    input.placeholder = masked ? "已保存，留空则不修改" : "填写密钥";
+    input.oninput = () => {
+      const raw = input.value.trim();
+      if (!raw) {
+        if (masked) writePath(doc, path, MASKED_SECRET);
+        else deletePath(doc, path);
+        return;
+      }
+      writePath(doc, path, raw);
+    };
+    const clear = el("button", "cfg-del");
+    clear.type = "button";
+    clear.textContent = "清除";
+    clear.title = "清空该密钥";
+    clear.onclick = () => {
+      writePath(doc, path, "");
+      input.value = "";
+      input.placeholder = "填写密钥";
+    };
+    wrap.appendChild(input);
+    wrap.appendChild(clear);
+    return wrap;
+  }
+
+  function cfgCheckbox(container, labelText, doc, path, fallback) {
+    const wrap = el("label", "cfg-check");
+    const input = el("input");
+    input.type = "checkbox";
+    const current = readPath(doc, path);
+    input.checked = current === undefined ? !!fallback : !!current;
+    input.onchange = () => writePath(doc, path, input.checked);
+    const text = el("span");
+    text.textContent = labelText;
+    wrap.appendChild(input);
+    wrap.appendChild(text);
+    container.appendChild(wrap);
+    return input;
+  }
+
+  function cfgInheritedRuntime(doc, taskKey) {
+    const runtimes = doc.agentRuntimes || {};
+    const def = runtimes.default || {};
+    const task = runtimes[taskKey] || {};
+    const merge = (base, over) => Object.assign({}, base || {}, over || {});
+    const opts = merge(
+      merge({ temperature: 0.1, maxTokens: 8192 }, def.llmCallOptions),
+      task.llmCallOptions);
+    return {
+      maxIterations: task.maxIterations ?? def.maxIterations ?? 50,
+      reasoningTokenHeadroom:
+        task.reasoningTokenHeadroom ?? def.reasoningTokenHeadroom ?? 4096,
+      model: opts.model || "",
+      temperature: opts.temperature,
+      maxTokens: opts.maxTokens,
+    };
+  }
+
+  function cfgRuntimeFields(grid, doc, taskKey, isDefault) {
+    const inherited = cfgInheritedRuntime(doc, taskKey);
+    const prefix = isDefault ? "默认" : "继承 default";
+    const path = (sub) => ["agentRuntimes", taskKey, ...sub];
+    const ph = (value) => `${prefix}：${value}`;
+
+    grid.appendChild(fieldRow(
+      "maxIterations",
+      cfgText(doc, path(["maxIterations"]),
+        { numeric: true, integer: true, min: 1, placeholder: ph(inherited.maxIterations) })));
+    grid.appendChild(fieldRow(
+      "reasoningTokenHeadroom",
+      cfgText(doc, path(["reasoningTokenHeadroom"]),
+        { numeric: true, integer: true, min: 0, placeholder: ph(inherited.reasoningTokenHeadroom) })));
+    grid.appendChild(fieldRow(
+      "llmCallOptions.model",
+      cfgText(doc, path(["llmCallOptions", "model"]),
+        { placeholder: isDefault ? "必填：models 注册表中的键" : ph(inherited.model || "未设置") }),
+      isDefault ? "主对话必须绑定 models 里的模型键" : "留空 = 跟随 default",
+      isDefault));
+    grid.appendChild(fieldRow(
+      "temperature",
+      cfgText(doc, path(["llmCallOptions", "temperature"]),
+        { numeric: true, min: 0, max: 2, step: 0.1, placeholder: ph(inherited.temperature) })));
+    grid.appendChild(fieldRow(
+      "maxTokens",
+      cfgText(doc, path(["llmCallOptions", "maxTokens"]),
+        { numeric: true, integer: true, min: 1, placeholder: ph(inherited.maxTokens) })));
+    grid.appendChild(fieldRow(
+      "reasoningEffort",
+      cfgText(doc, path(["llmCallOptions", "reasoningEffort"]), { placeholder: "留空 = 不写入" })));
+    grid.appendChild(fieldRow(
+      "stop",
+      cfgList(doc, path(["llmCallOptions", "stop"])),
+      "数组；留空 = 不写入"));
+
+    const adv = el("details", "cfg-section");
+    const advHead = el("summary", "cfg-sec-head");
+    const advName = el("span");
+    advName.textContent = "高级调用选项";
+    const advDesc = el("span", "cfg-sec-desc");
+    advDesc.textContent = "JSON 字段：留空表示不写入";
+    const advCaret = el("span");
+    advCaret.innerHTML = icon("chevron", "cfg-sec-caret");
+    advHead.appendChild(advName);
+    advHead.appendChild(advDesc);
+    advHead.appendChild(advCaret);
+    adv.appendChild(advHead);
+    const advBody = el("div", "cfg-sec-body");
+    const advGrid = el("div", "form-grid");
+    advGrid.appendChild(fieldRow(
+      "toolChoice",
+      cfgJson(doc, path(["llmCallOptions", "toolChoice"]))));
+    advGrid.appendChild(fieldRow(
+      "responseFormat",
+      cfgJson(doc, path(["llmCallOptions", "responseFormat"]))));
+    advGrid.appendChild(fieldRow(
+      "streamOptions",
+      cfgJson(doc, path(["llmCallOptions", "streamOptions"]))));
+    advGrid.appendChild(fieldRow(
+      "extraBody",
+      cfgJson(doc, path(["llmCallOptions", "extraBody"]))));
+    advGrid.appendChild(fieldRow(
+      "stream",
+      cfgStreamSelect(doc, path(["llmCallOptions", "stream"])),
+      "三态：未写入 / true / false"));
+    advBody.appendChild(advGrid);
+    adv.appendChild(advBody);
+    grid.appendChild(adv);
+  }
+
+  function cfgStreamSelect(doc, path) {
+    const select = el("select", "form-input");
+    [["", "未写入（跟随默认）"], ["true", "true"], ["false", "false"]]
+      .forEach(([value, label]) => {
+        const option = el("option");
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+      });
+    const current = readPath(doc, path);
+    select.value = current === undefined || current === null ? "" : String(current);
+    select.onchange = () => {
+      if (select.value === "") deletePath(doc, path);
+      else writePath(doc, path, select.value === "true");
+    };
+    return select;
+  }
+
+  function cfgModelsSection(container, doc, rerender) {
+    const body = cfgSection(
+      container, "models",
+      "模型注册表：键为 API 模型名，至少一项；被 agentRuntimes 引用。", true);
+    doc.models = doc.models || {};
+    const names = Object.keys(doc.models);
+    if (!names.length) {
+      const note = el("div", "cfg-note");
+      note.textContent = "还没有模型：至少注册一个，并把 default.llmCallOptions.model 指向它。";
+      body.appendChild(note);
+    }
+    names.forEach((name) => {
+      const row = el("div", "cfg-map-row");
+      const nameInput = el("input", "form-input");
+      nameInput.value = name;
+      nameInput.onchange = () => {
+        const next = nameInput.value.trim();
+        if (!next || next === name || doc.models[next]) {
+          nameInput.value = name;
+          return;
+        }
+        const value = doc.models[name];
+        delete doc.models[name];
+        doc.models[next] = value;
+        rerender();
+      };
+      row.appendChild(fieldRow("模型名", nameInput));
+      row.appendChild(fieldRow(
+        "provider",
+        cfgText(doc, ["models", name, "provider"], { placeholder: "deepseek" }),
+        "", true));
+      row.appendChild(fieldRow(
+        "contextWindowTokens",
+        cfgText(doc, ["models", name, "contextWindowTokens"],
+          { numeric: true, integer: true, min: 1 }),
+        "", true));
+      const del = el("button", "cfg-del");
+      del.type = "button";
+      del.textContent = "删除";
+      del.onclick = () => {
+        delete doc.models[name];
+        rerender();
+      };
+      row.appendChild(del);
+      body.appendChild(row);
+    });
+    const add = el("button", "cfg-add");
+    add.type = "button";
+    add.textContent = "+ 添加模型";
+    add.onclick = () => {
+      let i = 1;
+      let key = `model-${i}`;
+      while (doc.models[key]) {
+        i += 1;
+        key = `model-${i}`;
+      }
+      doc.models[key] = { provider: "", contextWindowTokens: 0 };
+      rerender();
+    };
+    body.appendChild(add);
+  }
+
+  function cfgRuntimesSection(container, doc, rerender) {
+    const body = cfgSection(
+      container, "agentRuntimes",
+      "按任务覆盖运行时；未填写的字段继承 default。", true);
+    doc.agentRuntimes = doc.agentRuntimes || {};
+    doc.agentRuntimes.default = doc.agentRuntimes.default || {};
+    RUNTIME_TASKS.forEach((task) => {
+      const isDefault = task.key === "default";
+      const entry = doc.agentRuntimes[task.key];
+      const sub = el("div", "cfg-sub");
+      const head = el("div", "cfg-sub-head");
+      const title = el("div", "cfg-sub-title");
+      title.textContent = task.label;
+      head.appendChild(title);
+      if (!isDefault) {
+        const toggle = el("label", "cfg-check");
+        const box = el("input");
+        box.type = "checkbox";
+        box.checked = entry !== undefined && entry !== null;
+        const text = el("span");
+        text.textContent = "覆盖 default";
+        box.onchange = () => {
+          if (box.checked) writePath(doc, ["agentRuntimes", task.key], {});
+          else delete doc.agentRuntimes[task.key];
+          rerender();
+        };
+        toggle.appendChild(box);
+        toggle.appendChild(text);
+        head.appendChild(toggle);
+      }
+      sub.appendChild(head);
+      if (isDefault || (entry !== undefined && entry !== null)) {
+        const grid = el("div", "form-grid");
+        cfgRuntimeFields(grid, doc, task.key, isDefault);
+        sub.appendChild(grid);
+      }
+      body.appendChild(sub);
+    });
+  }
+
+  function cfgProvidersSection(container, doc) {
+    const body = cfgSection(
+      container, "providers",
+      "厂商接入信息；被 models 引用的 provider 必须填写 apiBase。", false);
+    const used = new Set(
+      Object.values(doc.models || {}).map((m) => m && m.provider).filter(Boolean));
+    ["dashscope", "deepseek", "zhipu"].forEach((key) => {
+      const sub = el("div", "cfg-sub");
+      const head = el("div", "cfg-sub-head");
+      const title = el("div", "cfg-sub-title");
+      title.textContent = key;
+      head.appendChild(title);
+      sub.appendChild(head);
+      const grid = el("div", "form-grid");
+      grid.appendChild(fieldRow(
+        "apiBase",
+        cfgText(doc, ["providers", key, "apiBase"], { placeholder: "https://..." }),
+        used.has(key) ? "已被 models 引用，必填" : "",
+        used.has(key)));
+      grid.appendChild(fieldRow(
+        "apiKey",
+        cfgSecret(doc, ["providers", key, "apiKey"])));
+      sub.appendChild(grid);
+      body.appendChild(sub);
+    });
+  }
+
+  function cfgChannelsSection(container, doc) {
+    const body = cfgSection(
+      container, "channels", "飞书接入与 Web 窗口设置；改动后需重启。", false);
+    const feishu = el("div", "cfg-sub");
+    const feishuHead = el("div", "cfg-sub-head");
+    const feishuTitle = el("div", "cfg-sub-title");
+    feishuTitle.textContent = "feishu";
+    feishuHead.appendChild(feishuTitle);
+    feishu.appendChild(feishuHead);
+    const feishuGrid = el("div", "form-grid");
+    feishuGrid.appendChild(fieldRow(
+      "appId",
+      cfgText(doc, ["channels", "feishu", "appId"])));
+    feishuGrid.appendChild(fieldRow(
+      "appSecret",
+      cfgSecret(doc, ["channels", "feishu", "appSecret"])));
+    feishu.appendChild(feishuGrid);
+    body.appendChild(feishu);
+
+    const web = el("div", "cfg-sub");
+    const webHead = el("div", "cfg-sub-head");
+    const webTitle = el("div", "cfg-sub-title");
+    webTitle.textContent = "web";
+    webHead.appendChild(webTitle);
+    web.appendChild(webHead);
+    const webGrid = el("div", "form-grid");
+    webGrid.appendChild(fieldRow(
+      "host",
+      cfgText(doc, ["channels", "web", "host"], { placeholder: "127.0.0.1（默认）" }),
+      "留空使用默认 127.0.0.1；改成 0.0.0.0 会把可执行 shell 的服务暴露到局域网"));
+    webGrid.appendChild(fieldRow(
+      "port",
+      cfgText(doc, ["channels", "web", "port"],
+        { numeric: true, integer: true, min: 0, placeholder: "0 = 系统分配" }),
+      "0 表示自动选择空闲端口"));
+    const size = el("div", "form-split");
+    size.appendChild(fieldRow(
+      "width",
+      cfgText(doc, ["channels", "web", "width"],
+        { numeric: true, integer: true, min: 400, placeholder: "1120" })));
+    size.appendChild(fieldRow(
+      "height",
+      cfgText(doc, ["channels", "web", "height"],
+        { numeric: true, integer: true, min: 300, placeholder: "760" })));
+    webGrid.appendChild(size);
+    web.appendChild(webGrid);
+    body.appendChild(web);
+  }
+
+  function cfgCompactSection(container, doc) {
+    const body = cfgSection(
+      container, "compact", "上下文压缩策略。", false);
+    cfgCheckbox(body, "enabled（启用自动压缩）", doc, ["compact", "enabled"], true);
+    const grid = el("div", "form-grid");
+    grid.appendChild(fieldRow(
+      "triggerRatio",
+      cfgText(doc, ["compact", "triggerRatio"],
+        { numeric: true, min: 0, max: 1, step: 0.05, placeholder: "0.75" }),
+      "窗口占用达到该比例时触发压缩"));
+    grid.appendChild(fieldRow(
+      "tailRatio",
+      cfgText(doc, ["compact", "tailRatio"],
+        { numeric: true, min: 0, max: 1, step: 0.05, placeholder: "0.25" })));
+    grid.appendChild(fieldRow(
+      "contextCompactMaxTokens",
+      cfgText(doc, ["compact", "contextCompactMaxTokens"],
+        { numeric: true, integer: true, min: 1, placeholder: "2000" })));
+    body.appendChild(grid);
+  }
+
+  function cfgMaintenanceSection(container, doc) {
+    const body = cfgSection(
+      container, "maintenance", "后台会话复盘与记忆沉淀。", false);
+    cfgCheckbox(body, "sessionSummaryEnabled", doc,
+      ["maintenance", "sessionSummaryEnabled"], true);
+    const summary = el("div", "form-grid");
+    summary.appendChild(fieldRow(
+      "sessionSummaryCron",
+      cfgText(doc, ["maintenance", "sessionSummaryCron"], { placeholder: "0 23 * * *" })));
+    summary.appendChild(fieldRow(
+      "sessionSummaryMaxTokens",
+      cfgText(doc, ["maintenance", "sessionSummaryMaxTokens"],
+        { numeric: true, integer: true, min: 1, placeholder: "2000" })));
+    body.appendChild(summary);
+
+    cfgCheckbox(body, "memoryEnabled", doc, ["maintenance", "memoryEnabled"], true);
+    const memory = el("div", "form-grid");
+    memory.appendChild(fieldRow(
+      "memoryCron",
+      cfgText(doc, ["maintenance", "memoryCron"], { placeholder: "30 23 * * *" })));
+    memory.appendChild(fieldRow(
+      "memoryMaxTokens",
+      cfgText(doc, ["maintenance", "memoryMaxTokens"],
+        { numeric: true, integer: true, min: 1, placeholder: "8000" })));
+    body.appendChild(memory);
+  }
+
+  function renderConfigSections(container, doc, rerender) {
+    const legend = el("div", "cfg-legend");
+    legend.innerHTML =
+      '带 <span class="cfg-req">*</span> 的为必填；非必填项清空表示不写入该键' +
+      '（继承 default 或使用默认值）。';
+    container.appendChild(legend);
+    cfgModelsSection(container, doc, rerender);
+    cfgRuntimesSection(container, doc, rerender);
+    cfgProvidersSection(container, doc);
+    cfgChannelsSection(container, doc);
+    cfgCompactSection(container, doc);
+    cfgMaintenanceSection(container, doc);
   }
 
   function renderSetupForm(doc) {
     state.config = doc || {};
     const body = $("#setup-body");
     body.innerHTML = "";
-    buildConfigFields(body, "setup", state.config, false);
+    buildConfigFields(body, "setup", state.config);
     setConfigStatus("setup", "", "");
     $("#setup-test").disabled = false;
     $("#setup-save").disabled = false;
@@ -3587,7 +4192,7 @@
   function setupSubmit() {
     let doc;
     try {
-      doc = collectConfigDoc("setup", false);
+      doc = collectConfigDoc("setup");
       const provider = $("#setup-provider").value;
       if (!(doc.providers[provider] || {}).apiKey) {
         throw new Error("请填写 API Key");
@@ -3609,7 +4214,7 @@
   function setupTest() {
     let doc;
     try {
-      doc = collectConfigDoc("setup", false);
+      doc = collectConfigDoc("setup");
     } catch (err) {
       setConfigStatus("setup", err.message, "err");
       return;
@@ -3640,9 +4245,13 @@
 
   function renderConfigModal() {
     const body = $("#modal-body");
+    // 增删模型 / 切换任务覆盖会触发重渲染：保留分区展开状态与滚动位置
+    const openState = Array.from(body.querySelectorAll(".cfg-section"))
+      .map((node) => node.open);
+    const scrollTop = body.scrollTop;
     body.innerHTML = "";
     const tabs = el("div", "seg config-tabs");
-    [["form", "常用"], ["json", "JSON"]].forEach(([key, label]) => {
+    [["form", "表单"], ["json", "JSON"]].forEach(([key, label]) => {
       const btn = el("button",
         "seg-btn" + (state.configTab === key ? " active" : ""));
       btn.textContent = label;
@@ -3655,7 +4264,10 @@
     pane.id = "config-pane";
     body.appendChild(pane);
     if (state.configTab === "form") {
-      buildConfigFields(pane, "cfg", state.config || {}, true);
+      renderConfigSections(pane, state.config || {}, () => renderConfigModal());
+      Array.from(pane.querySelectorAll(".cfg-section")).forEach((node, i) => {
+        if (i < openState.length) node.open = openState[i];
+      });
     } else {
       const area = el("textarea", "config-json");
       area.id = "cfg-json";
@@ -3683,6 +4295,7 @@
     foot.appendChild(save);
     foot.appendChild(status);
     body.appendChild(foot);
+    body.scrollTop = scrollTop;
   }
 
   function switchConfigTab(tab) {
@@ -3702,15 +4315,9 @@
         setConfigStatus("config", "JSON 解析失败：" + err.message, "err");
         return false;
       }
-      return true;
     }
-    try {
-      state.config = collectConfigDoc("cfg", true);
-      return true;
-    } catch (err) {
-      setConfigStatus("config", err.message, "err");
-      return false;
-    }
+    // 常用表单的控件已实时写回 state.config，无需再收集
+    return true;
   }
 
   function configSave() {
@@ -3850,6 +4457,13 @@
     Promise.resolve(api.restart_app()).then((ok) => {
       if (ok === false) restartUnavailable();
     }).catch(restartUnavailable);
+  }
+
+  function closeWindow() {
+    // 无边框窗口没有系统关闭按钮：由顶栏/引导页的 × 调 js_api 关窗
+    const api = window.pywebview && window.pywebview.api;
+    if (!api || !api.close_window) return;
+    Promise.resolve(api.close_window()).catch(() => {});
   }
 
   /* ================= toast ================= */

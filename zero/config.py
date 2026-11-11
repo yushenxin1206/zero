@@ -352,13 +352,19 @@ class ConfigManager:
         }
 
     def masked_doc(self) -> dict[str, Any]:
-        """可安全下发的配置文档：apiKey 只给占位符。"""
+        """可安全下发的配置文档：apiKey / appSecret 只给占位符。"""
         doc = copy.deepcopy(self.raw)
         providers = doc.get('providers')
         if isinstance(providers, dict):
             for value in providers.values():
                 if isinstance(value, dict) and value.get('apiKey'):
                     value['apiKey'] = MASKED_SECRET
+        feishu = None
+        if isinstance(doc.get('channels'), dict):
+            candidate = doc['channels'].get('feishu')
+            feishu = candidate if isinstance(candidate, dict) else None
+        if feishu and feishu.get('appSecret'):
+            feishu['appSecret'] = MASKED_SECRET
         return doc
 
     def restore_secrets(self, doc: dict[str, Any]) -> dict[str, Any]:
@@ -366,7 +372,7 @@ class ConfigManager:
         doc = copy.deepcopy(doc)
         providers = doc.get('providers')
         if not isinstance(providers, dict):
-            return doc
+            providers = {}
         current = self.raw.get('providers')
         current = current if isinstance(current, dict) else {}
         for key, value in providers.items():
@@ -375,6 +381,17 @@ class ConfigManager:
             old = current.get(key)
             value['apiKey'] = (
                 str(old.get('apiKey') or '') if isinstance(old, dict) else '')
+        feishu = None
+        if isinstance(doc.get('channels'), dict):
+            candidate = doc['channels'].get('feishu')
+            feishu = candidate if isinstance(candidate, dict) else None
+        if feishu and feishu.get('appSecret') == MASKED_SECRET:
+            old_channels = self.raw.get('channels')
+            old_feishu = (old_channels.get('feishu')
+                          if isinstance(old_channels, dict) else None)
+            feishu['appSecret'] = (
+                str(old_feishu.get('appSecret') or '')
+                if isinstance(old_feishu, dict) else '')
         return doc
 
     def validate_doc(
