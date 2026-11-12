@@ -61,6 +61,13 @@ def _http_error_text(exc: requests.exceptions.HTTPError) -> str:
     if code in (401, 403):
         return f"认证失败（HTTP {code}）：apiKey 无效或没有该模型权限"
     if code == 404:
+        # 最常见的 404 原因：apiBase 只填了基址（…/v1），而它被原样当 POST
+        # URL 用，于是请求打到版本前缀上。能拿到实际 URL 时直接把话说明白。
+        url = (getattr(response, "url", "") or "").rstrip("/")
+        if url and not url.endswith("/chat/completions"):
+            return ("接口或模型不存在（HTTP 404）：实际请求的是 "
+                    f"{url}，看起来 apiBase 只填了基址——请补全为以 "
+                    "/chat/completions 结尾的完整端点")
         return "接口或模型不存在（HTTP 404）：检查 apiBase 与模型名"
     if code == 429:
         return "请求过于频繁（HTTP 429）：稍后重试或检查额度"

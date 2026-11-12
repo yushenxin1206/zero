@@ -1443,26 +1443,6 @@
     box-shadow: var(--sh-3);
     animation: scale-in .24s var(--ease);
   }
-  .setup-head { display: flex; align-items: flex-start; gap: 12px; }
-  .setup-titles { flex: 1; min-width: 0; }
-  .setup-quit {
-    flex: 0 0 auto;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 28px;
-    height: 28px;
-    padding: 0;
-    color: var(--text-3);
-    border-color: var(--line-weak);
-  }
-  .setup-quit:hover:not(:disabled) {
-    color: var(--danger);
-    border-color: var(--danger-line);
-  }
-  .setup-quit .icon { width: 13px; height: 13px; }
-  .icon-btn { padding: 7px 9px; }
-  .icon-btn:hover:not(:disabled) { color: var(--danger); }
   .setup-title { font-size: 17px; font-weight: 600; color: var(--text-strong); }
   .setup-sub { margin-top: 5px; font-size: 12.5px; color: var(--text-3); }
   .setup-body { margin-top: 18px; }
@@ -1489,6 +1469,13 @@
   .form-input:focus {
     border-color: var(--accent-line);
     box-shadow: 0 0 0 3px var(--focus-glow);
+  }
+  /* 单行控件统一 36px 高：input 与 select 的原生内边距不同，不固定会出现
+     同一行里高度参差、标签错位 */
+  input.form-input, select.form-input {
+    height: 36px;
+    padding-top: 0;
+    padding-bottom: 0;
   }
   .form-hint { margin-top: 4px; font-size: 11px; color: var(--text-3); }
   .form-split { display: flex; gap: 12px; }
@@ -1597,8 +1584,20 @@
   .cfg-sub:first-child { padding-top: 0; border-top: none; }
   .cfg-sub-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
   .cfg-sub-title { flex: 1; min-width: 0; font: 600 12px/1.6 var(--mono); color: var(--text-2); }
-  .cfg-map-row { display: flex; align-items: flex-end; gap: 8px; }
+  /* 映射行（models）：顶部对齐，避免带说明的列把相邻列的标签顶歪 */
+  .cfg-map-row { display: flex; align-items: flex-start; gap: 8px; }
   .cfg-map-row > .form-row { flex: 1; min-width: 0; }
+  .cfg-map-row .form-row > label { line-height: 20px; }
+  /* 与输入框对齐：label 行高 20px + 下边距 5px */
+  .cfg-map-row > .cfg-del { margin-top: 25px; }
+
+  /* providers：每个厂商一张卡片，字段统一“标签在上、控件在下” */
+  .cfg-provider { display: flex; flex-direction: column; gap: 10px; }
+  .cfg-provider + .cfg-provider {
+    margin-top: 2px;
+    padding-top: 12px;
+    border-top: 1px dashed var(--line-weak);
+  }
   .cfg-del {
     flex: 0 0 auto;
     display: inline-flex;
@@ -1784,9 +1783,6 @@
           <svg class="icon"><use href="#i-cpu"/></svg>
           <span id="model-name">model</span>
         </button>
-        <button id="window-close" class="top-btn icon-btn" title="关闭窗口" aria-label="关闭窗口">
-          <svg class="icon"><use href="#i-x"/></svg>
-        </button>
       </div>
     </header>
 
@@ -1831,13 +1827,8 @@
 <div id="setup" class="hidden">
   <div class="setup-card" role="dialog" aria-modal="true" aria-labelledby="setup-title">
     <div class="setup-head">
-      <div class="setup-titles">
-        <div class="setup-title" id="setup-title">先完成必要配置</div>
-        <div class="setup-sub" id="setup-sub">填写模型接入信息后才能开始使用</div>
-      </div>
-      <button id="setup-quit" class="setup-quit" title="退出应用" aria-label="退出应用">
-        <svg class="icon"><use href="#i-x"/></svg>
-      </button>
+      <div class="setup-title" id="setup-title">先完成必要配置</div>
+      <div class="setup-sub" id="setup-sub">填写模型接入信息后才能开始使用</div>
     </div>
     <div class="setup-body" id="setup-body"></div>
     <div class="setup-foot">
@@ -3157,6 +3148,8 @@
     if (setupVisible()) return; // 首次配置引导不可关闭
     if (!$("#modal").classList.contains("hidden")) {
       event.preventDefault();
+      // 配置窗口与引导页同样只能点「关闭」退出
+      if (state.modalKind === "config") return;
       closeModal();
     } else if (state.busy && event.target !== $("#input")) {
       event.preventDefault();
@@ -3182,8 +3175,6 @@
   $("#config-dismiss").onclick = () => $("#config-banner").classList.add("hidden");
   $("#setup-save").onclick = setupSubmit;
   $("#setup-test").onclick = setupTest;
-  $("#window-close").onclick = closeWindow;
-  $("#setup-quit").onclick = closeWindow;
   $("#theme-btn").onclick = () => {
     applyTheme(currentTheme() === "dark" ? "light" : "dark");
   };
@@ -3222,7 +3213,10 @@
   }
 
   $("#modal").addEventListener("click", (event) => {
-    if (event.target === $("#modal")) closeModal();
+    if (event.target !== $("#modal")) return;
+    // 配置窗口只能点「关闭」退出：遮罩误点会丢掉未保存的编辑
+    if (state.modalKind === "config") return;
+    closeModal();
   });
 
   function showModelsModal(models, current) {
@@ -3466,10 +3460,12 @@
   /* ================= config / setup ================= */
 
   const MASKED_SECRET = "****";
+  /* apiBase 会被原样当作 POST URL，所以预设必须是**完整端点**
+     （含 /chat/completions）。只给基址会让每个请求 404。 */
   const PROVIDER_PRESETS = {
-    deepseek: "https://api.deepseek.com",
-    dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    zhipu: "https://open.bigmodel.cn/api/paas/v4",
+    deepseek: "https://api.deepseek.com/chat/completions",
+    dashscope: "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+    zhipu: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
   };
   const PROVIDER_LABELS = {
     deepseek: "DeepSeek",
@@ -3586,7 +3582,8 @@
 
     const provider = el("select", "form-input");
     provider.id = prefix + "-provider";
-    const options = providers.length ? providers : ["deepseek"];
+    // 默认厂商条目始终可选（即使配置里还没写入），再并上配置中已有的键
+    const options = Array.from(new Set([...Object.keys(PROVIDER_PRESETS), ...providers]));
     options.forEach((key) => {
       const option = el("option");
       option.value = key;
@@ -3594,9 +3591,21 @@
       provider.appendChild(option);
     });
     provider.value = currentProvider;
+    const customOption = el("option");
+    customOption.value = "__custom__";
+    customOption.textContent = "自定义…";
+    provider.appendChild(customOption);
+
+    const customKey = formInput(
+      prefix + "-provider-name", "text", "如 openrouter / my-proxy");
+    const customRow = fieldRow(
+      "Provider 标识", customKey,
+      "字母、数字、下划线、中划线；例如 openrouter", true);
+    customRow.classList.add("hidden");
 
     const saved = (doc.providers || {})[currentProvider] || {};
-    const base = formInput(prefix + "-base", "text", "https://api.example.com");
+    const base = formInput(
+      prefix + "-base", "text", "https://api.example.com/v1/chat/completions");
     base.value = saved.apiBase || PROVIDER_PRESETS[currentProvider] || "";
     const key = formInput(
       prefix + "-key", "password",
@@ -3609,7 +3618,10 @@
 
     const grid = el("div", "form-grid");
     grid.appendChild(fieldRow("Provider", provider));
-    grid.appendChild(fieldRow("API Base", base));
+    grid.appendChild(customRow);
+    grid.appendChild(fieldRow(
+      "API Base", base,
+      "完整端点，需含 /chat/completions（程序不会自动补全）"));
     grid.appendChild(fieldRow(
       "API Key", key, "只写入本地 config.json，界面回显始终是占位符"));
     const modelRow = el("div", "form-split");
@@ -3619,17 +3631,27 @@
     container.appendChild(grid);
 
     provider.onchange = () => {
-      const pick = (doc.providers || {})[provider.value] || {};
+      const custom = provider.value === "__custom__";
+      customRow.classList.toggle("hidden", !custom);
+      const pick = custom ? {} : ((doc.providers || {})[provider.value] || {});
       base.value = pick.apiBase || PROVIDER_PRESETS[provider.value] || "";
       key.value = "";
       key.placeholder = pick.apiKey === MASKED_SECRET
         ? "已保存，留空则不修改" : "填写 API Key";
+      if (custom) customKey.focus();
     };
-    return { provider, base, key, model, win };
+    return { provider, customKey, base, key, model, win };
   }
 
   function collectConfigDoc(prefix) {
-    const provider = $("#" + prefix + "-provider").value;
+    const picked = $("#" + prefix + "-provider").value;
+    const customInput = $("#" + prefix + "-provider-name");
+    const provider = picked === "__custom__"
+      ? (customInput ? customInput.value.trim() : "") : picked;
+    if (!provider) throw new Error("请填写 Provider 标识");
+    if (!PROVIDER_KEY_RE.test(provider)) {
+      throw new Error("Provider 标识只能包含字母、数字、下划线和中划线");
+    }
     const apiBase = $("#" + prefix + "-base").value.trim();
     const apiKey = $("#" + prefix + "-key").value.trim();
     const model = $("#" + prefix + "-model").value.trim();
@@ -3939,6 +3961,33 @@
     return select;
   }
 
+  function cfgProviderSelect(doc, name) {
+    const keys = Object.keys(doc.providers || {});
+    const current = readPath(doc, ["models", name, "provider"]) || "";
+    const select = el("select", "form-input");
+    const blank = el("option");
+    blank.value = "";
+    blank.textContent = keys.length ? "选择 provider" : "先添加 provider";
+    select.appendChild(blank);
+    keys.forEach((key) => {
+      const option = el("option");
+      option.value = key;
+      option.textContent = key;
+      select.appendChild(option);
+    });
+    if (current && !keys.includes(current)) {
+      const missing = el("option");
+      missing.value = current;
+      missing.textContent = `${current}（未配置）`;
+      select.appendChild(missing);
+    }
+    select.value = current;
+    select.onchange = () => {
+      writePath(doc, ["models", name, "provider"], select.value);
+    };
+    return select;
+  }
+
   function cfgModelsSection(container, doc, rerender) {
     const body = cfgSection(
       container, "models",
@@ -3968,7 +4017,7 @@
       row.appendChild(fieldRow("模型名", nameInput));
       row.appendChild(fieldRow(
         "provider",
-        cfgText(doc, ["models", name, "provider"], { placeholder: "deepseek" }),
+        cfgProviderSelect(doc, name),
         "", true));
       row.appendChild(fieldRow(
         "contextWindowTokens",
@@ -4041,31 +4090,88 @@
     });
   }
 
-  function cfgProvidersSection(container, doc) {
+  const PROVIDER_KEY_RE = /^[A-Za-z0-9_-]+$/;
+
+  function cfgProvidersSection(container, doc, rerender) {
     const body = cfgSection(
       container, "providers",
-      "厂商接入信息；被 models 引用的 provider 必须填写 apiBase。", false);
+      "厂商接入信息：键可自定义（字母/数字/_/-），被 models 引用的 provider 必须填写 "
+      + "apiBase（完整端点，需含 /chat/completions，程序不会自动补全）。",
+      false);
+    doc.providers = doc.providers || {};
     const used = new Set(
       Object.values(doc.models || {}).map((m) => m && m.provider).filter(Boolean));
-    ["dashscope", "deepseek", "zhipu"].forEach((key) => {
-      const sub = el("div", "cfg-sub");
-      const head = el("div", "cfg-sub-head");
-      const title = el("div", "cfg-sub-title");
-      title.textContent = key;
-      head.appendChild(title);
-      sub.appendChild(head);
-      const grid = el("div", "form-grid");
-      grid.appendChild(fieldRow(
+    Object.keys(doc.providers).forEach((key) => {
+      const card = el("div", "cfg-provider");
+      const nameInput = el("input", "form-input");
+      nameInput.value = key;
+      nameInput.onchange = () => {
+        const next = nameInput.value.trim();
+        if (!next || next === key || doc.providers[next]
+            || !PROVIDER_KEY_RE.test(next)) {
+          nameInput.value = key;
+          return;
+        }
+        const value = doc.providers[key];
+        delete doc.providers[key];
+        doc.providers[next] = value;
+        // provider 改名时同步 models 里的引用，避免出现悬空键
+        Object.values(doc.models || {}).forEach((spec) => {
+          if (spec && spec.provider === key) spec.provider = next;
+        });
+        rerender();
+      };
+      const del = el("button", "cfg-del");
+      del.type = "button";
+      del.textContent = "删除";
+      // 仍被模型引用时不允许删除，避免保存后出现悬空 provider
+      del.disabled = used.has(key);
+      if (del.disabled) del.title = "仍被 models 引用：先把模型的 provider 改到别处";
+      del.onclick = () => {
+        delete doc.providers[key];
+        rerender();
+      };
+      // 标识与删除同处一行，删除紧贴控件，不漂浮到卡片右缘
+      const nameRow = el("div", "form-row");
+      const nameLabel = el("label");
+      nameLabel.textContent = "provider 标识";
+      const star = el("span", "cfg-req");
+      star.textContent = "*";
+      nameLabel.appendChild(star);
+      const nameLine = el("div", "cfg-inline");
+      nameLine.appendChild(nameInput);
+      nameLine.appendChild(del);
+      nameRow.appendChild(nameLabel);
+      nameRow.appendChild(nameLine);
+      card.appendChild(nameRow);
+
+      const line = el("div", "form-split");
+      line.appendChild(fieldRow(
         "apiBase",
-        cfgText(doc, ["providers", key, "apiBase"], { placeholder: "https://..." }),
-        used.has(key) ? "已被 models 引用，必填" : "",
+        cfgText(doc, ["providers", key, "apiBase"],
+          { placeholder: "https://api.example.com/v1/chat/completions" }),
+        used.has(key) ? "已被 models 引用，必填（含 /chat/completions 的完整端点）" : "",
         used.has(key)));
-      grid.appendChild(fieldRow(
+      line.appendChild(fieldRow(
         "apiKey",
         cfgSecret(doc, ["providers", key, "apiKey"])));
-      sub.appendChild(grid);
-      body.appendChild(sub);
+      card.appendChild(line);
+      body.appendChild(card);
     });
+    const add = el("button", "cfg-add");
+    add.type = "button";
+    add.textContent = "+ 添加 Provider";
+    add.onclick = () => {
+      let i = 1;
+      let key = `provider-${i}`;
+      while (doc.providers[key]) {
+        i += 1;
+        key = `provider-${i}`;
+      }
+      doc.providers[key] = { apiBase: "", apiKey: "" };
+      rerender();
+    };
+    body.appendChild(add);
   }
 
   function cfgChannelsSection(container, doc) {
@@ -4173,7 +4279,7 @@
     container.appendChild(legend);
     cfgModelsSection(container, doc, rerender);
     cfgRuntimesSection(container, doc, rerender);
-    cfgProvidersSection(container, doc);
+    cfgProvidersSection(container, doc, rerender);
     cfgChannelsSection(container, doc);
     cfgCompactSection(container, doc);
     cfgMaintenanceSection(container, doc);
@@ -4193,7 +4299,8 @@
     let doc;
     try {
       doc = collectConfigDoc("setup");
-      const provider = $("#setup-provider").value;
+      const model = $("#setup-model").value.trim();
+      const provider = ((doc.models || {})[model] || {}).provider;
       if (!(doc.providers[provider] || {}).apiKey) {
         throw new Error("请填写 API Key");
       }
@@ -4457,13 +4564,6 @@
     Promise.resolve(api.restart_app()).then((ok) => {
       if (ok === false) restartUnavailable();
     }).catch(restartUnavailable);
-  }
-
-  function closeWindow() {
-    // 无边框窗口没有系统关闭按钮：由顶栏/引导页的 × 调 js_api 关窗
-    const api = window.pywebview && window.pywebview.api;
-    if (!api || !api.close_window) return;
-    Promise.resolve(api.close_window()).catch(() => {});
   }
 
   /* ================= toast ================= */

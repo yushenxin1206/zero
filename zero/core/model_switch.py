@@ -39,10 +39,14 @@ def session_model(
     """会话当前生效的模型注册表键：绑定优先，未绑定回退全局 default。
 
     channel 无关的只读查询，供各 channel 展示「当前模型」。绑定语义收敛
-    在 core，channel 只渲染不重复实现。
+    在 core，channel 只渲染不重复实现。绑定模型可能已被从 config.models
+    删除（用户改配置），失效绑定直接忽略并回退 default，避免界面继续显示
+    一个已不存在的模型。
     """
-    return (session_store.get_model(channel, session_id)
-            or config.resolve_runtime("default").llm_call_options.model)
+    bound = session_store.get_model(channel, session_id)
+    if bound and bound in config.models:
+        return bound
+    return config.resolve_runtime("default").llm_call_options.model
 
 
 @dataclass
@@ -77,9 +81,8 @@ async def switch_model(
             f"模型 {new_model!r} 不在 models 注册表中，"
             f"已知键: {sorted(config.models)}")
 
-    old_model = (await asyncio.to_thread(
-        session_store.get_model, channel, session_id)
-        or config.resolve_runtime("default").llm_call_options.model)
+    old_model = await asyncio.to_thread(
+        session_model, config, channel, session_id, session_store)
     if old_model == new_model:
         return ModelSwitchResult(
             old_model=old_model, new_model=new_model, compacted=False,

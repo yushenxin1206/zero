@@ -2,11 +2,12 @@ import argparse
 import copy
 import json
 import os
+import re
 import sys
 from datetime import datetime
 from typing import Any
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 from pydantic.alias_generators import to_camel
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
@@ -49,10 +50,20 @@ def project_memory_path(cwd: Path, *, override: Path | None = None) -> Path:
 TOOL_RESULT_MAX_CHARS = 10000
 
 
+# 内置厂商：无配置文件时仍默认提供，首次引导可直接选择；
+# 用户也可以添加任意 OpenAI 兼容厂商。
+PROVIDER_PRESETS: tuple[str, ...] = ('dashscope', 'deepseek', 'zhipu')
+PROVIDER_KEY_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+
+
+def _default_providers() -> ProviderConfigs:
+    return {key: ProviderConfig() for key in PROVIDER_PRESETS}
+
+
 class Config(BaseSettings):
     # 每个任务一套 agent runtime：default 主对话 / compact / session_summary / memory
     agent_runtimes: AgentRuntimeSpecs = Field(default_factory=AgentRuntimeSpecs)
-    providers: ProviderConfigs = Field(default_factory=ProviderConfigs)
+    providers: ProviderConfigs = Field(default_factory=_default_providers)
     # 模型注册表：键 = API 模型名，值 = 接入事实（provider / 上下文窗口）
     models: dict[str, ModelSpec] = Field(default_factory=dict)
     channels: ChannelConfigs = Field(default_factory=ChannelConfigs)
@@ -60,6 +71,17 @@ class Config(BaseSettings):
     maintenance: MaintenanceConfig = Field(default_factory=MaintenanceConfig)
 
     model_config = SettingsConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+    @field_validator('providers')
+    @classmethod
+    def _check_provider_keys(cls, value: ProviderConfigs) -> ProviderConfigs:
+        """provider 标识会出现在 models.provider 里，限制字符集避免手写歧义。"""
+        for key in value:
+            if not PROVIDER_KEY_RE.fullmatch(key):
+                raise ValueError(
+                    f'provider 标识 {key!r} 不合法：只能包含字母、数字、'
+                    f'下划线和中划线')
+        return value
 
     def resolve_runtime(self, task: str, model_override: str | None = None) -> AgentRuntimeConfig:
         """按任务名解析出物化的运行时配置（配置层唯一的解析入口）。
@@ -135,16 +157,15 @@ class Config(BaseSettings):
     def _resolve_provider(self, provider_key: str) -> ProviderConfig:
         """按 ModelSpec.provider 键在 providers 中结算出 ProviderConfig。
 
-        结算不到（键不在 ProviderConfigs 的字段里，即未在 providers 配置该
-        厂商）立即报错，防止构造出带空 api_base/api_key 的 client 后才在
-        请求时失败。
+        结算不到（键不在 providers 映射表里）立即报错，防止构造出带空
+        api_base/api_key 的 client 后才在请求时失败。
         """
-        known = type(self.providers).model_fields
-        if provider_key not in known:
+        provider = self.providers.get(provider_key)
+        if provider is None:
             raise ValueError(
                 f"provider {provider_key!r} 未在 providers 中配置，"
-                f"已知键: {sorted(known)}")
-        return getattr(self.providers, provider_key)
+                f"已知键: {sorted(self.providers)}")
+        return provider
 
 
 class ConfigWriteError(RuntimeError):
@@ -163,7 +184,9 @@ SKELETON: dict[str, Any] = {
     },
     "providers": {
         "deepseek": {
-            "apiBase": "https://api.deepseek.com",
+            # apiBase 被原样当 POST URL 用，必须写到 /chat/completions（完整端点）。
+            # 只写到基址会让每个请求打到版本前缀上，厂商回 404。
+            "apiBase": "https://api.deepseek.com/chat/completions",
             "apiKey": "",
         },
     },
@@ -256,12 +279,23 @@ def _binding_problem(cfg: Config) -> dict[str, str] | None:
     """配置结构合法但"跑不起来"的原因（缺注册表 / 未绑模型 / 缺端点）。"""
     if not cfg.models:
         return _issue('models', 'models 注册表为空：至少注册一个模型')
+    # 每条模型都必须在 providers 里有对应项，且端点非空——否则拼错 provider
+    # 要等到真正用到该模型时才报错。
+    for name, spec in cfg.models.items():
+        provider = cfg.providers.get(spec.provider)
+        if provider is None:
+            return _issue(
+                f'models.{name}.provider',
+                f'provider {spec.provider!r} 未在 providers 中配置，'
+                f'已知键: {sorted(cfg.providers)}')
+        if not provider.api_base.strip():
+            return _issue(
+                f'providers.{spec.provider}.apiBase',
+                f'模型 {name!r} 使用的 provider {spec.provider!r} 未配置 apiBase')
     try:
-        runtime = cfg.resolve_runtime('default')
+        cfg.resolve_runtime('default')
     except ValueError as exc:
         return _issue('agentRuntimes.default.llmCallOptions.model', str(exc))
-    if not runtime.llm_runtime.provider.api_base.strip():
-        return _issue('providers', '当前模型使用的 provider 未配置 apiBase')
     return None
 
 

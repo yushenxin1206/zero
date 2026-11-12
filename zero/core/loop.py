@@ -244,6 +244,10 @@ class AgentLoop:
         model_override = await asyncio.to_thread(
             self.session_store.get_model,
             msg_in.channel, msg_in.session_id) or None
+        # 绑定模型可能已被从 config.models 删除（用户改配置）：失效绑定
+        # 回退全局 default，否则每轮都会在 resolve_runtime 抛“模型不在注册表”
+        if model_override and model_override not in self.config.models:
+            model_override = None
         runner = AgentRunner(
             config=self.config,
             running_context=context,

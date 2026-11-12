@@ -331,10 +331,9 @@ class ProviderConfig(Base):
     api_key: str = ''
 
 
-class ProviderConfigs(Base):
-    dashscope: ProviderConfig = Field(default_factory=ProviderConfig)
-    deepseek: ProviderConfig = Field(default_factory=ProviderConfig)
-    zhipu: ProviderConfig = Field(default_factory=ProviderConfig)
+# providers：provider 标识 → 接入事实。键由用户自定义（字母/数字/_/-），
+# 值统一是 OpenAI 兼容端点。用映射表而不是固定字段，才能支持任意厂商。
+ProviderConfigs = dict[str, ProviderConfig]
 
 
 class LLMCallOptions(Base):

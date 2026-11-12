@@ -120,7 +120,8 @@ def test_save_rejects_config_without_provider_endpoint():
     with pytest.raises(ConfigValidationError) as excinfo:
         manager.save(broken)
 
-    assert any(i["path"] == "providers" for i in excinfo.value.issues)
+    assert any(i["path"] == "providers.deepseek.apiBase"
+               for i in excinfo.value.issues)
     assert not current().config.exists()
 
 
@@ -185,6 +186,51 @@ def test_reset_backs_up_broken_file_and_writes_skeleton():
     # 重置只改磁盘；本进程仍需要重启才能用上骨架
     assert manager.status == "ok"
     assert ConfigManager(current().config).load().models
+
+
+def test_custom_provider_is_accepted():
+    """providers 是映射表：任意标识（如自建网关）都能保存并解析。"""
+    doc = {
+        "models": {"m1": {"provider": "my-proxy", "contextWindowTokens": 32000}},
+        "providers": {
+            "my-proxy": {"apiBase": "https://proxy.local/v1", "apiKey": "k"},
+        },
+        "agentRuntimes": {"default": {"llmCallOptions": {"model": "m1"}}},
+    }
+    manager = ConfigManager(current().config)
+    manager.load()
+    manager.save(doc)
+
+    assert manager.raw["providers"]["my-proxy"]["apiBase"] == "https://proxy.local/v1"
+    reloaded = ConfigManager(current().config)
+    cfg = reloaded.load()
+    assert reloaded.status == "ok"
+    assert cfg.providers["my-proxy"].api_base == "https://proxy.local/v1"
+
+
+def test_model_referencing_unknown_provider_is_rejected():
+    broken = json.loads(json.dumps(MINIMAL))
+    broken["models"]["m1"]["provider"] = "nope"
+
+    manager = ConfigManager(current().config)
+    manager.load()
+    with pytest.raises(ConfigValidationError) as excinfo:
+        manager.save(broken)
+
+    assert any(i["path"] == "models.m1.provider"
+               for i in excinfo.value.issues)
+
+
+def test_provider_key_with_invalid_chars_is_rejected():
+    broken = json.loads(json.dumps(MINIMAL))
+    broken["providers"]["my proxy"] = {"apiBase": "https://x.local"}
+
+    manager = ConfigManager(current().config)
+    manager.load()
+    with pytest.raises(ConfigValidationError) as excinfo:
+        manager.save(broken)
+
+    assert any(i["path"] == "providers" for i in excinfo.value.issues)
 
 
 def test_maintenance_engine_starts_without_config(session_store):

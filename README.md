@@ -26,15 +26,20 @@ uv sync --dev
 ## 运行
 
 ```bash
-# 默认同时启动 CLI + 飞书通道（未配置飞书 app_id 时自动跳过飞书）
+# 不带参数：只启动 web 桌面窗口
 uv run zero
 
-# 只运行 CLI 通道
+# 只启动 CLI
 uv run zero --cli
 
-# 以 pywebview 桌面窗口运行 web 通道
-uv run zero --web
+# 只启动飞书通道（需在配置里填写 appId / appSecret）
+uv run zero --feishu
+
+# 多通道组合：web 桌面窗口 + CLI 同时启动
+uv run zero --web --cli
 ```
+
+`--web` / `--cli` / `--feishu` 可任意组合，不带任何开关时等价于 `--web`。
 
 Windows 下等价的激活方式为 `.venv\Scripts\Activate.ps1`，入口为 `.venv\Scripts\zero.exe`。
 

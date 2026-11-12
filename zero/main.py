@@ -172,11 +172,20 @@ def start_background(core: CoreRuntime) -> list[asyncio.Task]:
     ]
 
 
+def build_cli_channel(core: CoreRuntime, config: Config,
+                      data_paths: DataPaths) -> CLIChannel:
+    return CLIChannel(
+        msg_bus=core.msg_bus, session_store=core.session_store,
+        scheduler_store=core.scheduler_store,
+        data_paths=data_paths, permission=core.permission,
+        config=config, tool_registry=core.tool_registry)
+
+
 def start_feishu(msg_bus: MessageBus, config: Config,
                  session_store: SessionStore) -> asyncio.Task | None:
     feishu_cfg = config.channels.feishu
-    if not feishu_cfg.app_id:
-        log.info("未配置飞书 app_id，跳过 feishu channel")
+    if not feishu_cfg.app_id or not feishu_cfg.app_secret:
+        log.info("未配置飞书 appId / appSecret，跳过 feishu channel")
         return None
     channel = FeishuChannel(
         config=feishu_cfg, session_store=session_store, msg_bus=msg_bus)
@@ -184,33 +193,37 @@ def start_feishu(msg_bus: MessageBus, config: Config,
     return asyncio.create_task(_guard(channel.start(), CHANNEL_FEISHU))
 
 
-async def run(config: Config, data_paths: DataPaths, cli_only: bool = False):
-    """
-    启动 zero agent。默认同时拉起 CLI 和飞书两个 channel，
-    共享同一个 MessageBus / AgentLoop / Scheduler。
+async def run(config: Config, data_paths: DataPaths, *,
+              cli: bool, feishu: bool):
+    """headless 模式：按参数启动 CLI / 飞书通道（可同时启动）。
+
+    ``zero --cli``、``zero --feishu``、``zero --cli --feishu`` 都走这里；
+    没选 CLI 时进程由核心循环维持，Ctrl+C 退出。
     """
     core = build_core(config, data_paths)
     background = start_background(core)
-    if not cli_only:
-        if (feishu := start_feishu(
-                core.msg_bus, config, core.session_store)) is not None:
-            background.append(feishu)
+    if feishu:
+        task = start_feishu(core.msg_bus, config, core.session_store)
+        if task is not None:
+            background.append(task)
 
-    cli_channel = CLIChannel(
-        msg_bus=core.msg_bus, session_store=core.session_store,
-        scheduler_store=core.scheduler_store,
-        data_paths=data_paths, permission=core.permission,
-        config=config, tool_registry=core.tool_registry)
+    cli_task = None
+    if cli:
+        cli_task = asyncio.create_task(
+            build_cli_channel(core, config, data_paths).start())
     core_task = asyncio.create_task(core.agent_loop.run())
-    cli_task = asyncio.create_task(cli_channel.start())
 
-    # CLI 退出（/quit）或核心 loop 结束时，取消所有后台任务，
-    # 并取消在途子 agent（其回投消息已无会话可送达）
-    done, pending = await asyncio.wait(
-        {core_task, cli_task}, return_when=asyncio.FIRST_COMPLETED)
-    for t in background:
-        t.cancel()
-    await core.subagent_manager.shutdown()
+    # CLI 退出（/quit）或核心 loop 结束时结束进程；只开飞书时等 Ctrl+C
+    wait_set = {core_task} | ({cli_task} if cli_task is not None else set())
+    done: set[asyncio.Task] = set()
+    try:
+        done, _ = await asyncio.wait(
+            wait_set, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        for t in background:
+            t.cancel()
+        await core.subagent_manager.shutdown()
+
     task_names = {core_task: "agent-loop", cli_task: "cli-channel"}
     for t in done:
         if not t.cancelled() and (exc := t.exception()) is not None:
@@ -218,8 +231,12 @@ async def run(config: Config, data_paths: DataPaths, cli_only: bool = False):
 
 
 def run_web_desktop(config: Config, data_paths: DataPaths,
-                    config_manager: ConfigManager | None = None):
-    """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。"""
+                    config_manager: ConfigManager | None = None, *,
+                    with_cli: bool = False, with_feishu: bool = False):
+    """主线程跑 pywebview GUI；asyncio 后端在 pywebview 的工作线程里运行。
+
+    ``with_cli`` / ``with_feishu`` 决定是否附带启动对应通道；零个时只开 web。
+    """
     from zero.channels.web.shell import run_desktop
 
     web_cfg = config.channels.web
@@ -229,9 +246,15 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
 
         core = build_core(config, data_paths)
         background = start_background(core)
-        if (feishu := start_feishu(
-                core.msg_bus, config, core.session_store)) is not None:
-            background.append(feishu)
+        if with_feishu:
+            task = start_feishu(core.msg_bus, config, core.session_store)
+            if task is not None:
+                background.append(task)
+
+        cli_task = None
+        if with_cli:
+            cli_task = asyncio.create_task(
+                build_cli_channel(core, config, data_paths).start())
 
         channel = WebChannel(
             msg_bus=core.msg_bus, session_store=core.session_store,
@@ -244,6 +267,9 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
 
         core_task = asyncio.create_task(core.agent_loop.run())
         serve_task = asyncio.create_task(channel.start())
+        tasks = {core_task, serve_task}
+        if cli_task is not None:
+            tasks.add(cli_task)
         try:
             try:
                 await channel.wait_ready()
@@ -255,8 +281,9 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
                 ready=True, wsUrl=channel.ws_url, token=channel.token)
 
             done, _ = await asyncio.wait(
-                {core_task, serve_task}, return_when=asyncio.FIRST_COMPLETED)
-            names = {core_task: "agent-loop", serve_task: "web-channel"}
+                tasks, return_when=asyncio.FIRST_COMPLETED)
+            names = {core_task: "agent-loop", serve_task: "web-channel",
+                     cli_task: "cli-channel"}
             for t in done:
                 if not t.cancelled() and (exc := t.exception()) is not None:
                     log.error("%s task failed", names.get(t, "unknown"),
@@ -265,6 +292,8 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
             # 窗口关闭后必须等所有任务真正收尾再关闭事件循环，
             # 否则会留下 "Task was destroyed but it is pending" 告警
             pending = background + [core_task, serve_task]
+            if cli_task is not None:
+                pending.append(cli_task)
             for t in pending:
                 if not t.done():
                     t.cancel()
@@ -284,7 +313,8 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
 
     run_desktop(
         backend,
-        title="zero",
+        # 标题栏只保留系统按钮，不显示文字
+        title="",
         width=web_cfg.width,
         height=web_cfg.height,
         theme_path=data_paths.root / "web-theme",
@@ -292,16 +322,26 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="zero agent")
-    parser.add_argument(
-        "--cli", action="store_true",
-        help="只运行 CLI 通道，不连接飞书（默认两个 channel 同时启动）",
-    )
+    parser = argparse.ArgumentParser(
+        description="zero agent（不带参数时默认只启动 web 桌面窗口）")
     parser.add_argument(
         "--web", action="store_true",
-        help="以 pywebview 桌面窗口运行 web 通道（需安装 .[web] 可选依赖）",
+        help="启动 web 桌面窗口（默认）",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--cli", action="store_true",
+        help="启动 CLI 通道",
+    )
+    parser.add_argument(
+        "--feishu", action="store_true",
+        help="启动飞书通道（需在配置里填写 appId / appSecret）",
+    )
+
+    args = parser.parse_args()
+    # 没有显式选择任何通道时默认 web；多个开关可同时生效
+    if not (args.web or args.cli or args.feishu):
+        args.web = True
+    return args
 
 
 def main():
@@ -322,17 +362,33 @@ def main():
 
     try:
         if args.web:
-            run_web_desktop(config, data_paths, manager)
+            # 配置未就绪时只开界面走引导，CLI / 飞书等无配置无法工作
+            ready = not manager.needs_setup
+            run_web_desktop(
+                config, data_paths, manager,
+                with_cli=args.cli and ready,
+                with_feishu=args.feishu and ready,
+            )
         elif manager.needs_setup:
             print(
-                "尚未完成配置：请先运行 `zero --web` 在桌面窗口里完成首次配置，"
+                "尚未完成配置：请先运行 `zero`（默认打开桌面窗口）完成首次配置，"
                 f"或编辑 {data_paths.config}（可先执行 "
                 "`python -m zero.config --write` 生成骨架）。",
                 file=sys.stderr,
             )
             return 1
         else:
-            asyncio.run(run(config, data_paths, cli_only=args.cli))
+            feishu_cfg = config.channels.feishu
+            if args.feishu and not (feishu_cfg.app_id.strip()
+                                    and feishu_cfg.app_secret.strip()):
+                print("未配置飞书 appId / appSecret，跳过 feishu 通道",
+                      file=sys.stderr)
+                if not args.cli:
+                    return 1
+            asyncio.run(run(
+                config, data_paths, cli=args.cli,
+                feishu=args.feishu and bool(
+                    feishu_cfg.app_id.strip() and feishu_cfg.app_secret.strip())))
     except KeyboardInterrupt:
         pass
     return 0

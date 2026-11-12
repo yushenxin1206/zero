@@ -14,7 +14,6 @@ from zero.models import (
     MaintenanceConfig,
     ModelSpec,
     ProviderConfig,
-    ProviderConfigs,
 )
 
 # 顶层区块（compact / maintenance）与共享 spec 的 token 预算默认值
@@ -32,10 +31,10 @@ MODELS = {
     "model-b": ModelSpec(provider="dashscope", context_window_tokens=22222),
 }
 
-PROVIDERS = ProviderConfigs(
-    deepseek=ProviderConfig(api_base="https://deepseek.local", api_key="dk"),
-    dashscope=ProviderConfig(api_base="https://dashscope.local", api_key="ds"),
-)
+PROVIDERS = {
+    "deepseek": ProviderConfig(api_base="https://deepseek.local", api_key="dk"),
+    "dashscope": ProviderConfig(api_base="https://dashscope.local", api_key="ds"),
+}
 
 
 def cfg(runtimes, models=None, providers=None) -> Config:
@@ -262,10 +261,23 @@ def test_type_consistency():
         AgentRuntimeConfig()
     config_like = AgentRuntimeConfig(
         llm_call_options=LLMCallOptions(model="m"),
-        llm_runtime=LLMRuntime(provider=PROVIDERS.deepseek, context_window_tokens=999),
+        llm_runtime=LLMRuntime(provider=PROVIDERS["deepseek"], context_window_tokens=999),
         max_iterations=3,
         reasoning_token_headroom=2048,
     )
-    assert config_like.llm_runtime.provider is PROVIDERS.deepseek
+    assert config_like.llm_runtime.provider is PROVIDERS["deepseek"]
     assert config_like.llm_runtime.context_window_tokens == 999
     assert config_like.max_iterations == 3
+
+
+def test_stale_session_binding_falls_back_to_default(session_store):
+    """会话绑定的模型被从 config.models 删除后，展示应回退 default。"""
+    from zero.core.model_switch import session_model
+
+    config = cfg({"default": {"llmCallOptions": {"model": "model-a"}}})
+    sid = session_store.create_session("web", "src-1")
+    session_store.set_model("web", sid, "model-b")
+    assert session_model(config, "web", sid, session_store) == "model-b"
+
+    del config.models["model-b"]
+    assert session_model(config, "web", sid, session_store) == "model-a"
