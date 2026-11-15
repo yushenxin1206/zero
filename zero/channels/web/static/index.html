@@ -854,8 +854,9 @@
     border: none;
     background: transparent;
     text-align: left;
-    cursor: pointer;
   }
+  /* 只有可展开的分组才是按钮，纯计数分组保持普通光标 */
+  .change-group-head[role="button"] { cursor: pointer; }
   .change-group-head:hover {
     background: transparent;
     border-color: transparent;
@@ -3734,11 +3735,6 @@
       const row = el("li", "change-group");
       const isBlocked = !!item.blocked;
       const headRow = el("div", "change-group-head");
-      if (!isBlocked) {
-        headRow.setAttribute("role", "button");
-        headRow.setAttribute("tabindex", "0");
-        headRow.setAttribute("aria-expanded", "false");
-      }
       const badge = el("span", "change-badge bulk");
       badge.textContent = "批量 " + count + (item.capped ? "+" : "");
       // 折叠目录本身也是绝对路径：复用路径链接的打开通道，点击定位到目录
@@ -3757,6 +3753,15 @@
         return;
       }
 
+      // 纯计数分组没有逐文件明细，展开只会是空列表：不做展开
+      if (files.length === 0) {
+        list.appendChild(row);
+        return;
+      }
+
+      headRow.setAttribute("role", "button");
+      headRow.setAttribute("tabindex", "0");
+      headRow.setAttribute("aria-expanded", "false");
       const hint = el("span", "change-group-hint");
       hint.textContent = "展开";
       headRow.appendChild(hint);
