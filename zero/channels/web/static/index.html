@@ -1006,8 +1006,11 @@
     cursor: pointer;
     word-break: break-word;
   }
-  /* 悬停不新增下划线或装饰，只保留手型光标：清掉全局 a:hover 的实线 */
-  .md-link:hover { border-bottom-color: transparent; }
+  /* 悬停换成实线下划线，颜色不变；同时清掉全局 a:hover 的边框实线 */
+  .md-link:hover {
+    text-decoration-style: solid;
+    border-bottom-color: transparent;
+  }
   /* “本轮改动”清单里的路径：任何状态都不带下划线 */
   .md-link.turn-change-path,
   .md-link.turn-change-path:hover {
