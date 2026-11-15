@@ -416,6 +416,55 @@
     color: var(--text-3);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
+  /* 会话行操作：悬停或当前会话时出现；预留右侧空间避免文字跳动 */
+  .session .t, .session .m { padding-right: 46px; }
+  .session-actions {
+    position: absolute;
+    right: 6px;
+    top: 50%;
+    transform: translateY(-50%);
+    display: flex;
+    gap: 2px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity var(--dur) var(--ease);
+  }
+  .session:hover .session-actions,
+  .session.active .session-actions,
+  .session:focus-within .session-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .session-action {
+    width: 22px;
+    height: 22px;
+    padding: 0;
+    justify-content: center;
+    border-color: transparent;
+    background: transparent;
+    color: var(--text-3);
+    border-radius: var(--r-xs);
+  }
+  .session-action .icon { width: 13px; height: 13px; }
+  .session-action:hover:not(:disabled) {
+    color: var(--text-1);
+    background: var(--fill-3);
+    border-color: transparent;
+  }
+  .session-action.danger:hover:not(:disabled) {
+    color: var(--danger);
+    background: var(--danger-soft);
+  }
+  .session.unread::after { right: 56px; }
+  button.danger {
+    color: var(--danger-ink);
+    background: var(--danger-soft);
+    border-color: var(--danger-line);
+  }
+  button.danger:hover:not(:disabled) {
+    background: var(--danger-soft-strong);
+    border-color: var(--danger);
+  }
   .session-empty {
     padding: 10px 12px;
     font-size: 12.5px;
@@ -2040,6 +2089,8 @@
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16v4Z"/><path d="m14 6 4 4"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9.5 7V4.8h5V7"/><path d="M6.8 7l.7 12.2h9l.7-12.2"/><path d="M10.2 10.8v5M13.8 10.8v5"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4.5 21 20H3L12 4.5Z"/><path d="M12 10v4.2M12 17.3v.2"/></symbol>
   <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7"/></symbol>
   <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5 13.9 9l5.6 1.9-5.6 1.9L12 18.4l-1.9-5.6L4.5 10.9 10.1 9 12 3.5Z"/></symbol>
@@ -2777,6 +2828,30 @@
       meta.textContent = s.updatedAt || s.date || "";
       row.appendChild(title);
       row.appendChild(meta);
+
+      const actions = el("div", "session-actions");
+      const rename = el("button", "session-action");
+      rename.type = "button";
+      rename.title = "重命名会话";
+      rename.setAttribute("aria-label", "重命名会话");
+      rename.innerHTML = icon("pencil");
+      rename.onclick = (ev) => {
+        ev.stopPropagation();
+        openRenameSession(s);
+      };
+      const remove = el("button", "session-action danger");
+      remove.type = "button";
+      remove.title = "删除会话";
+      remove.setAttribute("aria-label", "删除会话");
+      remove.innerHTML = icon("trash");
+      remove.onclick = (ev) => {
+        ev.stopPropagation();
+        openDeleteSession(s);
+      };
+      actions.appendChild(rename);
+      actions.appendChild(remove);
+      row.appendChild(actions);
+
       row.onclick = () => selectSession(s.id);
       box.appendChild(row);
     });
@@ -2798,6 +2873,78 @@
 
   function requestSessions() {
     send({ type: "sessions" });
+  }
+
+  function openRenameSession(session) {
+    state.modalKind = "rename";
+    openModal("重命名会话", "",
+      `<button id="modal-close">取消</button><button id="rename-save" class="primary">保存</button>`);
+    $("#modal-close").onclick = closeModal;
+    const body = $("#modal-body");
+    body.innerHTML = "";
+    const grid = el("div", "form-grid");
+    const row = el("div", "form-row");
+    const label = el("label");
+    label.htmlFor = "rename-input";
+    label.textContent = "会话名称";
+    const input = el("input", "form-input");
+    input.id = "rename-input";
+    input.type = "text";
+    input.maxLength = 80;
+    input.autocomplete = "off";
+    input.value = session.title || "";
+    const hint = el("div", "form-hint");
+    hint.textContent = "不能为空或只有空白，最多 80 个字符。";
+    row.appendChild(label);
+    row.appendChild(input);
+    row.appendChild(hint);
+    grid.appendChild(row);
+    body.appendChild(grid);
+    const commit = () => {
+      const title = input.value.trim();
+      if (!title) {
+        toast("会话名称不能为空", "error");
+        input.focus();
+        return;
+      }
+      send({ type: "rename", sessionId: session.id, title });
+      closeModal();
+    };
+    $("#rename-save").onclick = commit;
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !ev.isComposing) {
+        ev.preventDefault();
+        commit();
+      }
+    });
+    setTimeout(() => {
+      input.focus();
+      input.select();
+    }, 40);
+  }
+
+  function openDeleteSession(session) {
+    if (state.busy) {
+      toast("当前回复未结束，稍后再删除", "info");
+      return;
+    }
+    state.modalKind = "delete-session";
+    openModal("删除会话", "",
+      `<button id="modal-close">取消</button><button id="delete-save" class="danger">删除</button>`);
+    $("#modal-close").onclick = closeModal;
+    const body = $("#modal-body");
+    body.innerHTML = "";
+    const warn = el("div", "perm-warn");
+    warn.textContent =
+      "删除后，该会话的消息、摘要与审批记录都会从本地移除，且无法恢复。";
+    const name = el("div", "modal-note");
+    name.textContent = "会话：" + (session.title || "未命名会话");
+    body.appendChild(warn);
+    body.appendChild(name);
+    $("#delete-save").onclick = () => {
+      send({ type: "delete", sessionId: session.id });
+      closeModal();
+    };
   }
 
   /* ================= message rendering ================= */

@@ -212,6 +212,10 @@ class ChannelService:
         return self.session_store.set_title(
             self.channel, session_id or self.session_id, title)
 
+    def delete_session(self, session_id: str) -> bool:
+        """删除会话的索引与消息文件；删除当前会话前调用方要先切换绑定。"""
+        return self.session_store.delete_session(self.channel, session_id)
+
     # ------------------------------------------------------------------
     # Working directory
     # ------------------------------------------------------------------

@@ -88,3 +88,34 @@ def test_first_user_message():
     make_store().append(MessageIn(channel=CHANNEL, session_id=sid3,
                                   body=MessageBody(content="第二条用户消息")))
     assert make_store().first_user_message(CHANNEL, sid3) == "第一条用户消息"
+
+
+def test_delete_session_removes_index_and_directory():
+    store = make_store()
+    sid = store.create_session(CHANNEL, "src-del")
+    store.append(MessageIn(channel=CHANNEL, session_id=sid,
+                           body=MessageBody(content="你好")))
+    folder = store.session_dir(CHANNEL, sid)
+    assert folder.exists()
+
+    assert store.delete_session(CHANNEL, sid) is True
+
+    assert not folder.exists()
+    assert all(s.session_id != sid for s in store.list_sessions(CHANNEL))
+    # 已删掉的会话再删一次要返回 False，不能悄悄成功
+    assert store.delete_session(CHANNEL, sid) is False
+
+
+def test_delete_session_keeps_other_sessions():
+    store = make_store()
+    keep = store.create_session(CHANNEL, "src-keep")
+    drop = store.create_session(CHANNEL, "src-drop")
+    for sid, text in ((keep, "留下"), (drop, "删掉")):
+        store.append(MessageIn(channel=CHANNEL, session_id=sid,
+                               body=MessageBody(content=text)))
+
+    assert store.delete_session(CHANNEL, drop) is True
+
+    remaining = store.list_sessions(CHANNEL)
+    assert [s.source_id for s in remaining] == ["src-keep"]
+    assert remaining[0].session_id == keep

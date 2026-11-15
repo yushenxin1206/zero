@@ -18,6 +18,8 @@ Protocol (JSON text frames):
     {"type": "select", "sessionId": "..."}        switch current session
     {"type": "new"}                               create a new session
     {"type": "title", "title": "..."}             rename current session
+    {"type": "rename", "sessionId": "...", "title": "..."}  rename any session
+    {"type": "delete", "sessionId": "..."}        delete a session
     {"type": "model", "model": ""}                query / switch model
     {"type": "cwd", "path": "/abs/path"}          set/clear session working dir
     {"type": "tasks"}                             list scheduled tasks
@@ -79,6 +81,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CHANNEL = CHANNEL_WEB
+
+# 手工改名的长度上限：标题是列表里的一行，过长会挤压布局
+RENAME_MAX_LEN = 80
 
 
 class WebChannel(BusChannel):
@@ -409,6 +414,10 @@ class WebChannel(BusChannel):
             await asyncio.to_thread(
                 self.service.rename, str(data.get("title") or "").strip())
             await self._broadcast({"type": "state", **await self._state()})
+        elif kind == "rename":
+            await self._on_rename(ws, data)
+        elif kind == "delete":
+            await self._on_delete(ws, data)
         elif kind == "model":
             await self._on_model(ws, str(data.get("model") or "").strip())
         elif kind == "cwd":
@@ -705,6 +714,52 @@ class WebChannel(BusChannel):
             "sessionId": session_id,
             **(await self._history(session_id)),
         })
+
+    async def _on_rename(
+            self, ws: ServerConnection, data: dict[str, Any]) -> None:
+        session_id = str(data.get("sessionId") or "")
+        title = str(data.get("title") or "").strip()
+        if not session_id:
+            return
+        if not title:
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "会话名称不能为空",
+            })
+            return
+        if len(title) > RENAME_MAX_LEN:
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": f"会话名称最多 {RENAME_MAX_LEN} 个字符",
+            })
+            return
+        ok = await asyncio.to_thread(
+            self.service.rename, title, session_id)
+        if not ok:
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "会话不存在或已删除",
+            })
+            return
+        await self._broadcast({"type": "state", **await self._state()})
+
+    async def _on_delete(
+            self, ws: ServerConnection, data: dict[str, Any]) -> None:
+        session_id = str(data.get("sessionId") or "")
+        if not session_id:
+            return
+        if session_id == self.service.session_id:
+            # 删除正在打开的会话：先绑定一个空会话，界面自然落到空态
+            await asyncio.to_thread(self.service.new_session)
+        ok = await asyncio.to_thread(
+            self.service.delete_session, session_id)
+        if not ok:
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "会话不存在或已删除",
+            })
+            return
+        await self._broadcast({"type": "state", **await self._state()})
 
     async def _on_cwd(self, ws: ServerConnection, path: str) -> None:
         """设置/清除当前会话工作目录；空路径表示清除。"""

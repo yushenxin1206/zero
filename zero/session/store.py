@@ -36,6 +36,7 @@ Session-level files inside {session_dir}:
 import json
 import logging
 import os
+import shutil
 import threading
 from contextlib import contextmanager
 from datetime import datetime
@@ -363,6 +364,29 @@ class SessionStore:
             return False, False
 
         return self._write_index(channel, mutate)
+
+    def delete_session(self, channel: str, session_id: str) -> bool:
+        """删除会话的索引条目与整个会话目录；返回是否真的删掉了。
+
+        当前绑定由调用方先行切换：这里只负责存储，不碰渠道状态。
+        """
+        entry = self._find_entry_by_session_id(channel, session_id)
+        if entry is None:
+            return False
+        directory = self.session_dir(channel, session_id, entry)
+
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
+            keys = [sid for sid, e in entries.items()
+                    if e.session_id == session_id]
+            for sid in keys:
+                del entries[sid]
+            return bool(keys), bool(keys)
+
+        # 先摘索引再删目录：即使删文件失败，列表里也不会留下悬空会话
+        if not self._write_index(channel, mutate):
+            return False
+        shutil.rmtree(directory, ignore_errors=True)
+        return True
 
     def get_model(self, channel: str, session_id: str) -> str:
         """Return the session's bound model (config.models key), or "" if
