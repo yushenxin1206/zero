@@ -1077,8 +1077,8 @@
     color: var(--text-3);
     letter-spacing: .02em;
   }
-  /* 删除确认：按钮放在内容左下角，取消在左、危险操作在右 */
-  .danger-actions {
+  /* 确认类弹窗：按钮放在内容左下角，取消在左、主操作在右 */
+  .dialog-actions {
     display: flex;
     gap: 8px;
     justify-content: flex-start;
@@ -2892,9 +2892,7 @@
 
   function openRenameSession(session) {
     state.modalKind = "rename";
-    openModal("重命名会话", "",
-      `<button id="modal-close">取消</button><button id="rename-save" class="primary">保存</button>`);
-    $("#modal-close").onclick = closeModal;
+    openModal("重命名会话", "", "");
     const body = $("#modal-body");
     body.innerHTML = "";
     const grid = el("div", "form-grid");
@@ -2925,7 +2923,19 @@
       send({ type: "rename", sessionId: session.id, title });
       closeModal();
     };
-    $("#rename-save").onclick = commit;
+    // 与删除确认一致：按钮在内容左下角，取消在左、主操作在右
+    const actions = el("div", "dialog-actions");
+    const cancel = el("button");
+    cancel.id = "modal-close";
+    cancel.textContent = "取消";
+    const save = el("button", "primary");
+    save.id = "rename-save";
+    save.textContent = "保存";
+    actions.appendChild(cancel);
+    actions.appendChild(save);
+    body.appendChild(actions);
+    cancel.onclick = closeModal;
+    save.onclick = commit;
     input.addEventListener("keydown", (ev) => {
       if (ev.key === "Enter" && !ev.isComposing) {
         ev.preventDefault();
@@ -2956,7 +2966,7 @@
     body.appendChild(name);
 
     // 按钮靠左下角：取消在左、删除在右；默认焦点给取消
-    const actions = el("div", "danger-actions");
+    const actions = el("div", "dialog-actions");
     const cancel = el("button");
     cancel.id = "modal-close";
     cancel.textContent = "取消";
