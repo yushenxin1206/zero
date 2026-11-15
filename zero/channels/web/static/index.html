@@ -838,6 +838,12 @@
     font-size: 11.5px;
     word-break: break-all;
   }
+  /* 折叠目录行里的路径：保留下划线链接样式，只借用等宽字体 */
+  .turn-change-dir {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    word-break: break-all;
+  }
   /* 按目录折叠的批量改动 */
   .change-group-head {
     display: flex;
@@ -3728,15 +3734,18 @@
       const hidden = Number(item.hiddenCount) || 0;
       const row = el("li", "change-group");
       const isBlocked = !!item.blocked;
-      const headRow = el(isBlocked ? "div" : "button", "change-group-head");
+      const headRow = el("div", "change-group-head");
       if (!isBlocked) {
-        headRow.type = "button";
+        headRow.setAttribute("role", "button");
+        headRow.setAttribute("tabindex", "0");
         headRow.setAttribute("aria-expanded", "false");
       }
       const badge = el("span", "change-badge bulk");
       badge.textContent = "批量 " + count + (item.capped ? "+" : "");
-      const pathLabel = el("span", "turn-change-path");
-      pathLabel.textContent = String(item.path || "");
+      // 折叠目录本身也是绝对路径：复用路径链接的打开通道，点击定位到目录
+      const pathLabel = targetAnchor(String(item.path || ""), "path");
+      pathLabel.classList.add("turn-change-dir");
+      pathLabel.title = "打开该目录";
       headRow.appendChild(badge);
       headRow.appendChild(pathLabel);
       row.appendChild(headRow);
@@ -3759,10 +3768,21 @@
         note.textContent = "另有 " + hidden + " 个文件未列出";
         detail.appendChild(note);
       }
-      headRow.addEventListener("click", () => {
+      const toggle = () => {
         const isHidden = detail.classList.toggle("hidden");
         hint.textContent = isHidden ? "展开" : "收起";
         headRow.setAttribute("aria-expanded", isHidden ? "false" : "true");
+      };
+      headRow.addEventListener("click", (ev) => {
+        // 点目录链接交给全局链接处理，不触发折叠
+        if (ev.target.closest("a.md-link")) return;
+        toggle();
+      });
+      headRow.addEventListener("keydown", (ev) => {
+        if (ev.target !== headRow) return;
+        if (ev.key !== "Enter" && ev.key !== " ") return;
+        ev.preventDefault();
+        toggle();
       });
       row.appendChild(detail);
       list.appendChild(row);
