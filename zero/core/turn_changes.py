@@ -17,15 +17,30 @@ logger = logging.getLogger(__name__)
 CHANGE_ADDED = "added"
 CHANGE_MODIFIED = "modified"
 CHANGE_DELETED = "deleted"
+# 依赖 / 缓存目录只出摘要，不列明细
+CHANGE_GROUP = "group"
 
 MAX_FILES = 5000
+# 依赖目录最多数这么多个文件，避免把轮末卡在 node_modules 上
+SKIP_COUNT_CAP = 200
+# 落盘 / 传输上限：每个目录最多留 20 条明细，总量最多 200 条
+PER_DIR_DETAIL = 20
+MAX_STORED_ENTRIES = 200
 GIT_TIMEOUT = 3.0
+# 锁文件属于有意义的变化，必须单独列出，不参与目录折叠
+LOCKFILES = {
+    "uv.lock", "poetry.lock", "Pipfile.lock", "package-lock.json",
+    "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "go.sum",
+    "composer.lock", "Gemfile.lock",
+}
 # 扫描时直接跳过：既不属于用户改动，数量又可能极大
 SKIP_DIRS = {
     ".git", ".hg", ".svn", "node_modules", ".venv", "venv", "__pycache__",
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".next",
     "target", ".idea", ".tox",
 }
+# 版本库元数据不算用户改动，连摘要都不出
+VCS_DIRS = {".git", ".hg", ".svn"}
 
 _ACTIVE: dict[tuple[str, str, str], "TurnChanges"] = {}
 
@@ -66,18 +81,29 @@ class TurnChanges:
         self.truncated = truncated
         changes: dict[str, str] = {}
         keys = set(self.before) | set(after) | self.touched
+        groups: list[dict[str, Any]] = []
         for key in keys:
+            before_state = self.before.get(key)
+            after_state = after.get(key)
+            if ((before_state or {}).get("code") == "IGNORED"
+                    or (after_state or {}).get("code") == "IGNORED"):
+                if _skip_changed(before_state, after_state):
+                    state = after_state or before_state or {}
+                    groups.append({
+                        "path": key,
+                        "change": CHANGE_GROUP,
+                        "count": int(state.get("count", 0)),
+                        "capped": bool(state.get("capped")),
+                        "blocked": True,
+                    })
+                continue
             change = _classify(
-                self.before.get(key), after.get(key), key in self.touched,
-                self.git)
+                before_state, after_state, key in self.touched, self.git)
             if change:
                 changes[key] = change
         if self.truncated:
             logger.warning("本轮改动扫描达到上限，清单可能不完整")
-        return [
-            {"path": path, "change": change}
-            for path, change in sorted(changes.items())
-        ]
+        return _compact(changes, groups)
 
 
 def _is_git_root(root: Path) -> bool:
@@ -129,7 +155,13 @@ def _walk(root: Path) -> tuple[dict[str, dict[str, Any]], bool]:
     entries: dict[str, dict[str, Any]] = {}
     truncated = False
     for current, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        for name in list(dirs):
+            if name in SKIP_DIRS:
+                dirs.remove(name)
+                if name in VCS_DIRS:
+                    continue
+                entries[os.path.join(current, name)] = _skip_summary(
+                    Path(current) / name)
         for name in files:
             path = os.path.join(current, name)
             try:
@@ -148,6 +180,66 @@ def _walk(root: Path) -> tuple[dict[str, dict[str, Any]], bool]:
     return entries, truncated
 
 
+def _skip_summary(path: Path) -> dict[str, Any]:
+    """依赖 / 缓存目录只数到上限，给摘要一个数量与时间指纹。"""
+    count = 0
+    newest = 0
+    try:
+        for current, _dirs, files in os.walk(path):
+            for name in files:
+                count += 1
+                try:
+                    info = os.stat(os.path.join(current, name))
+                except OSError:
+                    pass
+                else:
+                    newest = max(newest, info.st_mtime_ns)
+                if count >= SKIP_COUNT_CAP:
+                    return {
+                        "code": "IGNORED", "exists": True, "count": count,
+                        "mtime": newest, "capped": True,
+                    }
+    except OSError:
+        pass
+    return {
+        "code": "IGNORED", "exists": True, "count": count,
+        "mtime": newest, "capped": False,
+    }
+
+
+def _skip_changed(before: dict[str, Any] | None,
+                  after: dict[str, Any] | None) -> bool:
+    if before is None or after is None:
+        return True
+    return (before.get("count") != after.get("count")
+            or before.get("mtime") != after.get("mtime"))
+
+
+def _find_skip_dirs(root: Path, max_depth: int = 3) -> list[Path]:
+    """只在浅层找依赖目录，避免为了摘要而全树遍历。"""
+    found: list[Path] = []
+    stack: list[tuple[Path, int]] = [(root, 0)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            entries = list(os.scandir(current))
+        except OSError:
+            continue
+        for entry in entries:
+            try:
+                if not entry.is_dir(follow_symlinks=False):
+                    continue
+            except OSError:
+                continue
+            if entry.name in SKIP_DIRS:
+                if entry.name not in VCS_DIRS:
+                    found.append(Path(entry.path))
+                continue
+            if depth < max_depth:
+                stack.append((Path(entry.path), depth + 1))
+    return found[:50]
+
+
 def _snapshot(
         roots: list[Path], *, git: bool) -> tuple[dict[str, dict[str, Any]], bool]:
     if git:
@@ -158,6 +250,8 @@ def _snapshot(
             status = _git_status(root)
             if status:
                 entries.update(status)
+            for skip_dir in _find_skip_dirs(root):
+                entries[str(skip_dir.resolve())] = _skip_summary(skip_dir)
             if len(entries) >= MAX_FILES:
                 return entries, True
         return entries, False
@@ -170,6 +264,54 @@ def _snapshot(
         if len(entries) >= MAX_FILES:
             return entries, True
     return entries, truncated
+
+
+def _compact(changes: dict[str, str],
+             blocked: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按目录压缩清单，保证单条消息落盘与传输都不会无限增长。
+
+    每组最多保留 ``PER_DIR_DETAIL`` 条明细，全部条目共享
+    ``MAX_STORED_ENTRIES`` 的预算；被截掉的只保留计数，前端显示
+    “另有 X 个文件未列出”。
+    """
+    by_dir: dict[str, list[tuple[str, str]]] = {}
+    singles: list[dict[str, Any]] = []
+    for path, change in sorted(changes.items()):
+        base = os.path.basename(path)
+        if base in LOCKFILES:
+            singles.append({"path": path, "change": change})
+            continue
+        by_dir.setdefault(os.path.dirname(path), []).append((path, change))
+
+    result: list[dict[str, Any]] = list(blocked)
+    budget = MAX_STORED_ENTRIES
+    hidden_global = 0
+    for directory in sorted(by_dir):
+        items = by_dir[directory]
+        if len(items) <= PER_DIR_DETAIL:
+            for path, change in items:
+                if budget <= 0:
+                    hidden_global += 1
+                    continue
+                singles.append({"path": path, "change": change})
+                budget -= 1
+            continue
+        keep = items[:PER_DIR_DETAIL]
+        if budget < len(keep):
+            keep = keep[:max(budget, 0)]
+        budget -= len(keep)
+        result.append({
+            "path": directory,
+            "change": CHANGE_GROUP,
+            "count": len(items),
+            "files": [{"path": path, "change": change} for path, change in keep],
+            "hiddenCount": len(items) - len(keep),
+            "blocked": False,
+        })
+    result.extend(singles)
+    if hidden_global:
+        result.append({"change": "hidden", "count": hidden_global})
+    return result
 
 
 def _classify(before: dict[str, Any] | None,

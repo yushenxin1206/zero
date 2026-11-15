@@ -77,15 +77,22 @@ def test_record_ignores_paths_outside_roots(tmp_path):
     assert tracker.finish() == []
 
 
-def test_skips_vcs_and_dependency_dirs(tmp_path):
+def test_dependency_dirs_only_report_group_summary(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     tracker = _tracker(workspace)
     tracker.start()
-    (workspace / "node_modules").mkdir()
-    (workspace / "node_modules" / "dep.js").write_text("x", encoding="utf-8")
+    deps = workspace / "node_modules"
+    deps.mkdir()
+    (deps / "dep.js").write_text("x", encoding="utf-8")
 
-    assert tracker.finish() == []
+    changes = tracker.finish()
+
+    assert len(changes) == 1
+    assert changes[0]["change"] == "group"
+    assert changes[0]["blocked"] is True
+    assert changes[0]["count"] == 1
+    assert changes[0]["path"].endswith("node_modules")
 
 
 def test_git_repo_uses_status_for_candidates(tmp_path):
@@ -121,6 +128,64 @@ def test_git_repo_uses_status_for_candidates(tmp_path):
     assert changes[str(tracked)] == CHANGE_MODIFIED
     assert changes[str(doomed)] == CHANGE_DELETED
     assert changes[str(workspace / "fresh.txt")] == CHANGE_ADDED
+
+
+def test_compacts_large_directory_and_keeps_lockfile(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    bulk = workspace / "bulk"
+    bulk.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    for index in range(300):
+        (bulk / f"file-{index:03d}.txt").write_text("x", encoding="utf-8")
+    (bulk / "uv.lock").write_text("lock", encoding="utf-8")
+
+    changes = tracker.finish()
+    groups = [item for item in changes if item["change"] == "group"]
+    singles = [item for item in changes if item["change"] != "group"]
+
+    assert len(groups) == 1
+    assert groups[0]["count"] == 300
+    assert len(groups[0]["files"]) == 20
+    assert groups[0]["hiddenCount"] == 280
+    assert [item["path"] for item in singles] == [str(bulk / "uv.lock")]
+
+
+def test_global_entry_cap_reports_hidden_count(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    for bucket in range(30):
+        directory = workspace / f"d{bucket:02d}"
+        directory.mkdir()
+        for index in range(10):
+            (directory / f"f{index}.txt").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+    stored = [
+        item for item in changes
+        if item["change"] != "group" and item["change"] != "hidden"]
+    hidden = [item for item in changes if item["change"] == "hidden"]
+
+    assert len(stored) == 200
+    assert hidden and hidden[0]["count"] == 100
+
+
+def test_file_changes_never_enter_model_context():
+    from zero.models import MessageBody, MessageOut
+
+    message = MessageOut(
+        session_id="s", turn_id="t",
+        body=MessageBody(
+            content="改好了",
+            file_changes=[{"path": "/tmp/a.txt", "change": "added"}]))
+    payload = message.to_openai()
+
+    assert payload["content"] == "改好了"
+    assert "file_changes" not in payload
+    assert "fileChanges" not in payload
 
 
 def test_build_turn_changes_uses_only_workspace_and_session_roots():

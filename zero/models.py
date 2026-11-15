@@ -78,7 +78,7 @@ class MessageBody(Base):
     tool_call_id: str | None = None  # only on tool messages, links to ToolCall.id
     token_usage: TokenUsage | None = None  # only on assistant messages; None = 厂商未上报
     # 本轮新增/修改/删除的文件（绝对路径 + 变更类型）；仅助手回复携带
-    file_changes: list[dict[str, str]] | None = None
+    file_changes: list[dict[str, Any]] | None = None
 
 
 # 消息来源：类型与取值常量。字符串字面量只在下面出现一次，构造与比较
@@ -253,7 +253,7 @@ class StreamEvent(Base):
     # 仅 done 事件携带：本轮因用户终止而提前收尾（content 为已生成片段）
     cancelled: bool = False
     # 仅 done 事件携带：本轮改动清单（路径 + added/modified/deleted）
-    file_changes: list[dict[str, str]] | None = None
+    file_changes: list[dict[str, Any]] | None = None
     # 仅第三方插件扩展使用；核心代码不读不写
     metadata: dict[str, Any] = Field(default_factory=dict)
 

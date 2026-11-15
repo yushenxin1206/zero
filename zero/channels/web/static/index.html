@@ -838,6 +838,52 @@
     font-size: 11.5px;
     word-break: break-all;
   }
+  /* 按目录折叠的批量改动 */
+  .change-group-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 0;
+    border: none;
+    background: transparent;
+    text-align: left;
+    cursor: pointer;
+  }
+  .change-group-head:hover {
+    background: transparent;
+    border-color: transparent;
+  }
+  .change-group-note,
+  .change-group-hint {
+    color: var(--text-3);
+    font-size: 10.5px;
+  }
+  .change-group-hint { margin-left: auto; flex: 0 0 auto; }
+  .change-badge.bulk {
+    color: var(--text-2);
+    background: var(--fill-1);
+    border-color: var(--line);
+  }
+  .change-group-list {
+    list-style: none;
+    margin: 6px 0 0 4px;
+    padding: 0 0 0 10px;
+    border-left: 1px dashed var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .change-group-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .change-hidden {
+    color: var(--text-3);
+    font-size: 10.5px;
+  }
   .avatar {
     width: 28px; height: 28px;
     flex: 0 0 28px;
@@ -951,24 +997,15 @@
     color: var(--inline-code-text);
   }
   /* 可点目标：正文与行内代码里的网址 / 路径 */
-  .md-link {
-    color: var(--accent);
-    text-decoration: underline;
-    text-decoration-color: var(--accent-line);
-    text-underline-offset: 2px;
-    word-break: break-word;
+  .md-link,
+  .md-link:hover,
+  .md code .md-link,
+  .md code .md-link:hover {
+    color: inherit;
+    text-decoration: none;
     cursor: pointer;
-    transition: color var(--dur) var(--ease);
+    word-break: break-word;
   }
-  .md-link:hover {
-    color: var(--accent-hover);
-    text-decoration-color: currentColor;
-  }
-  .md code .md-link {
-    color: var(--inline-code-text);
-    text-decoration-style: dotted;
-  }
-  .md code .md-link:hover { color: var(--accent-hover); }
   .codeblock {
     margin: 12px 0;
     border: 1px solid var(--line);
@@ -3555,6 +3592,28 @@
   const CHANGE_LABELS = {
     added: "新增", modified: "修改", deleted: "删除",
   };
+  const CHANGE_GROUP_THRESHOLD = 20;
+  // 锁文件是有意义的单点变化，即使落在批量目录里也单独列出
+  const LOCKFILES = new Set([
+    "uv.lock", "poetry.lock", "Pipfile.lock", "package-lock.json",
+    "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "go.sum",
+    "composer.lock", "Gemfile.lock",
+  ]);
+
+  function changeRow(item, withBadge) {
+    const change = String(item.change || "");
+    const path = String(item.path || "");
+    const li = el("li");
+    if (withBadge) {
+      const badge = el("span", "change-badge " + change);
+      badge.textContent = CHANGE_LABELS[change] || "改动";
+      li.appendChild(badge);
+    }
+    const link = targetAnchor(path, "path");
+    link.classList.add("turn-change-path");
+    li.appendChild(link);
+    return li;
+  }
 
   // 本轮改动清单：绝对路径复用现有路径点击逻辑（后端仍会做存在性校验）
   function appendChanges(bubble, changes) {
@@ -3563,19 +3622,99 @@
     const head = el("div", "turn-changes-title");
     head.textContent = "本轮改动";
     const list = el("ul", "turn-changes-list");
+
+    const groups = [];
+    const singles = [];
+    const hiddenCounts = [];
+    const legacyByDir = new Map();
     changes.forEach((item) => {
-      const change = String(item.change || "");
       const path = String(item.path || "");
+      if (item.change === "hidden") {
+        hiddenCounts.push(Number(item.count) || 0);
+        return;
+      }
       if (!path) return;
-      const li = el("li");
-      const badge = el("span", "change-badge " + change);
-      badge.textContent = CHANGE_LABELS[change] || "改动";
-      const link = targetAnchor(path, "path");
-      link.classList.add("turn-change-path");
-      li.appendChild(badge);
-      li.appendChild(link);
-      list.appendChild(li);
+      if (item.change === "group") {
+        groups.push(item);
+        return;
+      }
+      const base = path.slice(path.lastIndexOf("/") + 1);
+      if (LOCKFILES.has(base)) {
+        singles.push(item);
+        return;
+      }
+      const cut = path.lastIndexOf("/");
+      const dir = cut > 0 ? path.slice(0, cut) : "/";
+      if (!legacyByDir.has(dir)) legacyByDir.set(dir, []);
+      legacyByDir.get(dir).push(item);
     });
+    legacyByDir.forEach((items, dir) => {
+      if (items.length > CHANGE_GROUP_THRESHOLD) {
+        groups.push({
+          path: dir, change: "group", count: items.length,
+          files: items, hiddenCount: 0, blocked: false,
+        });
+      } else {
+        items.forEach((item) => singles.push(item));
+      }
+    });
+    singles.sort((a, b) => String(a.path).localeCompare(String(b.path)));
+    groups.sort((a, b) => String(a.path).localeCompare(String(b.path)));
+
+    groups.forEach((item) => {
+      const files = Array.isArray(item.files) ? item.files : [];
+      const count = Number(item.count) || files.length;
+      const hidden = Number(item.hiddenCount) || 0;
+      const row = el("li", "change-group");
+      const isBlocked = !!item.blocked;
+      const headRow = el(isBlocked ? "div" : "button", "change-group-head");
+      if (!isBlocked) {
+        headRow.type = "button";
+        headRow.setAttribute("aria-expanded", "false");
+      }
+      const badge = el("span", "change-badge bulk");
+      badge.textContent = "批量 " + count + (item.capped ? "+" : "");
+      const pathLabel = el("span", "turn-change-path");
+      pathLabel.textContent = String(item.path || "");
+      headRow.appendChild(badge);
+      headRow.appendChild(pathLabel);
+      row.appendChild(headRow);
+
+      if (isBlocked) {
+        const note = el("span", "change-group-note");
+        note.textContent = "依赖/缓存目录，明细已折叠";
+        headRow.appendChild(note);
+        list.appendChild(row);
+        return;
+      }
+
+      const hint = el("span", "change-group-hint");
+      hint.textContent = "展开";
+      headRow.appendChild(hint);
+      const detail = el("ul", "change-group-list hidden");
+      files.forEach((file) => detail.appendChild(changeRow(file, true)));
+      if (hidden > 0) {
+        const note = el("li", "change-hidden");
+        note.textContent = "另有 " + hidden + " 个文件未列出";
+        detail.appendChild(note);
+      }
+      headRow.addEventListener("click", () => {
+        const isHidden = detail.classList.toggle("hidden");
+        hint.textContent = isHidden ? "展开" : "收起";
+        headRow.setAttribute("aria-expanded", isHidden ? "false" : "true");
+      });
+      row.appendChild(detail);
+      list.appendChild(row);
+    });
+
+    singles.forEach((item) => list.appendChild(changeRow(item, true)));
+    if (hiddenCounts.length) {
+      const total = hiddenCounts.reduce((sum, n) => sum + n, 0);
+      const note = el("li", "change-hidden");
+      note.textContent = "另有 " + total + " 个文件未列出";
+      list.appendChild(note);
+    }
+
     box.appendChild(head);
     box.appendChild(list);
     bubble.appendChild(box);
