@@ -60,8 +60,6 @@
     --fill-1: rgba(15, 26, 41, .05);
     --fill-2: rgba(15, 26, 41, .035);
     --fill-3: rgba(15, 26, 41, .08);
-    /* 未连接 / 已关闭的状态点：刻意压到很淡，和绿/橙/红拉开视觉层次 */
-    --dot-idle: rgba(15, 26, 41, .12);
 
     /* 面板毛玻璃与浮层 */
     --glass-sidebar:  linear-gradient(180deg, rgba(255, 255, 255, .94), rgba(246, 248, 251, .96));
@@ -176,7 +174,6 @@
     --fill-1: rgba(255, 255, 255, .06);
     --fill-2: rgba(255, 255, 255, .035);
     --fill-3: rgba(255, 255, 255, .09);
-    --dot-idle: rgba(255, 255, 255, .14);
 
     --glass-sidebar:  linear-gradient(180deg, rgba(32, 39, 48, .94), rgba(24, 30, 38, .96));
     --glass-topbar:   rgba(28, 33, 40, .72);
@@ -427,44 +424,31 @@
   .sidebar-footer {
     display: flex;
     align-items: center;
-    gap: 7px;
-    padding: 9px 14px;
+    gap: 6px;
+    padding: 8px 12px;
     border-top: 1px solid var(--line-weak);
-    font-size: 11.5px;
     color: var(--text-3);
   }
-  .sidebar-footer .theme-toggle { flex: 0 0 auto; }
-  .sidebar-footer .feishu-status { margin-left: auto; }
-  /* 飞书降级成状态：常态只露一个点，连接失败才出红点 + 一句提示 */
-  .feishu-status {
-    flex: 0 1 auto;
+  /* 底部状态只留图标：颜色表达状态，文案放悬停提示与面板里 */
+  .sidebar-footer .theme-toggle,
+  .sidebar-footer .feishu-status {
+    flex: 0 0 auto;
+    width: 28px;
+    height: 28px;
     min-width: 0;
-    padding: 3px 6px;
-    font-size: 11.5px;
-    line-height: 1;
-    color: var(--text-3);
+    min-height: 0;
+    padding: 0;
+    justify-content: center;
     border-color: transparent;
     background: transparent;
+    color: var(--text-3);
   }
-  .feishu-status:hover:not(:disabled) {
-    color: var(--text-2);
-    border-color: var(--line-weak);
-    background: var(--hover);
-  }
+  .sidebar-footer .feishu-status { margin-left: auto; }
+  .sidebar-footer .icon { width: 15px; height: 15px; }
+  .feishu-status.on { color: var(--accent); }
+  .feishu-status.wait { color: var(--warn); }
   .feishu-status.bad { color: var(--danger); }
-  .feishu-status .chan-dot { width: 7px; height: 7px; }
-  .feishu-status .feishu-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  #conn-text {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
+  .feishu-status.wait .icon { animation: dot-pulse 1.4s ease-in-out infinite; }
   .conn-dot {
     width: 7px; height: 7px;
     border-radius: 50%;
@@ -585,19 +569,6 @@
   }
   .top-btn:hover:not(:disabled) { color: var(--text-1); }
   .top-btn .icon { width: 15px; height: 15px; }
-  .chan-dot {
-    flex: 0 0 auto;
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: var(--dot-idle);
-  }
-  .chan-dot.on { background: var(--accent); }
-  .chan-dot.wait { background: var(--warn); animation: dot-pulse 1.4s ease-in-out infinite; }
-  .chan-dot.bad {
-    background: var(--danger);
-    box-shadow: 0 0 0 3px var(--danger-soft-strong);
-  }
   @keyframes dot-pulse {
     50% { opacity: .3; }
   }
@@ -656,19 +627,15 @@
     background: var(--danger-soft);
     color: var(--danger);
   }
-  .theme-toggle {
-    min-width: 76px;
-    min-height: 30px;
-    padding: 0 9px;
-    font-size: 12px;
-    color: var(--text-3);
-    border-color: transparent;
-    justify-content: center;
-  }
   .theme-toggle:hover:not(:disabled) {
     color: var(--accent);
     border-color: var(--accent-line);
     background: var(--accent-soft);
+  }
+  .feishu-status:hover:not(:disabled) {
+    color: var(--text-1);
+    border-color: var(--line-weak);
+    background: var(--hover);
   }
 
   /* ================= settings hub ================= */
@@ -707,6 +674,20 @@
     color: var(--text-3);
   }
   .settings-item .chevron { width: 14px; height: 14px; color: var(--text-3); }
+  .settings-confirm {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--warn);
+    background: var(--warn-soft);
+    border: 1px solid var(--warn-line);
+    border-radius: var(--r-sm);
+  }
+  .settings-confirm span { flex: 1; min-width: 0; }
 
   /* ================= message stream ================= */
   #messages {
@@ -2000,11 +1981,6 @@
     #model-btn { max-width: 160px; }
     #topbar { padding: 11px 20px; }
     #jump { right: 22px; }
-    /* 窄侧栏放不下「红点 + 失败提示」时让它整行换行，不要挤掉连接状态 */
-    .sidebar-footer { flex-wrap: wrap; }
-    .sidebar-footer .feishu-status { order: 4; }
-    .sidebar-footer .conn-dot { order: 2; }
-    #conn-text { order: 3; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -2041,6 +2017,7 @@
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.4 19 6.2v5.5c0 4.2-2.9 7.8-7 9.1-4.1-1.3-7-4.9-7-9.1V6.2Z"/><path d="m8.9 12 2.1 2.1 4.1-4.1"/></symbol>
   <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 6.2A2.2 2.2 0 0 1 6.2 4h11.6A2.2 2.2 0 0 1 20 6.2v7.6a2.2 2.2 0 0 1-2.2 2.2H10l-4.2 3.2v-3.2H6.2A2.2 2.2 0 0 1 4 13.8Z"/></symbol>
+  <symbol id="i-feishu" viewBox="0 0 24 24"><path d="M21 3 15 21l-4-8-8-4Z"/><path d="m21 3-10 10"/></symbol>
 </svg>
 
 <div id="splash">
@@ -2063,16 +2040,13 @@
     <div class="section-label"><span>会话</span><span class="count" id="session-count">0</span></div>
     <div id="sessions" role="list"></div>
     <div class="sidebar-footer">
-      <button id="theme-btn" class="theme-toggle" title="切换主题">
+      <button id="theme-btn" class="theme-toggle" type="button" title="切换主题">
         <svg class="icon"><use id="theme-icon" href="#i-sun"/></svg>
-        <span id="theme-label">日间</span>
       </button>
       <button id="feishu-status" class="feishu-status" type="button" title="飞书通道状态">
-        <span id="feishu-dot" class="chan-dot"></span>
-        <span id="feishu-label" class="feishu-label hidden">飞书连接失败</span>
+        <svg class="icon"><use href="#i-feishu"/></svg>
       </button>
-      <span id="conn-dot" class="conn-dot connecting"></span>
-      <span id="conn-text">连接中…</span>
+      <span id="conn-dot" class="conn-dot connecting" title="连接中…"></span>
     </div>
   </aside>
 
@@ -2194,8 +2168,6 @@
     const name = THEME_LABELS[theme] || THEME_LABELS.light;
     const use = $("#theme-icon");
     if (use) use.setAttribute("href", theme === "dark" ? "#i-moon" : "#i-sun");
-    const label = $("#theme-label");
-    if (label) label.textContent = name;
     const btn = $("#theme-btn");
     if (btn) {
       const hint = `当前为${name}，点击切换到` +
@@ -2247,6 +2219,9 @@
     configTab: "form",
     configSaved: false,
     configFocus: "",
+    // 读入 / 保存时的配置快照，用来判断返回设置前是否有未保存修改
+    configBaseline: "",
+    configConfirmBack: false,
     // 权限设置页
     permission: null,
     permissionBusy: false,
@@ -2452,8 +2427,12 @@
   /* ================= connection ================= */
 
   function setConn(text, cls) {
-    $("#conn-text").textContent = text;
-    $("#conn-dot").className = "conn-dot" + (cls ? " " + cls : "");
+    const dot = $("#conn-dot");
+    if (!dot) return;
+    dot.className = "conn-dot" + (cls ? " " + cls : "");
+    // 底部不再显示文字，状态靠颜色，细节放悬停提示
+    dot.title = text;
+    dot.setAttribute("aria-label", text);
   }
 
   function waitForPywebview(timeoutMs) {
@@ -3572,6 +3551,7 @@
     }
     $("#modal").classList.add("hidden");
     state.modalKind = "";
+    state.configConfirmBack = false;
     clearTimeout(state.tasksTimer);
     state.tasksTimer = 0;
     $("#input").focus();
@@ -3729,12 +3709,12 @@
   // 顶栏只留一个设置入口，具体面板按组进入；每一项都复用原有弹窗，
   // 不改任何功能，只换入口。
   const SETTINGS_GROUPS = [
-    ["模型", [
+    ["配置", [
       {
-        icon: "cpu",
-        title: "模型与供应商",
-        desc: "默认模型、models 注册表与 API Key",
-        open: () => openConfigModal("models"),
+        icon: "sliders",
+        title: "完整配置",
+        desc: "模型、供应商、运行时、渠道与维护任务的全部选项",
+        open: () => openConfigModal(),
       },
     ]],
     ["权限", [
@@ -3747,7 +3727,7 @@
     ]],
     ["渠道", [
       {
-        icon: "chat",
+        icon: "feishu",
         title: "飞书",
         desc: "连接状态、启停、扫码连接与凭据",
         open: () => openFeishuModal(),
@@ -3759,12 +3739,6 @@
         title: "内置技能",
         desc: "查看已安装技能与其说明",
         open: () => openSkillsModal(),
-      },
-      {
-        icon: "sliders",
-        title: "全部配置",
-        desc: "运行期、上下文压缩、渠道与维护任务",
-        open: () => openConfigModal(),
       },
     ]],
   ];
@@ -3790,11 +3764,54 @@
             `<span class="settings-item-desc">${escapeHtml(item.desc)}</span>` +
           `</span>` +
           icon("chevron", "chevron");
-        btn.onclick = item.open;
+        btn.onclick = () => openFromSettings(item.open);
         group.appendChild(btn);
       });
       body.appendChild(group);
     });
+  }
+
+  // 从设置进入的子面板都补一个「返回设置」，避免只能关掉重开
+  function openFromSettings(openFn) {
+    openFn();
+    // 子面板可能因为「正在回复」等原因没有打开，此时别给设置列表添返回按钮
+    if (state.modalKind === "settings") return;
+    const actions = $("#modal-actions");
+    if (!actions || !actions.querySelector("#modal-close")) return;
+    if (actions.querySelector("#settings-back")) return;
+    const back = el("button");
+    back.id = "settings-back";
+    back.type = "button";
+    back.textContent = "返回设置";
+    back.onclick = leaveSettingsChild;
+    actions.insertBefore(back, actions.firstChild);
+  }
+
+  function leaveSettingsChild() {
+    if (state.modalKind === "config") {
+      // JSON 标签页的草稿要先写回 state.config，否则返回会丢掉用户输入
+      if (state.configTab === "json" && !commitConfigPane()) return;
+      if (configDirty()) {
+        state.configConfirmBack = true;
+        renderConfigModal();
+        return;
+      }
+    }
+    openSettingsModal();
+  }
+
+  function configDirty() {
+    if (!state.config || !state.configBaseline) return false;
+    if (state.configTab === "json") {
+      const area = $("#cfg-json");
+      if (!area) return false;
+      try {
+        return JSON.stringify(JSON.parse(area.value)) !== state.configBaseline;
+      } catch (err) {
+        return true;
+      }
+    }
+    return JSON.stringify(state.config) !== state.configBaseline;
   }
 
   function openSkillsModal() {
@@ -4891,6 +4908,8 @@
     state.modalKind = "config";
     state.configTab = "form";
     state.configFocus = focus || "";
+    state.configBaseline = "";
+    state.configConfirmBack = false;
     openModal("配置", "", `<button id="modal-close">关闭</button>`);
     $("#modal-close").onclick = closeModal;
     $("#modal-body").innerHTML = '<div class="modal-note">读取配置…</div>';
@@ -5112,36 +5131,28 @@
   };
 
   function reflectFeishu(snap) {
-    const dot = $("#feishu-dot");
     const btn = $("#feishu-status");
-    const label = $("#feishu-label");
-    if (!dot) return;
-    dot.className = "chan-dot";
-    if (btn) {
-      btn.classList.remove("bad");
-      btn.title = "飞书未启用，点击查看";
-    }
-    if (label) label.classList.add("hidden");
-    if (!snap) return;
-    if (snap.state === "connected") {
-      dot.classList.add("on");
-      if (btn) btn.title = "飞书已连接，点击查看";
-    } else if (snap.state === "connecting") {
-      dot.classList.add("wait");
-      if (btn) btn.title = "飞书连接中，点击查看";
-    } else if (snap.state === "failed") {
-      // 只有失败才把状态点升级成红点 + 一句提示，其余状态保持安静
-      dot.classList.add("bad");
-      if (btn) {
+    if (!btn) return;
+    // 只用颜色表达状态：灰=未启用/已关闭，橙=连接中，绿=已连接，红=失败
+    btn.classList.remove("on", "wait", "bad");
+    btn.title = "飞书未启用，点击查看";
+    if (snap) {
+      if (snap.state === "connected") {
+        btn.classList.add("on");
+        btn.title = "飞书已连接，点击查看";
+      } else if (snap.state === "connecting") {
+        btn.classList.add("wait");
+        btn.title = "飞书连接中，点击查看";
+      } else if (snap.state === "failed") {
         btn.classList.add("bad");
         btn.title = "飞书连接失败，点击处理";
+      } else if (snap.state === "disabled") {
+        btn.title = "飞书已关闭，点击查看";
+      } else if (snap.state === "unconfigured") {
+        btn.title = "飞书未配置，点击查看";
       }
-      if (label) label.classList.remove("hidden");
-    } else if (snap.state === "disabled") {
-      if (btn) btn.title = "飞书已关闭，点击查看";
-    } else if (snap.state === "unconfigured") {
-      if (btn) btn.title = "飞书未配置，点击查看";
     }
+    btn.setAttribute("aria-label", btn.title);
   }
 
   function onFeishu(msg) {
@@ -5458,6 +5469,30 @@
       .map((node) => node.open);
     const scrollTop = body.scrollTop;
     body.innerHTML = "";
+    if (state.configConfirmBack) {
+      // 返回设置前发现未保存修改：给出「继续编辑 / 放弃并返回」两个选择
+      const bar = el("div", "settings-confirm");
+      const text = el("span");
+      text.textContent = "配置有未保存的修改，返回设置会丢弃这些改动。";
+      const stay = el("button");
+      stay.type = "button";
+      stay.textContent = "继续编辑";
+      stay.onclick = () => {
+        state.configConfirmBack = false;
+        renderConfigModal();
+      };
+      const leave = el("button", "primary");
+      leave.type = "button";
+      leave.textContent = "放弃并返回";
+      leave.onclick = () => {
+        state.configConfirmBack = false;
+        openSettingsModal();
+      };
+      bar.appendChild(text);
+      bar.appendChild(stay);
+      bar.appendChild(leave);
+      body.appendChild(bar);
+    }
     const tabs = el("div", "seg config-tabs");
     [["form", "表单"], ["json", "JSON"]].forEach(([key, label]) => {
       const btn = el("button",
@@ -5589,6 +5624,7 @@
     }
     if (msg.saved === true) {
       state.config = msg.config || state.config;
+      state.configBaseline = JSON.stringify(state.config);
       if (msg.setup) state.setup = msg.setup;
       if (typeof msg.backup === "string") {
         // 重置只重建骨架（没有密钥），回到引导表单继续填写
@@ -5614,6 +5650,7 @@
     }
     // read
     state.config = msg.config || {};
+    state.configBaseline = JSON.stringify(state.config);
     if (msg.setup) state.setup = msg.setup;
     if (setupVisible()) renderSetupForm(state.config);
     else if (state.modalKind === "config") renderConfigModal();
