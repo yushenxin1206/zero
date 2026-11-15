@@ -3685,11 +3685,13 @@
     const groups = [];
     const singles = [];
     const hiddenCounts = [];
+    const hiddenDirs = [];
     const legacyByDir = new Map();
     changes.forEach((item) => {
       const path = String(item.path || "");
       if (item.change === "hidden") {
         hiddenCounts.push(Number(item.count) || 0);
+        hiddenDirs.push(Number(item.dirs) || 0);
         return;
       }
       if (!path) return;
@@ -3769,8 +3771,10 @@
     singles.forEach((item) => list.appendChild(changeRow(item, true)));
     if (hiddenCounts.length) {
       const total = hiddenCounts.reduce((sum, n) => sum + n, 0);
+      const dirs = hiddenDirs.reduce((sum, n) => sum + n, 0);
       const note = el("li", "change-hidden");
-      note.textContent = "另有 " + total + " 个文件未列出";
+      note.textContent =
+        "另有 " + total + " 个文件，分布在 " + dirs + " 个目录";
       list.appendChild(note);
     }
 
