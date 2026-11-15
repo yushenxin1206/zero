@@ -5,6 +5,7 @@ import os
 import difflib
 from typing import Any
 
+from zero.core.turn_changes import record_write
 from zero.tools.base import Tool
 from zero.utils.file import require_absolute_path
 
@@ -129,6 +130,9 @@ class Edit(Tool):
 
             with open(file_path, "w", encoding="utf-8") as f:
                 f.write(new_content)
+
+            # 工具写文件时直接记账，和轮末快照取并集
+            record_write(context, file_path)
 
             return {
                 "success": True,

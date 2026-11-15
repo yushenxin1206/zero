@@ -253,6 +253,7 @@ class CLIChannel(BusChannel):
         reason_acc = ""   # 本轮实时思考文本（仅展示，不参与最终回复、不落盘）
         status = ""
         usage: TokenUsage | None = None
+        file_changes: list[dict[str, str]] = []
         last_render = 0.0  # 上次实际重绘的 monotonic 时刻（节流用）
         # vertical_overflow="ellipsis"：帧高度裁剪到终端高度以内，保证重绘时
         # 擦除的行数始终与屏幕一致（"visible" 下帧高于终端会擦除错位、叠出
@@ -330,6 +331,8 @@ class CLIChannel(BusChannel):
                             acc = event.content
                         if event.token_usage is not None:
                             usage = event.token_usage
+                        if event.file_changes:
+                            file_changes = event.file_changes
                         done = True
                         if event.cancelled:
                             cancelled = True
@@ -373,6 +376,14 @@ class CLIChannel(BusChannel):
                     f"{usage.completion_tokens} out / "
                     f"{usage.total_tokens} total[/dim]"
                 )
+            if file_changes:
+                labels = {
+                    "added": "新增", "modified": "修改", "deleted": "删除"}
+                self.console.print("[dim]本轮改动：[/dim]")
+                for item in file_changes:
+                    label = labels.get(item.get("change", ""), "改动")
+                    self.console.print(
+                        f"  [dim]{label}[/dim] {item.get('path', '')}")
             self.console.print()
         # 终止提示：已生成片段已在 Live 终帧展示，这里补一行状态
         if cancelled:

@@ -7,10 +7,10 @@
 import asyncio
 import logging
 import time
-
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from zero.bus.queue import MessageBus
 from zero.config import Config
@@ -18,6 +18,11 @@ from zero.core.cancellation import TurnCancelled
 from zero.core.context import Context
 from zero.core.hooks import Hooks
 from zero.core.runner import AgentRunner
+from zero.core.turn_changes import (
+    build_turn_changes,
+    register_tracker,
+    unregister_tracker,
+)
 from zero.models import (
     EVENT_DELTA, EVENT_DONE, EVENT_ERROR, EVENT_TOOL_CALL,
     MessageBody, MessageIn, MessageOut, StreamEvent, TokenUsage, ToolContext,
@@ -107,6 +112,7 @@ class AgentLoop:
             *,
             hooks: Hooks,
             on_turn_finished: TurnFinishedHook | None = None,
+            permission: Any = None,
     ):
         self.msg_bus = msg_bus
         self.config = config
@@ -119,6 +125,8 @@ class AgentLoop:
         self.hooks = hooks
         # 可选：轮次真正结束（成功/失败/取消）后的回调，组合根按需接线
         self.on_turn_finished = on_turn_finished
+        # 可选：权限层。用来取本轮可写根，结束后汇总改动清单
+        self.permission = permission
         # 当前活跃 turn（(channel, session_id, turn_id)）与其 stop_event；
         # 由 _run_stop_consumer 消费旁路停止信号后置位
         self._current: tuple[str, str, str] | None = None
@@ -269,23 +277,37 @@ class AgentLoop:
         )
         stat.model = runner.runtime_config.llm_call_options.model
 
+        # 改动清单：start 与 finish 的快照都在线程池执行；没有可写根时
+        # tracker 为空，整条逻辑自动跳过
+        tracker = build_turn_changes(self.permission, tool_context)
+        if tracker.enabled:
+            register_tracker(tool_context, tracker)
+            await asyncio.to_thread(tracker.start)
+        else:
+            tracker = None
+
         # runner.run_stream() yields incremental events while
         # executing; stamp routing fields and forward them
         reply_text = ""
         final_usage: TokenUsage | None = None
         saw_error: str | None = None
+        done_event: StreamEvent | None = None
         try:
             async for event in runner.run_stream():
                 event.channel = msg_in.channel
                 event.session_id = msg_in.session_id
                 event.turn_id = msg_in.id
                 event.origin = msg_in.origin
+                if event.kind == EVENT_DONE:
+                    # 先留住收尾事件，等改动清单算完再一起发，避免前端
+                    # 先收 done 再补一块“本轮改动”
+                    reply_text = event.content or reply_text
+                    final_usage = event.token_usage
+                    done_event = event
+                    continue
                 await self.msg_bus.stream_queue.enqueue(event)
                 if event.kind == EVENT_DELTA:
                     reply_text += event.content
-                elif event.kind == EVENT_DONE:
-                    reply_text = event.content or reply_text
-                    final_usage = event.token_usage
                 elif event.kind == EVENT_TOOL_CALL:
                     stat.tools += 1
                 elif event.kind == EVENT_ERROR:
@@ -299,6 +321,19 @@ class AgentLoop:
             stat.status = "cancelled"
             await self._finish_cancelled(msg_in, reply_text)
             return
+        finally:
+            if tracker is not None:
+                unregister_tracker(tool_context)
+
+        changes: list[dict[str, str]] = []
+        if tracker is not None:
+            try:
+                changes = await asyncio.to_thread(tracker.finish)
+            except Exception:  # noqa: BLE001 - 清单失败不能影响本轮结果
+                logger.exception("本轮改动清单生成失败：turn=%s", msg_in.id)
+        if done_event is not None:
+            done_event.file_changes = changes or None
+            await self.msg_bus.stream_queue.enqueue(done_event)
 
         stat.tokens = final_usage
         failed = saw_error is not None
@@ -313,6 +348,7 @@ class AgentLoop:
                 # 失败轮只发一条错误通知，不携带残缺正文
                 content=f"[error] {saw_error}" if failed else reply_text,
                 token_usage=final_usage,
+                file_changes=changes or None,
             ),
             origin=msg_in.origin,
             # turn_id 让 channel 端能把最终消息精确匹配到触发它的

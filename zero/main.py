@@ -72,6 +72,7 @@ def build_agent_loop(msg_bus: MessageBus,
                      session_store: SessionStore,
                      data_paths: DataPaths,
                      sandbox_available: bool,
+                     permission: PermissionState | None = None,
                      on_turn_finished: TurnFinishedHook | None = None) -> AgentLoop:
     return AgentLoop(
         msg_bus=msg_bus,
@@ -82,6 +83,7 @@ def build_agent_loop(msg_bus: MessageBus,
         tool_registry=tool_registry,
         hooks=hooks,
         on_turn_finished=on_turn_finished,
+        permission=permission,
     )
 
 
@@ -136,6 +138,7 @@ def build_core(config: Config, data_paths: DataPaths) -> CoreRuntime:
         msg_bus, tool_registry=registry, hooks=hooks,
         config=config, session_store=session_store, data_paths=data_paths,
         sandbox_available=sandbox_available,
+        permission=permission,
         on_turn_finished=scheduler.finish_turn)
     return CoreRuntime(
         msg_bus=msg_bus,

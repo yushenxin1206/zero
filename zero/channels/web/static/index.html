@@ -783,6 +783,61 @@
     margin-right: 6px;
     font-family: var(--font);
   }
+  /* 本轮改动清单：附在助手回答末尾，路径沿用正文链接的颜色与可点行为 */
+  .turn-changes {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line);
+  }
+  .turn-changes-title {
+    font-size: 11.5px;
+    font-weight: 600;
+    color: var(--text-3);
+    margin-bottom: 6px;
+  }
+  .turn-changes-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .turn-changes-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+  .change-badge {
+    flex: 0 0 auto;
+    font-size: 10px;
+    line-height: 1.6;
+    padding: 0 6px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--line);
+    color: var(--text-2);
+  }
+  .change-badge.added {
+    color: var(--accent);
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+  }
+  .change-badge.modified {
+    color: var(--info);
+    border-color: var(--info-line);
+    background: var(--info-soft);
+  }
+  .change-badge.deleted {
+    color: var(--danger);
+    border-color: var(--danger-line);
+    background: var(--danger-soft);
+  }
+  .turn-change-path {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    word-break: break-all;
+  }
   .avatar {
     width: 28px; height: 28px;
     flex: 0 0 28px;
@@ -3150,6 +3205,7 @@
       if ((m.content || "").trim()) {
         current.entries.push({
           kind: "text", at, text: m.content, usage: m.usage || null,
+          fileChanges: m.fileChanges || null,
         });
       }
     });
@@ -3268,6 +3324,9 @@
     appendGrouped(parts, nodes);
     const usage = turn.entries.reduce(
       (last, entry) => entry.usage || last, null);
+    const changes = turn.entries.reduce(
+      (last, entry) => entry.fileChanges || last, null);
+    if (changes && changes.length) appendChanges(bubble, changes);
     if (usage) addUsage(row, usage);
     scrollBottom(false);
     return row;
@@ -3491,6 +3550,35 @@
     const box = el("div", "marker");
     box.textContent = text;
     active.extras.appendChild(box);
+  }
+
+  const CHANGE_LABELS = {
+    added: "新增", modified: "修改", deleted: "删除",
+  };
+
+  // 本轮改动清单：绝对路径复用现有路径点击逻辑（后端仍会做存在性校验）
+  function appendChanges(bubble, changes) {
+    if (!bubble || !changes || !changes.length) return;
+    const box = el("div", "turn-changes");
+    const head = el("div", "turn-changes-title");
+    head.textContent = "本轮改动";
+    const list = el("ul", "turn-changes-list");
+    changes.forEach((item) => {
+      const change = String(item.change || "");
+      const path = String(item.path || "");
+      if (!path) return;
+      const li = el("li");
+      const badge = el("span", "change-badge " + change);
+      badge.textContent = CHANGE_LABELS[change] || "改动";
+      const link = targetAnchor(path, "path");
+      link.classList.add("turn-change-path");
+      li.appendChild(badge);
+      li.appendChild(link);
+      list.appendChild(li);
+    });
+    box.appendChild(head);
+    box.appendChild(list);
+    bubble.appendChild(box);
   }
 
   function addUsage(row, usage) {
@@ -3742,6 +3830,7 @@
           active.parts.appendChild(part);
         }
         if (ev.cancelled) addMarker(active, "已终止（以上为已生成内容）");
+        if (ev.fileChanges && active) appendChanges(active.bubble, ev.fileChanges);
         if (ev.tokenUsage) addUsage(active.row, ev.tokenUsage);
         finalize(ev.turnId);
         break;
