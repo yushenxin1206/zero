@@ -131,6 +131,9 @@ class CliCommands:
         if cmd in ("/model", "/m"):
             await self._handle_model(arg)
             return True
+        if cmd == "/cwd":
+            await asyncio.to_thread(self._handle_cwd, arg)
+            return True
         if cmd in ("/tasks", "/ts"):
             await asyncio.to_thread(self._handle_tasks, arg)
             return True
@@ -170,6 +173,32 @@ class CliCommands:
             self.console.print(f"[green]标题已更新:[/green] {escape(arg)}")
         else:
             self.console.print("[yellow]当前会话不在索引中，无法命名[/yellow]")
+
+    def _handle_cwd(self, arg: str) -> None:
+        """`/cwd` 查看；`/cwd <绝对路径>` 设置；`/cwd clear` 清除。"""
+        arg = arg.strip()
+        if not arg:
+            current = self.service.working_dir()
+            if current:
+                self.console.print(
+                    f"当前工作目录: [bold]{escape(current)}[/bold]")
+            else:
+                self.console.print(
+                    "[dim]当前未选择工作目录；用法: /cwd /绝对/路径"
+                    "（/cwd clear 清除）[/dim]")
+            return
+        if arg.lower() in ("clear", "none", "-"):
+            arg = ""
+        try:
+            value = self.service.set_working_dir(arg)
+        except ValueError as exc:
+            self.console.print(f"[red]{escape(str(exc))}[/red]")
+            return
+        if value:
+            self.console.print(
+                f"[green]工作目录已设置:[/green] {escape(value)}")
+        else:
+            self.console.print("[green]已清除工作目录[/green]")
 
     def _handle_tasks(self, arg: str) -> None:
         """`/tasks` 列出当前会话的定时任务；`/tasks all` 列出 cli 渠道全部。"""

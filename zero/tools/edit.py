@@ -6,6 +6,7 @@ import difflib
 from typing import Any
 
 from zero.tools.base import Tool
+from zero.utils.file import require_absolute_path
 
 
 class Edit(Tool):
@@ -33,7 +34,7 @@ class Edit(Tool):
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path of the file to edit.",
+                    "description": "Absolute path of the file to edit.",
                 },
                 "old_string": {
                     "type": "string",
@@ -56,12 +57,18 @@ class Edit(Tool):
         }
 
     async def run(self, context=None, **kwargs):
-        file_path = kwargs["file_path"]
         old_string = kwargs["old_string"]
         new_string = kwargs["new_string"]
         replace_all = kwargs.get("replace_all", False)
 
-        file_path = os.path.expanduser(file_path)
+        try:
+            file_path = str(require_absolute_path(kwargs["file_path"]))
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "file_path": str(kwargs.get("file_path") or ""),
+            }
 
         if not os.path.exists(file_path):
             return {

@@ -31,7 +31,8 @@ def test_runner_stream(monkeypatch):
     monkeypatch.setattr(runner_mod, "OpenAI", FakeProvider)
     cfg = make_config()
     ctx = Context(session_id="smoke-test-session", channel="cli",
-                  session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+                  session_store=make_store(), data_paths=make_data_paths(),
+                  working_dir=None, sandbox_available=True)
     runner = AgentRunner(cfg, ctx, hooks=Hooks())
 
     async def scenario():

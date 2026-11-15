@@ -19,6 +19,7 @@ def main() -> None:
     context = Context(
         session_id="doc", channel="cli",
         session_store=store, data_paths=data_paths,
+        working_dir=ROOT,
         sandbox_available=PermissionState(data_paths, store).sandbox_available())
     out = ROOT / "docs" / "prompt.md"
     out.write_text(

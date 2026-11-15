@@ -3,6 +3,22 @@ import tempfile
 from pathlib import Path
 
 
+def require_absolute_path(raw: str) -> Path:
+    """把工具参数里的路径规范成绝对路径；相对路径直接拒绝。
+
+    只做 ``expanduser`` + 绝对性校验，不做「相对谁」的拼接：会话工作目录
+    不参与路径解析，权限守卫与工具因此看到的是同一条路径。``~`` 展开后
+    是绝对路径，允许使用。
+    """
+    value = os.path.expanduser(str(raw or "").strip())
+    if not value:
+        raise ValueError("路径不能为空")
+    path = Path(value)
+    if not path.is_absolute():
+        raise ValueError(f"只支持绝对路径（可用 ~）：{raw!r}")
+    return path
+
+
 def save_or_create_file(file_path: Path, content: str | bytes = '') -> None:
     """原子写入：先写同目录临时文件，再 os.replace 覆盖目标。
 

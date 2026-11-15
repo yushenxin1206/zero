@@ -168,6 +168,47 @@ def test_error_turn_is_not_persisted_as_assistant(monkeypatch, caplog):
     assert history[0].id == msg.id
 
 
+def test_loop_injects_session_working_dir(monkeypatch, tmp_path):
+    """AgentLoop 在 turn 起点把会话工作目录注入 Context 与 ToolContext。"""
+    store = make_store()
+    session_id = store.create_session("cli", "src-working-dir")
+    store.set_working_dir("cli", session_id, str(tmp_path))
+
+    captured: dict = {}
+
+    class CapturingRunner:
+        def __init__(self, **kwargs):
+            captured["context"] = kwargs["running_context"]
+            self.runtime_config = SimpleNamespace(
+                llm_call_options=SimpleNamespace(model="stub-model"))
+
+        async def run_stream(self):
+            if False:
+                yield None
+
+    monkeypatch.setattr(loop_mod, "AgentRunner", CapturingRunner)
+
+    async def main():
+        bus = MessageBus()
+        loop = AgentLoop(
+            msg_bus=bus, config=make_test_config(), hooks=Hooks(),
+            session_store=store, data_paths=make_data_paths(),
+            sandbox_available=True)
+        task = asyncio.create_task(loop.run())
+        await bus.in_queue.enqueue(MessageIn(
+            channel="cli", session_id=session_id,
+            body=MessageBody(content="hi")))
+        await asyncio.wait_for(bus.out_queue.dequeue(), 5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(main())
+    context = captured["context"]
+    assert context.working_dir == tmp_path
+    assert context.tool_context.working_dir == str(tmp_path)
+
+
 @pytest.mark.parametrize("missing", ["channel", "session"])
 def test_summary_fields_always_present(monkeypatch, caplog, missing):
     """三个状态共用同一格式：字段缺失会在这里暴露。"""

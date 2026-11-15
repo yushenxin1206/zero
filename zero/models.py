@@ -538,6 +538,9 @@ class ToolContext(Base):
     channel: str = ""
     session_id: str = ""
     turn_id: str = ""  # 触发本轮的 MessageIn.id，hooks/插件据此挂载交互事件
+    # 会话工作目录（绝对路径；空串 = 未选择）。只承载用户设定的事实，
+    # 工具参数不能修改它。
+    working_dir: str = ""
     origin: Origin = Field(default_factory=Origin)  # 本轮来源（user / scheduler）
     channel_message_id: str = ""  # 渠道侧原始消息 id
     channel_sender_id: str = ""  # 渠道侧原始发送者 id

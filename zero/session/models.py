@@ -43,6 +43,9 @@ class SessionMeta(Base):
     description: str = ""
     # 会话级模型绑定（config.models 注册表键；空串 = 跟随全局 default）
     model: str = ""
+    # 会话级工作目录（绝对路径；空串 = 未选择）。只有用户入口能写，
+    # 模型工具参数不参与，避免通过改参数自行扩大写包络。
+    working_dir: str = ""
     # 索引的 key，仅 list_sessions 返回时回填，不落盘
     source_id: str = Field(default="", exclude=True)
 

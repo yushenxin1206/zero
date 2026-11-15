@@ -22,7 +22,7 @@ import requests
 from zero.bus.queue import MessageBus
 from zero.config import Config
 from zero.core.model_switch import ModelSwitchResult, session_model, switch_model
-from zero.permission.envelope import PermissionState
+from zero.permission.envelope import PermissionState, validate_workspace
 from zero.models import (
     ApprovalRecord, LLMCallOptions, Message, MessageBody, MessageIn,
     StopRequest)
@@ -208,6 +208,30 @@ class ChannelService:
         """Set a session title. Returns False when the session is not indexed."""
         return self.session_store.set_title(
             self.channel, session_id or self.session_id, title)
+
+    # ------------------------------------------------------------------
+    # Working directory
+    # ------------------------------------------------------------------
+
+    def working_dir(self, session_id: str | None = None) -> str:
+        """Current session's working directory ("" when not selected)."""
+        return self.session_store.get_working_dir(
+            self.channel, session_id or self.session_id)
+
+    def set_working_dir(
+            self, path: str, session_id: str | None = None) -> str:
+        """Set/clear the session working directory.
+
+        空串 = 清除选择。非空路径必须是已存在的绝对目录，且不能是系统
+        根或 Zero 自己的数据目录；校验失败抛 ValueError，由渠道回显。
+        """
+        text = (path or "").strip()
+        canonical = str(validate_workspace(text, self.data_paths)) if text else ""
+        ok = self.session_store.set_working_dir(
+            self.channel, session_id or self.session_id, canonical)
+        if not ok:
+            raise ValueError("当前会话不在索引中，无法设置工作目录")
+        return canonical
 
     # ------------------------------------------------------------------
     # History

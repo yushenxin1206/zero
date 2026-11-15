@@ -9,7 +9,8 @@ import contextlib
 
 from zero.core.compactor import Compactor
 from zero.core.context import Context, SubAgentContext
-from tests.support import make_data_paths, make_store
+from zero.data_paths import DataPaths
+from tests.support import current, make_data_paths, make_store
 from zero.models import (
     AgentRuntimeConfig,
     CompactConfig,
@@ -132,7 +133,7 @@ def test_snapshot_semantics():
     """turn 内不感知外部写入，record() 立即反映。"""
     sid = fresh_session("src-snapshot")
     make_store().append(make_msg("user", "第一条", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), working_dir=None, sandbox_available=True)
 
     assert [m["role"] for m in ctx.messages] == ["system", "user"]
 
@@ -145,14 +146,14 @@ def test_snapshot_semantics():
     assert len(ctx.messages) == 3
     assert ctx.messages[-1] == {"role": "assistant", "content": "回复"}
     # record 也写入磁盘（新 Context 能看到：system + 3 条消息）
-    assert len(Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True).messages) == 4
+    assert len(Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), working_dir=None, sandbox_available=True).messages) == 4
 
 
 def test_compaction_view_rebuild():
     """压缩回写后无需重读盘即可合成 [压缩] + 尾部。"""
     sid = fresh_session("src-compact-view")
     seed_big(sid)
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), working_dir=None, sandbox_available=True)
     assert asyncio.run(
         make_compactor(FakeProvider()).maybe_compress(ctx)) is True
 
@@ -169,7 +170,7 @@ def test_per_turn_single_read():
     """模拟完整 turn（N 次迭代）只读一次盘。"""
     sid = fresh_session("src-turn-count")
     make_store().append(make_msg("user", "任务", session_id=sid))
-    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+    ctx = Context(session_id=sid, channel=CHANNEL, session_store=make_store(), data_paths=make_data_paths(), working_dir=None, sandbox_available=True)
     comp = make_compactor(FakeProvider())
 
     with count_reads() as counter:
@@ -200,7 +201,35 @@ def test_environment_note_follows_settled_capability():
         return Context(
             session_id="s-note", channel=CHANNEL,
             session_store=make_store(), data_paths=make_data_paths(),
+            working_dir=None,
             sandbox_available=sandbox_available).system_prompt
 
     assert "Commands run inside the kernel sandbox" in prompt(True)
     assert "The kernel sandbox is unavailable here" in prompt(False)
+
+
+def test_no_working_dir_omits_project_memory():
+    """未选择工作目录：提示词明说未设置，且不渲染项目记忆段。"""
+    ctx = Context(
+        session_id="s-no-cwd", channel=CHANNEL,
+        session_store=make_store(), data_paths=make_data_paths(),
+        working_dir=None, sandbox_available=True)
+    prompt = ctx.system_prompt
+    assert "Working directory: (not set" in prompt
+    assert "## Project Memory" not in prompt
+
+
+def test_project_memory_follows_working_dir(tmp_path):
+    """项目记忆路径跟随会话工作目录，而不是进程启动目录。"""
+    memory = tmp_path / ".zero" / "memory" / "memory.md"
+    memory.parent.mkdir(parents=True)
+    memory.write_text("PROJECT-FACT", encoding="utf-8")
+    data_paths = DataPaths(current().root)  # 移除测试的 project_memory 覆盖
+    ctx = Context(
+        session_id="s-cwd", channel=CHANNEL,
+        session_store=make_store(), data_paths=data_paths,
+        working_dir=tmp_path, sandbox_available=True)
+    prompt = ctx.system_prompt
+    assert f"Working directory: {tmp_path}" in prompt
+    assert str(memory) in prompt
+    assert "PROJECT-FACT" in prompt

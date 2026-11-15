@@ -1103,6 +1103,40 @@
     outline: none;
   }
   #input::placeholder { color: var(--text-3); }
+  #cwd-btn {
+    flex: 0 0 auto;
+    align-self: flex-end;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 210px;
+    height: 38px;
+    padding: 0 10px;
+    border-radius: var(--r-md);
+    border: 1px solid var(--line);
+    background: var(--surface-2);
+    color: var(--text-2);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+  #cwd-btn:hover:not(:disabled) {
+    border-color: var(--accent-line);
+    color: var(--accent);
+    background: var(--accent-soft);
+  }
+  #cwd-btn .icon { flex: 0 0 auto; width: 14px; height: 14px; }
+  #cwd-label { overflow: hidden; text-overflow: ellipsis; }
+  #cwd-btn.unset { color: var(--text-3); border-style: dashed; }
+  .cwd-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line-weak);
+  }
+  .cwd-actions .spacer { flex: 1; }
+  .cwd-status { min-height: 18px; margin-top: 8px; font-size: 12px; color: var(--danger); }
   #send, #stop {
     flex: 0 0 auto;
     height: 38px;
@@ -1695,6 +1729,7 @@
     :root { --sidebar-w: 232px; }
     #messages { padding: 22px 20px 12px; }
     #composer { padding: 12px 20px 16px; }
+    #cwd-btn { max-width: 150px; }
     #topbar { padding: 11px 20px; }
     #jump { right: 22px; }
   }
@@ -1729,6 +1764,7 @@
   <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.1"/><path d="M12 3.2v2.2M12 18.6v2.2M3.2 12h2.2M18.6 12h2.2M5.8 5.8l1.6 1.6M16.6 16.6l1.6 1.6M18.2 5.8l-1.6 1.6M7.4 16.6l-1.6 1.6"/></symbol>
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 13.2A8.2 8.2 0 0 1 10.8 4a8.4 8.4 0 1 0 9.2 9.2Z"/></symbol>
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18.5 7H20M4 17h4M13.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="10.5" cy="17" r="2.2"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
 </svg>
 
 <div id="splash">
@@ -1801,6 +1837,10 @@
 
     <div id="composer">
       <div class="composer-inner">
+        <button id="cwd-btn" class="cwd-chip unset" type="button" title="选择会话工作目录">
+          <svg class="icon"><use href="#i-folder"/></svg>
+          <span id="cwd-label">选择工作目录</span>
+        </button>
         <textarea id="input" rows="1" placeholder="输入消息…" autocomplete="off" spellcheck="false"></textarea>
         <button id="stop" class="hidden" title="终止当前回复 (Esc)">
           <svg class="icon"><use href="#i-stop"/></svg>
@@ -1905,6 +1945,7 @@
     sessions: [],
     model: "",
     models: [],
+    cwd: "",
     historySession: "",
     busy: false,
     activeTurnId: "",
@@ -2220,8 +2261,10 @@
     state.model = msg.model || "";
     state.models = msg.models || [];
     state.sessions = msg.sessions || [];
+    state.cwd = msg.cwd || "";
 
     $("#model-name").textContent = state.model || "model";
+    renderCwd();
     $("#session-title").textContent = state.session.title || "新会话";
     $("#session-sub").textContent = state.session.id
       ? "session · " + state.session.id.slice(0, 8) : "";
@@ -2243,6 +2286,20 @@
       hideSplash();
       setTimeout(() => $("#input").focus(), 60);
     }
+  }
+
+  function cwdBaseName(path) {
+    const parts = String(path || "").split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : String(path || "");
+  }
+
+  function renderCwd() {
+    const cwd = state.cwd || "";
+    const btn = $("#cwd-btn");
+    const label = $("#cwd-label");
+    label.textContent = cwd ? cwdBaseName(cwd) : "选择工作目录";
+    btn.title = cwd || "选择会话工作目录";
+    btn.classList.toggle("unset", !cwd);
   }
 
   function renderSessions() {
@@ -3168,6 +3225,10 @@
     if (!state.models.length) { toast("models 注册表为空", "info"); return; }
     showModelsModal(state.models, state.model);
   };
+  $("#cwd-btn").onclick = () => {
+    if (state.busy) { toast("当前回复未结束，稍后再切换工作目录", "info"); return; }
+    showCwdModal();
+  };
   $("#tasks-btn").onclick = openTasksModal;
   $("#skills-btn").onclick = openSkillsModal;
   $("#config-btn").onclick = openConfigModal;
@@ -3248,6 +3309,115 @@
       };
       body.appendChild(item);
     });
+  }
+
+  async function pickFolder(start) {
+    try {
+      const api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api.pick_folder !== "function") return "";
+      const picked = await api.pick_folder(start || "");
+      return String(picked || "");
+    } catch (err) {
+      return "";
+    }
+  }
+
+  function showCwdModal() {
+    state.modalKind = "cwd";
+    openModal("会话工作目录", "", `<button id="modal-close">关闭</button>`);
+    $("#modal-close").onclick = closeModal;
+    const body = $("#modal-body");
+    body.innerHTML = "";
+
+    const grid = el("div", "form-grid");
+    const row = el("div", "form-row");
+    const label = el("label");
+    label.htmlFor = "cwd-input";
+    label.textContent = "工作目录（绝对路径）";
+    const inline = el("div", "cfg-inline");
+    const input = el("input", "form-input");
+    input.id = "cwd-input";
+    input.type = "text";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = "/Users/you/project";
+    input.value = state.cwd || "";
+    const pick = el("button");
+    pick.id = "cwd-pick";
+    pick.type = "button";
+    pick.textContent = "选择…";
+    inline.appendChild(input);
+    inline.appendChild(pick);
+    const hint = el("div", "form-hint");
+    hint.textContent = "留空表示不绑定项目。文件工具只接受绝对路径；未选择时写入仅限会话目录或经审批。";
+    row.appendChild(label);
+    row.appendChild(inline);
+    row.appendChild(hint);
+    grid.appendChild(row);
+    body.appendChild(grid);
+
+    const status = el("div", "cwd-status");
+    status.id = "cwd-status";
+    body.appendChild(status);
+
+    const actions = el("div", "cwd-actions");
+    const clear = el("button");
+    clear.id = "cwd-clear";
+    clear.type = "button";
+    clear.textContent = "清除";
+    const spacer = el("span", "spacer");
+    const save = el("button", "primary");
+    save.id = "cwd-save";
+    save.type = "button";
+    save.textContent = "保存";
+    actions.appendChild(clear);
+    actions.appendChild(spacer);
+    actions.appendChild(save);
+    body.appendChild(actions);
+
+    function saveCwd() {
+      if (state.busy) {
+        status.textContent = "当前回复未结束，稍后再切换工作目录";
+        return;
+      }
+      const path = input.value.trim();
+      if (path && !path.startsWith("/") && !path.startsWith("~")
+          && !/^[A-Za-z]:[\\/]/.test(path)) {
+        status.textContent = "只支持绝对路径：以 / 或 ~ 开头";
+        return;
+      }
+      if (!send({ type: "cwd", path })) {
+        status.textContent = "未连接到后端，工作目录未修改";
+        return;
+      }
+      closeModal();
+    }
+
+    input.addEventListener("input", () => { status.textContent = ""; });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        saveCwd();
+      }
+    });
+    pick.onclick = async () => {
+      pick.disabled = true;
+      try {
+        const picked = await pickFolder(input.value.trim());
+        if (picked) {
+          input.value = picked;
+          status.textContent = "";
+        }
+      } finally {
+        pick.disabled = false;
+      }
+    };
+    save.onclick = saveCwd;
+    clear.onclick = () => {
+      input.value = "";
+      saveCwd();
+    };
+    setTimeout(() => input.focus(), 40);
   }
 
   const TASKS_PAGE_SIZE = 10;

@@ -19,6 +19,7 @@ Protocol (JSON text frames):
     {"type": "new"}                               create a new session
     {"type": "title", "title": "..."}             rename current session
     {"type": "model", "model": ""}                query / switch model
+    {"type": "cwd", "path": "/abs/path"}          set/clear session working dir
     {"type": "tasks"}                             list scheduled tasks
     {"type": "skills"}                            list built-in skills
     {"type": "config"}                            read config (masked)
@@ -245,6 +246,8 @@ class WebChannel(BusChannel):
             "sessions": self._sessions_sync(),
             "model": self.service.current_model(),
             "models": self.service.models(),
+            # 空串 = 当前会话未选择工作目录
+            "cwd": self.service.working_dir(),
             # 首次使用（无 config.json / 配置不可用）时前端据此打开引导页
             "setup": self._setup_payload(),
         }
@@ -382,6 +385,8 @@ class WebChannel(BusChannel):
             await self._broadcast({"type": "state", **await self._state()})
         elif kind == "model":
             await self._on_model(ws, str(data.get("model") or "").strip())
+        elif kind == "cwd":
+            await self._on_cwd(ws, str(data.get("path") or ""))
         elif kind == "tasks":
             all_sessions = bool(data.get("all"))
             await self._send(ws, {
@@ -538,6 +543,28 @@ class WebChannel(BusChannel):
             "type": "history",
             "sessionId": session_id,
             **(await self._history(session_id)),
+        })
+
+    async def _on_cwd(self, ws: ServerConnection, path: str) -> None:
+        """设置/清除当前会话工作目录；空路径表示清除。"""
+        try:
+            cwd = await asyncio.to_thread(self.service.set_working_dir, path)
+        except ValueError as exc:
+            await self._send(ws, {
+                "type": "notice", "level": "error", "text": str(exc),
+            })
+            return
+        except Exception:
+            logger.exception("web working directory switch failed")
+            await self._send(ws, {
+                "type": "notice", "level": "error",
+                "text": "工作目录设置失败，详见 debug.log",
+            })
+            return
+        await self._broadcast({"type": "state", **await self._state()})
+        await self._send(ws, {
+            "type": "notice", "level": "info",
+            "text": f"工作目录已设置为 {cwd}" if cwd else "已清除工作目录",
         })
 
     async def _on_model(self, ws: ServerConnection, model: str) -> None:

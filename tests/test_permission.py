@@ -43,6 +43,8 @@ from zero.tools.write import Write
 DARWIN_ONLY = pytest.mark.skipif(
     sys.platform != "darwin", reason="Seatbelt / launchd 仅 macOS")
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def current_envelope(ctx, permission: PermissionState):
     """测试边界：用显式权限状态推导包络。"""
@@ -106,7 +108,8 @@ def test_unattended_channels_never_prompt_or_network(permission):
 def make_ctx(channel: str = "cli", kind: OriginKind = ORIGIN_USER) -> HookContext:
     session_id = str(uuid4())
     tc = ToolContext(channel=channel, session_id=session_id,
-                     turn_id="t1", origin=Origin(kind=kind))
+                     turn_id="t1", origin=Origin(kind=kind),
+                     working_dir=str(REPO_ROOT))
     return HookContext(channel=channel, session_id=session_id, turn_id="t1",
                        tool_context=tc)
 
@@ -140,7 +143,7 @@ def test_permission_cli_accepts_data_paths(capsys, permission):
 
 def test_render(permission):
     env = envelope.Envelope(
-        project_root=Path("/tmp/proj"),
+        workspace=Path("/tmp/proj"),
         session_dir=Path("/tmp/proj/sess"),
         deny_read=tuple(envelope._real(p) for p in permission.ungrantable_read()))
     text = seatbelt.render_profile(env, permission.data_paths.profiles)
@@ -166,7 +169,7 @@ def test_render(permission):
 
 def test_render_denied_network(permission):
     """无人值守档必须显式断网，且压过基线里可能的网络放行。"""
-    env = envelope.Envelope(project_root=Path("/tmp/proj"), network=False)
+    env = envelope.Envelope(workspace=Path("/tmp/proj"), network=False)
     text = seatbelt.render_profile(env, permission.data_paths.profiles)
     assert "(allow network*)" not in text
     assert "(deny network*)" in text
@@ -198,10 +201,11 @@ def test_scope(permission):
     assert not v.ok and v.tier == envelope.D, v
     assert v.needed
 
-    v = permission.check_readable("zero/permission/envelope.py")
+    v = permission.check_readable(REPO_ROOT / "zero/permission/envelope.py")
     assert v.ok and v.tier == envelope.P, v
 
-    v = check_writable("zero/permission/envelope.py", None, permission)
+    v = check_writable(
+        str(REPO_ROOT / "zero/permission/envelope.py"), make_ctx(), permission)
     assert v.ok, v
 
     v = check_writable("/etc/hosts", None, permission)
@@ -209,6 +213,60 @@ def test_scope(permission):
 
     v = check_writable(outside("zero-out-selftest"), None, permission)
     assert not v.ok and v.tier == envelope.G, v
+
+
+def test_validate_workspace(tmp_path, permission):
+    """用户选择的工作目录必须是具体项目目录，不能被过宽的根撑破沙箱。"""
+    good = tmp_path / "project"
+    good.mkdir()
+    assert (envelope.validate_workspace(str(good), permission.data_paths)
+            == envelope._real(good))
+
+    permission.data_paths.root.mkdir(parents=True, exist_ok=True)
+    for bad in ("relative/path", str(tmp_path / "missing"),
+                str(envelope.HOME), str(permission.data_paths.root)):
+        with pytest.raises(ValueError):
+            envelope.validate_workspace(bad, permission.data_paths)
+
+    not_dir = tmp_path / "file.txt"
+    not_dir.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError):
+        envelope.validate_workspace(str(not_dir), permission.data_paths)
+
+
+def test_envelope_workspace_optional(permission):
+    """未选目录时没有项目写区；选定后写集合才包含该目录。"""
+    no_ws = ToolContext(channel="cli", session_id=str(uuid4()))
+    env = permission.envelope(no_ws)
+    assert env.workspace is None
+    assert str(envelope._real(REPO_ROOT)) not in {str(r) for r in env.write_roots()}
+
+    with_ws = ToolContext(
+        channel="cli", session_id=str(uuid4()), working_dir=str(REPO_ROOT))
+    assert permission.envelope(with_ws).workspace == envelope._real(REPO_ROOT)
+    target = str(REPO_ROOT / "zero-stageB-inside.txt")
+    assert permission.check_writable(target, with_ws).ok
+    assert not permission.check_writable(target, no_ws).ok
+
+
+def test_guard_rejects_relative_paths(permission):
+    """文件工具与 shell 路径参数只收绝对路径。"""
+    async def main():
+        guard = PermissionGuard(None, permission=permission)
+        cases = (
+            ("read", {"file_path": "README.md"}),
+            ("write", {"file_path": "out.txt", "content": "x"}),
+            ("edit", {"file_path": "out.txt", "old_string": "a",
+                      "new_string": "b"}),
+            ("shell", {"command": "ls", "working_dir": "relative"}),
+            ("shell", {"command": "ls", "write_paths": ["relative"]}),
+        )
+        for tool, kwargs in cases:
+            decision = await guard(tool, kwargs, make_ctx())
+            assert decision is not None and decision.proceed is False, (tool, decision)
+            assert "绝对路径" in decision.reason, (tool, decision.reason)
+
+    asyncio.run(main())
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +402,8 @@ def test_shell_denied_roundtrip(permission):
         pytest.skip("内核沙箱不可用，跳过 shell 拒绝回投")
 
     shell = make_shell(permission)
-    ctx = ToolContext(channel="cli", session_id=str(uuid4()))
+    ctx = ToolContext(
+        channel="cli", session_id=str(uuid4()), working_dir=str(REPO_ROOT))
 
     # 包络外写：内核拒绝 → sandbox_denied + needed
     result = asyncio.run(shell.run(
@@ -384,13 +443,14 @@ def test_shell_network_by_source(permission):
     command = shlex.join([sys.executable, "-B", "-c", code])
     try:
         attended_ctx = ToolContext(
-            channel="cli", session_id=str(uuid4()), origin=Origin(kind=ORIGIN_USER))
+            channel="cli", session_id=str(uuid4()), working_dir=str(REPO_ROOT),
+            origin=Origin(kind=ORIGIN_USER))
         result = asyncio.run(
             make_shell(permission).run(context=attended_ctx, command=command))
         assert result["returncode"] == 0, result
 
         unattended_ctx = ToolContext(
-            channel="cli", session_id=str(uuid4()),
+            channel="cli", session_id=str(uuid4()), working_dir=str(REPO_ROOT),
             origin=Origin(kind=ORIGIN_SCHEDULER))
         result = asyncio.run(
             make_shell(permission).run(context=unattended_ctx, command=command))
@@ -520,8 +580,9 @@ def test_file_tools_use_approval_gate(permission):
 
         # read 包络内：放行，不弹面板
         worker = answer_next(bus, "s")
-        assert await guard("read", {"file_path": "zero/permission/envelope.py"},
-                           make_ctx()) is None
+        assert await guard(
+            "read", {"file_path": str(REPO_ROOT / "zero/permission/envelope.py")},
+            make_ctx()) is None
         assert bus.stream_queue.size == 0, "包络内不应进面板"
         assert not worker.done()
         worker.cancel()
@@ -545,8 +606,9 @@ def test_file_tools_use_approval_gate(permission):
 
         # write 包络内：放行，不弹面板
         worker = answer_next(bus, "s")
-        assert await guard("write", {"file_path": "zero-stageB-inside.txt",
-                                     "content": "x"}, make_ctx()) is None
+        assert await guard(
+            "write", {"file_path": str(REPO_ROOT / "zero-stageB-inside.txt"),
+                      "content": "x"}, make_ctx()) is None
         assert bus.stream_queue.size == 0, "包络内不应进面板"
         assert not worker.done()
         worker.cancel()
@@ -617,7 +679,8 @@ def test_guard_fail_closed_on_internal_error(monkeypatch, permission):
     monkeypatch.setattr(PermissionState, "check_readable", boom)
     guard = PermissionGuard(MessageBus(), permission=permission)
     decision = asyncio.run(
-        guard("read", {"file_path": "zero/permission/envelope.py"}, make_ctx()))
+        guard("read", {"file_path": str(REPO_ROOT / "zero/permission/envelope.py")},
+              make_ctx()))
 
     assert decision is not None and decision.proceed is False, decision
     assert "fail-closed" in decision.reason, decision.reason

@@ -61,12 +61,40 @@ def _real(path) -> Path:
     return Path(os.path.realpath(os.path.expanduser(str(path))))
 
 
-def project_root() -> Path:
-    """工作区根 = agent 进程启动目录。这是包络的写集合中心。
+def validate_workspace(raw, data_paths: DataPaths) -> Path:
+    """校验用户选择的工作目录，返回 realpath。
 
-    注意：不接受工具参数指定——否则模型能靠改 cwd 自行扩大包络。
+    工作目录会成为该会话的免审批写区与沙箱根，所以必须在入口挡掉
+    「范围过宽的根」与系统/数据目录——这类目录要么让沙箱失去意义，
+    要么会把 Zero 自己的配置暴露成可写区。
     """
-    return _real(Path.cwd())
+    text = str(raw or "").strip()
+    if not text:
+        raise ValueError("工作目录不能为空")
+    value = os.path.expanduser(text)
+    if not Path(value).is_absolute():
+        raise ValueError(f"只支持绝对路径（可用 ~）：{text!r}")
+    path = _real(value)
+    if not path.exists():
+        raise ValueError(f"目录不存在：{path}")
+    if not path.is_dir():
+        raise ValueError(f"不是目录：{path}")
+    home = _real(HOME)
+    if path == Path(path.anchor) or path == home or home.is_relative_to(path):
+        raise ValueError(
+            f"工作目录范围过宽：{path}。请选择一个具体的项目目录，"
+            f"不要使用 /、{home} 或其上级目录")
+    data_root = _real(data_paths.root)
+    if path.is_relative_to(data_root) or data_root.is_relative_to(path):
+        raise ValueError(
+            f"工作目录不能与 Zero 的数据目录重叠：{path}。"
+            f"请选择一个项目目录")
+    for system in (Path("/etc"), Path("/System"), Path("/usr"), Path("/bin"),
+                   Path("/sbin"), Path("/Library"), Path("/dev")):
+        if path.is_relative_to(_real(system)):
+            raise ValueError(
+                f"工作目录不能是系统目录：{path}。请选择一个项目目录")
+    return path
 
 
 def _origin_of(ctx):
@@ -107,7 +135,9 @@ def _tmp_dirs() -> list[Path]:
 @dataclass(frozen=True)
 class Envelope:
     """一次执行的能力包络。读 = 全开减去不可授予；写 = 白名单相加。"""
-    project_root: Path
+    # 会话工作目录：None = 用户尚未选择。它只由用户入口设置，
+    # 工具参数不能修改；写集合与沙箱根只认这个字段。
+    workspace: Path | None = None
     session_dir: Path | None = None
     deny_read: tuple[Path, ...] = ()        # 读禁止项（已 realpath）
     extra_roots: tuple[Path, ...] = ()      # profile.json 的长期扩权根（用户资产）
@@ -115,7 +145,9 @@ class Envelope:
     network: bool = True
 
     def write_roots(self) -> list[Path]:
-        candidates = [self.project_root]
+        candidates: list[Path] = []
+        if self.workspace is not None:
+            candidates.append(self.workspace)
         if self.session_dir is not None:
             candidates.append(self.session_dir)
         candidates.extend(_tmp_dirs())
@@ -209,11 +241,12 @@ class PermissionState:
     def sandbox_available(self, root: Path | None = None) -> bool:
         """内核沙箱是否真的可用：平台 + sandbox-exec + 双向探针。
 
-        不通过就不许自称"沙箱内免审批"，降级为每次审批。
+        不通过就不许自称"沙箱内免审批"，降级为每次审批。探针只看机制
+        本身，root 只用于渲染一份合法 profile；缺省用数据根（稳定且窄）。
         """
         if not seatbelt.supported_platform() or not seatbelt.executable_present():
             return False
-        root = _real(root or project_root())
+        root = _real(root or self.data_paths.root)
         key = str(root)
         if key not in self._probe_cache:
             ok = self._probe(root)
@@ -229,7 +262,7 @@ class PermissionState:
         """
         if not seatbelt.supported_platform() or not seatbelt.executable_present():
             return False
-        root = _real(root or project_root())
+        root = _real(root or self.data_paths.root)
         key = str(root)
         if key not in self._network_probe_cache:
             ok = self._probe_network(root)
@@ -249,7 +282,7 @@ class PermissionState:
             return False
         try:
             text = seatbelt.render_profile(
-                Envelope(project_root=root, session_dir=root), profiles)
+                Envelope(workspace=root, session_dir=root), profiles)
         except seatbelt.SeatbeltError as e:
             logger.warning("探针 profile 渲染失败：%s", e)
             return False
@@ -284,7 +317,7 @@ class PermissionState:
             if control.returncode != 0:
                 return False
             text = seatbelt.render_profile(
-                Envelope(project_root=root, session_dir=root, network=False),
+                Envelope(workspace=root, session_dir=root, network=False),
                 profiles)
             denied = seatbelt.run_isolated(text, argv, profiles)
             # sandbox-exec 自身失败不能当成"连接被拒"，否则探针会假阳性。
@@ -390,18 +423,62 @@ class PermissionState:
     # 包络推导与判定
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _tool_ctx(ctx):
+        """从 ToolContext 或 HookContext 取工具上下文（同 _origin_of）。"""
+        if ctx is None:
+            return None
+        if hasattr(ctx, "working_dir"):
+            return ctx
+        return getattr(ctx, "tool_context", None)
+
+    def workspace(self, ctx=None) -> Path | None:
+        """会话工作目录（realpath）；未选择返回 None。
+
+        只读 ToolContext.working_dir——该字段只由用户入口写入，工具参数
+        改不到它，因此模型无法靠调用参数扩大写包络。
+        """
+        tc = self._tool_ctx(ctx)
+        raw = getattr(tc, "working_dir", "") if tc is not None else ""
+        if not raw:
+            return None
+        value = os.path.expanduser(str(raw))
+        if not Path(value).is_absolute():
+            # 索引被手工改坏时按「未选择」处理，绝不让相对路径按进程 cwd
+            # 解析成一个意外的写根。
+            logger.warning("忽略非绝对路径的会话工作目录：%r", raw)
+            return None
+        return _real(value)
+
+    def session_data_dir(self, ctx=None) -> Path | None:
+        """会话数据目录；用于兜底执行 cwd 与可写集合。"""
+        if ctx is None or not getattr(ctx, "session_id", ""):
+            return None
+        try:
+            return _real(self.session_store.session_dir(
+                getattr(ctx, "channel", ""), ctx.session_id))
+        except Exception:  # noqa: BLE001 - 推导失败退化为数据根
+            logger.warning("会话目录推导失败，退化为数据根", exc_info=True)
+            return None
+
+    def sandbox_root(self, ctx=None) -> Path:
+        """守卫与 shell 共用的沙箱锚点根。
+
+        有工作目录用它；没有用会话目录；会话目录尚未落盘（或已删除）时
+        退化为数据根。三个值都必须是真实、窄的目录，绝不再是进程启动目录。
+        """
+        workspace = self.workspace(ctx)
+        if workspace is not None:
+            return workspace
+        session_dir = self.session_data_dir(ctx)
+        if session_dir is not None and session_dir.is_dir():
+            return session_dir
+        return _real(self.data_paths.root)
+
     def envelope(self, ctx=None) -> Envelope:
-        session_dir = None
-        if ctx is not None and getattr(ctx, "session_id", ""):
-            try:
-                session_dir = self.session_store.session_dir(
-                    ctx.channel, ctx.session_id)
-            except Exception:  # noqa: BLE001 - 推导失败退化为项目根，不阻断
-                logger.warning(
-                    "会话目录推导失败，退化为项目根", exc_info=True)
         return Envelope(
-            project_root=project_root(),
-            session_dir=session_dir,
+            workspace=self.workspace(ctx),
+            session_dir=self.session_data_dir(ctx),
             deny_read=tuple(_real(p) for p in self.ungrantable_read()),
             extra_roots=tuple(self.extra_roots()),
             session_roots=self.session_roots(ctx),
@@ -430,8 +507,8 @@ class PermissionState:
             return Verdict(ok=True)
         return Verdict(
             ok=False, tier=G, needed=f"fs.write {p}",
-            reason=(f"{p} 不在当前写集合内（可写：项目根、会话目录、TMPDIR）。"
-                    "改用包络内路径。"))
+            reason=(f"{p} 不在当前写集合内（可写：会话工作目录、会话目录、"
+                    "TMPDIR）。改用包络内路径。"))
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +543,7 @@ def main(argv: list[str] | None = None, *,
 
     if cmd == "list":
         env = state.envelope()
+        print("工作目录：按会话设置（未选择时没有免审批的项目写区）")
         print("写集合（加法白名单）:")
         for r in env.write_roots():
             print(f"  {r}")

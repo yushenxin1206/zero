@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from zero.tools.base import Tool
+from zero.utils.file import require_absolute_path
 
 
 class Read(Tool):
@@ -31,7 +32,7 @@ class Read(Tool):
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path of the file to read.",
+                    "description": "Absolute path of the file to read.",
                 },
                 "start_line": {
                     "type": "integer",
@@ -52,11 +53,17 @@ class Read(Tool):
         }
 
     async def run(self, context=None, **kwargs):
-        file_path: str = kwargs["file_path"]
         start_line: int | None = kwargs.get("start_line")
         end_line: int | None = kwargs.get("end_line")
 
-        file_path = os.path.expanduser(file_path)
+        try:
+            file_path = str(require_absolute_path(kwargs["file_path"]))
+        except ValueError as exc:
+            return {
+                "success": False,
+                "content": "",
+                "error": str(exc),
+            }
 
         if not os.path.exists(file_path):
             return {

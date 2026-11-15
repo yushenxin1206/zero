@@ -86,7 +86,7 @@ def make_runner(hooks: Hooks, tool: EchoTool, session_id: str) -> AgentRunner:
     registry = ToolRegistry()
     registry.register(tool)
     context = Context(session_id=session_id, channel=CHANNEL,
-                      tool_registry=registry, session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+                      tool_registry=registry, session_store=make_store(), data_paths=make_data_paths(), working_dir=None, sandbox_available=True)
     runner = AgentRunner(
         config=stub_config(),
         running_context=context,

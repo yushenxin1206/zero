@@ -29,6 +29,7 @@ from zero.models import (
     ApprovalRequest, ApprovalStatus, StreamEvent)
 from zero.permission import envelope
 from zero.permission.envelope import PermissionState
+from zero.utils.file import require_absolute_path
 
 if TYPE_CHECKING:
     from zero.session.store import SessionStore
@@ -234,6 +235,13 @@ class PermissionGuard:
         path = kwargs.get("file_path", "")
         if not path:
             return None                     # 参数缺失交给工具自己报错
+        try:
+            # 路径契约只有一份：守卫与工具都调 require_absolute_path，
+            # 保证「检查的路径」就是「执行的路径」，不存在相对的拼接岔路
+            path = str(require_absolute_path(path))
+        except ValueError as exc:
+            return ToolCallDecision(
+                proceed=False, reason=f"permission: {exc}")
         if tool_name in ("read", "edit"):
             # edit 既读又写；读方向只有 D 档，没有可授予档
             denied = self._check_read(path, ctx)
@@ -320,8 +328,26 @@ class PermissionGuard:
         command = kwargs.get("command", "")
         argv = shlex.split(command) if command else []
 
+        # 路径参数只收绝对路径：在进入任何档位判断之前统一校验，
+        # 避免相对路径被 realpath 按进程 cwd 解释成另一条路径。
+        working_dir = kwargs.get("working_dir")
+        if working_dir:
+            try:
+                require_absolute_path(working_dir)
+            except ValueError as exc:
+                return ToolCallDecision(
+                    proceed=False, reason=f"permission: {exc}")
+        write_paths: list[str] = []
+        for raw in kwargs.get("write_paths") or []:
+            try:
+                write_paths.append(str(require_absolute_path(raw)))
+            except ValueError as exc:
+                return ToolCallDecision(
+                    proceed=False, reason=f"permission: {exc}")
+
         # ---- 沙箱不可用：没有「包络内免审批」，每次都要问（fail-closed）----
-        if not self.permission.sandbox_available():
+        if not self.permission.sandbox_available(
+                self.permission.sandbox_root(ctx)):
             if not self._attended(ctx):
                 return ToolCallDecision(proceed=False, reason=_DEGRADED_UNATTENDED)
             answer = await request(
@@ -358,10 +384,9 @@ class PermissionGuard:
                 proceed=False, reason="permission: 用户拒绝脱离沙箱执行")
 
         # ---- write_paths 扩权申请：D 档直接拒，G 档走审批 ----
-        write_paths = kwargs.get("write_paths") or []
         if write_paths:
             return await self._request_expand(
-                list(write_paths), ctx, title="写入包络外路径审批")
+                write_paths, ctx, title="写入包络外路径审批")
 
         # ---- P 档：包络内，放行（shell.py 负责包进内核沙箱）----
         return None

@@ -10,6 +10,7 @@ import time
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from zero.bus.queue import MessageBus
 from zero.config import Config
@@ -213,10 +214,16 @@ class AgentLoop:
         # 把当前会话上下文注入到所有工具（定时任务工具据此定位回投目标）
         # turn_id 进 ToolContext 顶层：hooks/插件（如 shell_guard 的审批
         # 事件路由）据此把交互事件精确挂到触发它的那一轮
+        # 工作目录是会话级事实：每轮在 turn 起点读取一次，读盘放线程池。
+        # 空串表示用户尚未选择，此时工具只收绝对路径、无项目写区。
+        working_dir = await asyncio.to_thread(
+            self.session_store.get_working_dir,
+            msg_in.channel, msg_in.session_id)
         tool_context = ToolContext(
             channel=msg_in.channel,
             session_id=msg_in.session_id,
             turn_id=msg_in.id,
+            working_dir=working_dir,
             origin=msg_in.origin,
             channel_message_id=msg_in.channel_message_id,
             channel_sender_id=msg_in.channel_sender_id,
@@ -228,6 +235,7 @@ class AgentLoop:
             channel=msg_in.channel,
             session_store=self.session_store,
             data_paths=self.data_paths,
+            working_dir=Path(working_dir) if working_dir else None,
             sandbox_available=self.sandbox_available,
             tool_registry=self.tool_registry,
             tool_context=tool_context,

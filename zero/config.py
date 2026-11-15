@@ -37,8 +37,8 @@ def project_memory_path(cwd: Path, *, override: Path | None = None) -> Path:
     """项目级记忆文件路径：<cwd>/.zero/memory/memory.md。
 
     与用户级记忆（``DataPaths.memory``）区分：后者是跨项目的用户偏好
-    与背景，前者是当前项目的持久事实与约定。cwd 由调用方传入（通常
-    core/context.get_cwd()），避免本模块反向依赖 core。显式配置了
+    与背景，前者是当前项目的持久事实与约定。cwd 由调用方传入（通常是
+    ``Context.working_dir``），避免本模块反向依赖 core。显式配置了
     ``DataPaths.project_memory`` 时由调用方作为 override 传入（测试/嵌入式宿主用）。
     """
     if override is not None:

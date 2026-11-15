@@ -20,6 +20,7 @@ CLI 的 /model、未来 Feishu channel 都通过这里切换会话绑定模型�
 import asyncio
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 
 from zero.config import Config
 from zero.core.compactor import Compactor
@@ -98,9 +99,12 @@ async def switch_model(
 
     # 同一进程内会话上下文的 system prompt 复用同一 Context 构建逻辑；
     # 历史/压缩记录/提示词全部在线程池读完再进入压缩调用，事件循环不等盘
+    working_dir = await asyncio.to_thread(
+        session_store.get_working_dir, channel, session_id)
     ctx = Context(
         session_id=session_id, channel=channel,
         session_store=session_store, data_paths=data_paths,
+        working_dir=Path(working_dir) if working_dir else None,
         sandbox_available=sandbox_available)
     await ctx.aprepare()
     raw = ctx.raw_history

@@ -8,6 +8,7 @@ from typing import Any
 
 from zero.permission.envelope import PermissionState
 from zero.tools.base import Tool
+from zero.utils.file import require_absolute_path
 
 # shell 超时（秒）：schema 描述/上限与执行默认值共用一个来源
 DEFAULT_TIMEOUT = 60
@@ -54,7 +55,10 @@ class Shell(Tool):
                 },
                 "working_dir": {
                     "type": "string",
-                    "description": "Optional working directory for the command",
+                    "description": (
+                        "Optional absolute working directory for this command; "
+                        "omit to run in the session working directory"
+                    ),
                 },
                 "write_paths": {
                     "type": "array",
@@ -81,11 +85,32 @@ class Shell(Tool):
 
     async def run(self, context=None, **kwargs):
         command = kwargs["command"]
-        working_dir = kwargs.get("working_dir")
         timeout = kwargs.get("timeout", DEFAULT_TIMEOUT)
+        raw_working_dir = kwargs.get("working_dir")
 
-        if working_dir:
-            working_dir = os.path.expanduser(working_dir)
+        if raw_working_dir:
+            try:
+                working_dir = str(require_absolute_path(raw_working_dir))
+            except ValueError as exc:
+                return {
+                    "returncode": -1,
+                    "stdout": "",
+                    "stderr": "",
+                    "error": str(exc),
+                }
+        else:
+            # 默认 cwd 与会话工作目录同源：未选择目录时退到会话数据目录，
+            # 绝不继承进程启动目录。显式 working_dir 只影响这一次子进程，
+            # 不进入写包络判定。
+            working_dir = str(self.permission.sandbox_root(context))
+
+        if not os.path.isdir(working_dir):
+            return {
+                "returncode": -1,
+                "stdout": "",
+                "stderr": "",
+                "error": f"工作目录不存在或不是目录：{working_dir}",
+            }
 
         is_windows = os.name == "nt"
 
@@ -96,7 +121,8 @@ class Shell(Tool):
         argv: list[str] = []
         if not is_windows:
             argv = shlex.split(command)
-            if (self.permission.sandbox_available()
+            if (self.permission.sandbox_available(
+                    self.permission.sandbox_root(context))
                     and not self.permission.matches_unsandbox(argv)):
                 env = self.permission.envelope(context)
                 profile = self.permission.render_profile(env)

@@ -147,7 +147,8 @@ class TestTurnStop(unittest.TestCase):
             cfg = make_test_config()
             context = Context(
                 session_id="s-repair", channel="cli",
-                session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+                session_store=make_store(), data_paths=make_data_paths(),
+                working_dir=None, sandbox_available=True)
             stop_event = asyncio.Event()
             runner = AgentRunner(
                 config=cfg, running_context=context,

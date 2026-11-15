@@ -3,9 +3,62 @@ import json
 import time
 from unittest.mock import patch
 
+import pytest
+
+from zero.bus.queue import MessageBus
+from zero.channels.service import ChannelService
 from zero.models import MessageBody, MessageIn, MessageOut
+from zero.permission import envelope
 from zero.session.store import SessionStore
-from tests.support import make_store
+from tests.support import (
+    make_data_paths, make_permission, make_scheduler_store, make_store)
+
+
+def test_working_dir_roundtrip_without_rewrite():
+    """会话工作目录可读写；值未变化时不重写索引。"""
+    channel = "cli"
+    store = make_store()
+    sid = store.create_session(channel, "src-working-dir")
+    assert store.get_working_dir(channel, sid) == ""
+
+    assert store.set_working_dir(channel, sid, "/tmp/zero-project") is True
+    assert store.get_working_dir(channel, sid) == "/tmp/zero-project"
+
+    index_path = store._index_path(channel)
+    before = index_path.stat().st_mtime_ns
+    assert store.set_working_dir(channel, sid, "/tmp/zero-project") is True
+    assert index_path.stat().st_mtime_ns == before, "值未变不应重写索引"
+
+    raw = json.loads(index_path.read_text(encoding="utf-8"))
+    assert raw["src-working-dir"]["working_dir"] == "/tmp/zero-project"
+
+    assert store.set_working_dir(channel, "missing-session", "/tmp/x") is False
+
+
+def test_channel_service_sets_working_dir(tmp_path):
+    """用户入口：设置/清除走校验，并写入当前会话的索引条目。"""
+    store = make_store()
+    service = ChannelService(
+        "web", msg_bus=MessageBus(), session_store=store,
+        scheduler_store=make_scheduler_store(), data_paths=make_data_paths(),
+        permission=make_permission())
+    source_id = "src-service-cwd"
+    sid = store.create_session("web", source_id)
+    service.bind(source_id, sid)
+
+    # 数据根是 tmp_path/.zero；工作目录必须是它的兄弟目录，不能互相包含
+    workspace = tmp_path.parent / f"{tmp_path.name}-project"
+    workspace.mkdir()
+
+    assert service.working_dir() == ""
+    assert service.set_working_dir(str(workspace)) == str(envelope._real(workspace))
+    assert service.working_dir() == str(envelope._real(workspace))
+
+    with pytest.raises(ValueError):
+        service.set_working_dir("relative/path")
+
+    assert service.set_working_dir("") == ""
+    assert service.working_dir() == ""
 
 
 def test_index_is_not_rewritten_per_turn():

@@ -381,6 +381,30 @@ class SessionStore:
 
         return self._write_index(channel, mutate)
 
+    def get_working_dir(self, channel: str, session_id: str) -> str:
+        """Return the session's working directory (absolute path), or ""."""
+        entry = self._find_entry_by_session_id(channel, session_id)
+        return entry.working_dir if entry else ""
+
+    def set_working_dir(
+            self, channel: str, session_id: str, working_dir: str) -> bool:
+        """Set/clear the session's working directory. Returns True if found.
+
+        值没有实际变化时不重写整份索引（与 set_title 同一语义）。
+        """
+        value = working_dir.strip()
+
+        def mutate(entries: dict[str, SessionMeta]) -> tuple[bool, bool]:
+            for entry in entries.values():
+                if entry.session_id == session_id:
+                    if entry.working_dir == value:
+                        return True, False
+                    entry.working_dir = value
+                    return True, True
+            return False, False
+
+        return self._write_index(channel, mutate)
+
     def auto_title(self, channel: str, session_id: str, text: str) -> None:
         """Set the title from the first user message, unless one is already
         set (auto or manual). No-op for sessions not in the index."""

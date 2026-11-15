@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from zero.tools.base import Tool
+from zero.utils.file import require_absolute_path
 
 
 class Write(Tool):
@@ -31,7 +32,7 @@ class Write(Tool):
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The path of the file to write.",
+                    "description": "Absolute path of the file to write.",
                 },
                 "content": {
                     "type": "string",
@@ -51,11 +52,17 @@ class Write(Tool):
         }
 
     async def run(self, context=None, **kwargs):
-        file_path = kwargs["file_path"]
         content = kwargs["content"]
         mode = kwargs.get("mode", "overwrite")
 
-        file_path = os.path.expanduser(file_path)
+        try:
+            file_path = str(require_absolute_path(kwargs["file_path"]))
+        except ValueError as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "file_path": str(kwargs.get("file_path") or ""),
+            }
 
         if mode not in ("overwrite", "append"):
             return {

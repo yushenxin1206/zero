@@ -91,6 +91,25 @@ class _BootstrapApi:
             return False
         return True
 
+    def pick_folder(self, start: str = "") -> str:
+        """系统原生目录选择器；取消或不可用时返回空串。"""
+        if self._window is None:
+            return ""
+        try:
+            import webview
+        except ImportError:  # pragma: no cover - 运行桌面端必然已安装
+            return ""
+        directory = start if start and Path(start).is_dir() else ""
+        try:
+            result = self._window.create_file_dialog(
+                webview.FOLDER_DIALOG, directory=directory)
+        except Exception:  # noqa: BLE001 - 对话框失败不能拖垮窗口
+            logger.warning("folder picker failed", exc_info=True)
+            return ""
+        if not result:
+            return ""
+        return str(result[0])
+
 
 def _relaunch() -> bool:
     """按当前启动方式拉起新进程（配置保存后的重启）。

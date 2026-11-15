@@ -25,6 +25,7 @@ COMMANDS: list[tuple[str, str]] = [
     ("/sessions", "选择 / 切换历史会话"),
     ("/title", "设置 / 查看当前会话标题"),
     ("/model", "查看 / 切换本会话模型"),
+    ("/cwd", "查看 / 设置本会话工作目录"),
     ("/tasks", "查看定时任务（/tasks all 查看全部）"),
     ("/bgstream", "开关定时任务结果的流式输出"),
     ("/history", "分页查看本会话全部历史"),

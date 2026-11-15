@@ -262,7 +262,8 @@ def test_compression_gate(monkeypatch):
     registry = make_registry(EchoTool())
     context = Context(
         session_id=str(uuid4()), channel=CHANNEL, tool_registry=registry,
-        session_store=make_store(), data_paths=make_data_paths(), sandbox_available=True)
+        session_store=make_store(), data_paths=make_data_paths(),
+        working_dir=None, sandbox_available=True)
     runner = AgentRunner(
         config=stub_config(),
         # 根配置：运行时配置在 AgentRunner 内按 task 解析
