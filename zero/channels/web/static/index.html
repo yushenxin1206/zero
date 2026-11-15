@@ -706,6 +706,21 @@
     animation: fade-up .3s var(--ease) both;
   }
   .msg.user { justify-content: flex-end; }
+  /* 时间戳只做锚点：绝对定位在气泡下方，不参与正文排版 */
+  .msg { position: relative; }
+  .msg-time {
+    position: absolute;
+    bottom: -17px;
+    font-size: 10.5px;
+    line-height: 1;
+    letter-spacing: .02em;
+    color: var(--text-3);
+    opacity: .78;
+    pointer-events: none;
+    user-select: none;
+  }
+  .msg.user .msg-time { right: 0; }
+  .msg.assistant .msg-time { left: 41px; }
   .avatar {
     width: 28px; height: 28px;
     flex: 0 0 28px;
@@ -2228,6 +2243,8 @@
     reconnectCount: 0,
     booted: false,
     follow: true,
+    // 最近一条已显示时间戳的分钟，用于相邻消息去重
+    lastStampKey: "",
     modalKind: "",
     tasksTimer: 0,
     tasksAll: false,
@@ -2712,6 +2729,7 @@
       send({ type: "history", sessionId: state.session.id });
     } else if (!state.session.id && !state.busy) {
       $("#messages").innerHTML = emptyStateHtml();
+      state.lastStampKey = "";
     }
 
     if (!state.booted) {
@@ -2826,12 +2844,33 @@
     return { row, bubble };
   }
 
-  function addUser(text) {
+  // 相邻消息在同一分钟内只显示一次时间，避免每条都堆一个 HH:MM
+  function stampKey(date) {
+    return date.getFullYear() + "-" + date.getMonth() + "-" + date.getDate()
+      + "-" + date.getHours() + "-" + date.getMinutes();
+  }
+
+  function appendStamp(row, at) {
+    const raw = Number(at);
+    const date = new Date(Number.isFinite(raw) && raw > 0 ? raw : Date.now());
+    const key = stampKey(date);
+    if (key === state.lastStampKey) return;
+    state.lastStampKey = key;
+    const stamp = el("div", "msg-time");
+    stamp.textContent =
+      String(date.getHours()).padStart(2, "0") + ":"
+      + String(date.getMinutes()).padStart(2, "0");
+    stamp.title = date.toLocaleString("zh-CN", { hour12: false });
+    row.appendChild(stamp);
+  }
+
+  function addUser(text, at) {
     removeEmpty();
     const row = el("div", "msg user");
     const bubble = el("div", "bubble");
     bubble.textContent = text;
     row.appendChild(bubble);
+    appendStamp(row, at);
     $("#messages").appendChild(row);
     scrollBottom(true);
     return row;
@@ -2877,7 +2916,8 @@
     const turns = [];
     let current = null;
     const startTurn = (user) => {
-      current = { user: user || null, entries: [], turnIds: new Set() };
+      current = {
+        user: user || null, entries: [], turnIds: new Set(), at: 0};
       turns.push(current);
       return current;
     };
@@ -2901,6 +2941,7 @@
       }
       if (turnId) current.turnIds.add(turnId);
       const at = Number(m.at) || 0;
+      current.at = at || current.at;
       (m.toolCalls || []).forEach((call) => {
         current.entries.push({
           kind: "tool",
@@ -3009,6 +3050,7 @@
   function addHistoricalTurn(turn) {
     removeEmpty();
     const { row, bubble } = assistantRow("zero");
+    appendStamp(row, turn.at);
     const parts = el("div", "parts");
     bubble.appendChild(parts);
     const nodes = turn.entries.map((entry) => {
@@ -3041,6 +3083,7 @@
 
     const box = $("#messages");
     box.innerHTML = "";
+    state.lastStampKey = "";
     const turns = buildHistoryTurns(
       msg.messages || [], msg.approvals || []);
     const rows = [];
@@ -3049,7 +3092,7 @@
         rows.push(addCompact(turn.compact.content));
         return;
       }
-      if (turn.user) rows.push(addUser(turn.user.content));
+      if (turn.user) rows.push(addUser(turn.user.content, turn.user.at));
       if (turn.entries.length) rows.push(addHistoricalTurn(turn));
     });
     rows.forEach((row, index) => {
@@ -3068,6 +3111,7 @@
   function createAssistantBubble(turnId) {
     removeEmpty();
     const { row, bubble } = assistantRow("zero");
+    appendStamp(row, Date.now());
 
     const status = el("div", "turn-status");
     status.dataset.state = "thinking";
