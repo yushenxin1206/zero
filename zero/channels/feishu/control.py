@@ -127,7 +127,14 @@ class FeishuController:
                 with suppress(asyncio.CancelledError):
                     await task
             if channel is not None:
-                await channel.stop()
+                stopped = await channel.stop()
+                if stopped is False:
+                    # 线程还在跑：不能报「已关闭」，也不能把 enabled=false
+                    # 写进配置，否则重启后状态会和实际不一致。保留 channel
+                    # 引用，下一次停用还能继续等它退出。
+                    self._channel = channel
+                    raise OSError(
+                        "停用失败：长连接线程没有退出，请重试或重启应用")
             self._set_state(
                 STATE_DISABLED if self.configured else STATE_UNCONFIGURED)
             if persist:
