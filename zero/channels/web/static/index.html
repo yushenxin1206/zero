@@ -2590,7 +2590,44 @@
 
   // 渲染侧兜底：正文与行内代码里的网址、绝对路径都变成可点目标。
   // 真正的协议 / 存在性校验在后端 opener 里再做一次，这里只负责识别。
-  const TARGET_BOUNDARY = /[\s(（"'`：:，,；;=]/;
+  // 路径必须是独立片段（前后为空白、中文标点或句读边界）；紧邻 shell
+  // 语法或整行明显是命令行时一律不识别，避免把命令行开头的路径变成链接。
+  const PATH_LEAD = /[\s(（【\[《「『“‘"'，。、；：！？,.;:!?—…]/;
+  const PATH_TAIL = /[\s)）】\]》」』”’"'，。、；：！？,.;:!?—…]/;
+  const SHELL_ADJACENT = /[&|;<>$`\\]/;
+  const SHELL_OPERATOR = /(^|\s)(&&|\|\||\||;|>>|>|<)(?=\s|$)/;
+  const SHELL_PROMPT = /^\s*[$%]\s+/;
+  const CJK = /[\u3400-\u9fff]/;
+  // 行首是常见命令、且整行没有中文时，按命令行处理
+  const COMMAND_WORDS = new Set([
+    "cd", "ls", "cat", "echo", "git", "uv", "pip", "pip3", "python",
+    "python3", "node", "npm", "pnpm", "yarn", "bun", "curl", "wget",
+    "cp", "mv", "rm", "mkdir", "rmdir", "touch", "chmod", "chown", "ln",
+    "find", "grep", "sed", "awk", "tar", "zip", "unzip", "ssh", "scp",
+    "rsync", "tail", "head", "less", "more", "open", "code", "vim",
+    "nano", "pytest", "ruff", "bash", "sh", "zsh", "sudo", "export",
+    "source", "make", "cargo", "go", "docker", "brew", "kill", "ps",
+    "which", "whereis", "systemctl", "launchctl", "nohup", "pwd", "env",
+  ]);
+  const LINE_TAGS = new Set([
+    "P", "LI", "TD", "TH", "BLOCKQUOTE", "DD", "DT",
+  ]);
+
+  function blockLine(node) {
+    for (let el = node.parentElement; el; el = el.parentElement) {
+      if (LINE_TAGS.has(el.tagName)) return el.textContent;
+    }
+    return "";
+  }
+
+  function looksLikeCommand(node) {
+    const line = blockLine(node);
+    if (!line) return false;
+    if (SHELL_PROMPT.test(line) || SHELL_OPERATOR.test(line)) return true;
+    if (line.indexOf("`") >= 0) return true;
+    const word = (line.trim().split(/\s+/)[0] || "").toLowerCase();
+    return !CJK.test(line) && COMMAND_WORDS.has(word);
+  }
 
   function targetAnchor(text, kind) {
     const a = document.createElement("a");
@@ -2629,7 +2666,7 @@
     if (!value) return "";
     if (/^https?:\/\/[^/?#\s]+/i.test(value) && !/\s/.test(value)) return "url";
     if (/^(~\/|\/(?!\/)|[A-Za-z]:[\\/])/.test(value)
-        && !/[\x00-\x1f<>"'`]/.test(value)) {
+        && !/[\x00-\x1f<>"'`&|;$\\]/.test(value)) {
       return "path";
     }
     return "";
@@ -2639,7 +2676,7 @@
     const text = node.nodeValue;
     const parts = [];
     let cursor = 0;
-    const re = /https?:\/\/[^\s<>"'`]+|(?:~\/|\/|[A-Za-z]:[\\/])[^\s<>"'`，。；：、（）【】《》「」“”‘’]+/g;
+    const re = /https?:\/\/[^\s<>"'`，。；：、（）【】《》「」『』“”‘’]+|(?:~\/|\/|[A-Za-z]:[\\/])[^\s<>"'`&|;$\x00-\x1f，。；：、（）【】《》「」『』“”‘’]+/g;
     let match;
     while ((match = re.exec(text)) !== null) {
       const kind = /^https?:/i.test(match[0]) ? "url" : "path";
@@ -2647,9 +2684,17 @@
       if (!value) continue;
       if (kind === "path") {
         const before = match.index > 0 ? text[match.index - 1] : "";
+        const after = text[match.index + match[0].length] || "";
         // 路径要从词边界开始，避免把 and/or、URL 片段当成路径
-        if (before && !TARGET_BOUNDARY.test(before)) continue;
+        if (before && !PATH_LEAD.test(before)) continue;
+        // 紧邻 shell 语法（&&、管道、重定向、变量、反引号）时不识别
+        if (before && SHELL_ADJACENT.test(before)) continue;
+        if (after && SHELL_ADJACENT.test(after)) continue;
+        // 整行明显是命令行时，路径只是命令参数，保持普通文本
+        if (looksLikeCommand(node)) continue;
         if (value.startsWith("//") || value === "/" || value === "~/") continue;
+        const afterValue = text[match.index + value.length] || "";
+        if (afterValue && !PATH_TAIL.test(afterValue)) continue;
       } else if (!/^https?:\/\/[^/?#\s]+/i.test(value)) {
         continue;
       }
