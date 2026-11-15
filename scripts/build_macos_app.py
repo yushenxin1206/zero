@@ -165,6 +165,9 @@ def build(compile_bytecode: bool) -> None:
         "--target", str(site_packages),
         "-r", str(requirements),
     ], cwd=ROOT)
+    # target 里的 bin 是依赖自带的 console script，运行期一律不用；
+    # 它们的源文件 mtime 每次安装都不同，留着会让字节码不可复现。
+    shutil.rmtree(site_packages / "bin", ignore_errors=True)
 
     # 3. 源码：static 与 skills 都是普通文件，复制即完整，无需额外资源声明。
     print("复制 zero 源码…", flush=True)
