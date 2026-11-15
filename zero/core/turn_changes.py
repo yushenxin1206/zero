@@ -23,9 +23,12 @@ CHANGE_GROUP = "group"
 MAX_FILES = 5000
 # 依赖目录最多数这么多个文件，避免把轮末卡在 node_modules 上
 SKIP_COUNT_CAP = 200
-# 落盘 / 传输上限：每个目录最多留 20 条明细，总量最多 200 条
+# 单目录超过这个条数就只出一行“目录 + 数量”，不再逐文件展示
 PER_DIR_DETAIL = 20
-MAX_STORED_ENTRIES = 200
+# 逐文件明细的总预算；超出的按父目录聚合成少量目录行，再超出只留汇总
+MAX_STORED_ENTRIES = 60
+# 超预算聚合后最多保留的目录行数，超过就继续向父目录上提
+MAX_OVERFLOW_GROUPS = 10
 GIT_TIMEOUT = 3.0
 # 锁文件属于有意义的变化，必须单独列出，不参与目录折叠
 LOCKFILES = {
@@ -39,8 +42,37 @@ SKIP_DIRS = {
     ".mypy_cache", ".pytest_cache", ".ruff_cache", "dist", "build", ".next",
     "target", ".idea", ".tox",
 }
+# 包管理器的安装目录：无论 virtalenv 叫什么名字，这里面的文件都只出摘要
+DEP_PACKAGE_DIRS = {"site-packages", "dist-packages"}
+# venv 前缀：覆盖 venv-pptx、.venv-py311 这类自定义命名
+VENV_PREFIXES = ("venv", ".venv")
 # 版本库元数据不算用户改动，连摘要都不出
 VCS_DIRS = {".git", ".hg", ".svn"}
+
+
+def _is_dep_dir_name(name: str) -> bool:
+    """依赖 / 缓存目录判定：精确名单或 venv 前缀。
+
+    ``venv``、``.venv`` 只在精确名单里，装包时常见的 ``venv-pptx``、
+    ``.venv-py311`` 会漏网，因此这里补上前缀匹配。
+    """
+    if name in SKIP_DIRS or name in DEP_PACKAGE_DIRS:
+        return True
+    return name.startswith(VENV_PREFIXES)
+
+
+def _dependency_root(path: str) -> str | None:
+    """返回路径中第一个依赖 / 缓存目录；没有则返回 None。
+
+    用于把散落在依赖目录里的改动并成一条摘要，而不是逐文件展示。
+    """
+    current = ""
+    for part in Path(path).parts:
+        current = os.path.join(current, part) if current else part
+        if _is_dep_dir_name(part):
+            return current
+    return None
+
 
 _ACTIVE: dict[tuple[str, str, str], "TurnChanges"] = {}
 
@@ -127,6 +159,9 @@ def _git_status(root: Path) -> dict[str, dict[str, Any]] | None:
     if proc.returncode != 0:
         return None
     entries: dict[str, dict[str, Any]] = {}
+    # git 未忽略的依赖目录（venv-pptx、site-packages 等）同样只出摘要；
+    # 否则换到 git 工作区装包仍会把成千上万条塞进清单
+    dep_entries: dict[str, dict[str, Any]] = {}
     tokens = proc.stdout.split("\0")
     index = 0
     while index < len(tokens):
@@ -140,6 +175,19 @@ def _git_status(root: Path) -> dict[str, dict[str, Any]] | None:
             # 重命名：旧路径和新路径都算改动，取新路径作为展示目标
             index += 1
         path = (root / rel).resolve()
+        dep_root = _dependency_root(str(path))
+        if dep_root is not None:
+            summary = dep_entries.setdefault(dep_root, {
+                "code": "IGNORED", "exists": True, "count": 0,
+                "mtime": 0, "capped": False,
+            })
+            summary["count"] = int(summary["count"]) + 1
+            try:
+                mtime = path.stat().st_mtime_ns
+            except OSError:
+                continue
+            summary["mtime"] = max(int(summary["mtime"]), mtime)
+            continue
         stat: dict[str, Any] = {"code": code, "exists": False}
         try:
             info = path.stat()
@@ -148,6 +196,7 @@ def _git_status(root: Path) -> dict[str, dict[str, Any]] | None:
         except OSError:
             pass
         entries[str(path)] = stat
+    entries.update(dep_entries)
     return entries
 
 
@@ -156,7 +205,7 @@ def _walk(root: Path) -> tuple[dict[str, dict[str, Any]], bool]:
     truncated = False
     for current, dirs, files in os.walk(root):
         for name in list(dirs):
-            if name in SKIP_DIRS:
+            if _is_dep_dir_name(name):
                 dirs.remove(name)
                 if name in VCS_DIRS:
                     continue
@@ -231,7 +280,7 @@ def _find_skip_dirs(root: Path, max_depth: int = 3) -> list[Path]:
                     continue
             except OSError:
                 continue
-            if entry.name in SKIP_DIRS:
+            if _is_dep_dir_name(entry.name):
                 if entry.name not in VCS_DIRS:
                     found.append(Path(entry.path))
                 continue
@@ -266,51 +315,140 @@ def _snapshot(
     return entries, truncated
 
 
+# 排序用的廉价信号：常见源码扩展名优先，产物 / 二进制降权
+SOURCE_EXTS = frozenset({
+    ".py", ".pyi", ".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".vue",
+    ".svelte", ".go", ".rs", ".java", ".kt", ".kts", ".swift", ".c", ".h",
+    ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".lua", ".sh", ".bash",
+    ".zsh", ".sql", ".css", ".scss", ".less", ".html", ".md", ".txt",
+    ".toml", ".yaml", ".yml", ".json", ".ini", ".cfg", ".env",
+})
+BINARY_EXTS = frozenset({
+    ".pyc", ".pyo", ".so", ".dylib", ".o", ".a", ".lib", ".obj", ".exe",
+    ".dll", ".class", ".jar", ".whl", ".gz", ".zip", ".tar", ".bz2", ".xz",
+    ".7z", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".pdf",
+    ".mp4", ".mp3", ".woff", ".woff2", ".ttf", ".otf", ".pack", ".idx",
+})
+
+
+def _path_score(path: str) -> tuple[int, int, str]:
+    """排序键：越像人写的文件越靠前，产物 / 依赖越靠后。
+
+    只用两个廉价信号——扩展名与路径深度，不猜内容。
+    """
+    ext = os.path.splitext(path)[1].lower()
+    depth = path.count(os.sep)
+    score = 0
+    if ext in SOURCE_EXTS:
+        score += 20
+    elif ext in BINARY_EXTS or not ext:
+        score -= 10
+    # 越深越可能是生成物或依赖内部文件
+    score -= depth
+    return (-score, depth, path)
+
+
+def _overflow_rows(
+        overflow: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """超预算的明细按父目录聚合；行数仍超标就继续向父目录上提。"""
+    if not overflow:
+        return []
+    buckets: dict[str, dict[str, Any]] = {}
+    for path, _change in overflow:
+        directory = os.path.dirname(path)
+        entry = buckets.setdefault(
+            directory, {"count": 0, "best": _path_score(path)})
+        entry["count"] += 1
+        entry["best"] = min(entry["best"], _path_score(path))
+    while len(buckets) > MAX_OVERFLOW_GROUPS:
+        lifted: dict[str, dict[str, Any]] = {}
+        for directory, entry in buckets.items():
+            parent = os.path.dirname(directory) or directory
+            target = lifted.setdefault(
+                parent, {"count": 0, "best": entry["best"]})
+            target["count"] += entry["count"]
+            target["best"] = min(target["best"], entry["best"])
+        if set(lifted) == set(buckets):
+            break
+        buckets = lifted
+    return [
+        {
+            "path": directory,
+            "change": CHANGE_GROUP,
+            "count": entry["count"],
+            "files": [],
+            "hiddenCount": entry["count"],
+            "blocked": False,
+        }
+        for directory, entry in sorted(
+            buckets.items(), key=lambda item: item[1]["best"])
+    ]
+
+
 def _compact(changes: dict[str, str],
              blocked: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按目录压缩清单，保证单条消息落盘与传输都不会无限增长。
+    """压缩清单：依赖并摘要、单目录超阈值出一行、明细总量限额。
 
-    每组最多保留 ``PER_DIR_DETAIL`` 条明细，全部条目共享
-    ``MAX_STORED_ENTRIES`` 的预算；被截掉的只保留计数，前端显示
-    “另有 X 个文件未列出”。
+    依赖目录里的改动只并成一条摘要；单目录超过 ``PER_DIR_DETAIL`` 条
+    只留“目录 + 数量”；逐文件明细共享 ``MAX_STORED_ENTRIES`` 预算，
+    超出的按父目录聚合成少量行，末尾再给一条总数汇总。清单只用于展示，
+    不会进入模型上下文。
     """
+    locks: list[dict[str, Any]] = []
+    deps: dict[str, int] = {}
     by_dir: dict[str, list[tuple[str, str]]] = {}
-    singles: list[dict[str, Any]] = []
     for path, change in sorted(changes.items()):
-        base = os.path.basename(path)
-        if base in LOCKFILES:
-            singles.append({"path": path, "change": change})
+        dep_root = _dependency_root(path)
+        if dep_root is not None:
+            deps[dep_root] = deps.get(dep_root, 0) + 1
+            continue
+        if os.path.basename(path) in LOCKFILES:
+            locks.append({"path": path, "change": change})
             continue
         by_dir.setdefault(os.path.dirname(path), []).append((path, change))
 
-    result: list[dict[str, Any]] = list(blocked)
-    budget = MAX_STORED_ENTRIES
-    hidden_global = 0
+    singles: list[tuple[str, str]] = []
+    folded: list[dict[str, Any]] = []
     for directory in sorted(by_dir):
         items = by_dir[directory]
-        if len(items) <= PER_DIR_DETAIL:
-            for path, change in items:
-                if budget <= 0:
-                    hidden_global += 1
-                    continue
-                singles.append({"path": path, "change": change})
-                budget -= 1
+        if len(items) > PER_DIR_DETAIL:
+            folded.append({
+                "path": directory,
+                "change": CHANGE_GROUP,
+                "count": len(items),
+                "files": [],
+                "hiddenCount": len(items),
+                "blocked": False,
+                "_score": min(_path_score(path) for path, _ in items),
+            })
             continue
-        keep = items[:PER_DIR_DETAIL]
-        if budget < len(keep):
-            keep = keep[:max(budget, 0)]
-        budget -= len(keep)
+        singles.extend(items)
+
+    singles.sort(key=lambda item: _path_score(item[0]))
+    kept = singles[:MAX_STORED_ENTRIES]
+    overflow = singles[MAX_STORED_ENTRIES:]
+
+    result: list[dict[str, Any]] = list(locks)
+    result.extend({"path": path, "change": change} for path, change in kept)
+    result.extend(
+        {key: value for key, value in group.items() if key != "_score"}
+        for group in sorted(folded, key=lambda item: item["_score"]))
+    result.extend(_overflow_rows(overflow))
+    result.extend({
+        "path": root,
+        "change": CHANGE_GROUP,
+        "count": count,
+        "capped": False,
+        "blocked": True,
+    } for root, count in sorted(deps.items()))
+    # 依赖 / 缓存目录摘要统一放最后，避免把用户改动挤到下面
+    result.extend(blocked)
+    if overflow:
         result.append({
-            "path": directory,
-            "change": CHANGE_GROUP,
-            "count": len(items),
-            "files": [{"path": path, "change": change} for path, change in keep],
-            "hiddenCount": len(items) - len(keep),
-            "blocked": False,
+            "change": "hidden",
+            "count": len(overflow),
+            "dirs": len({os.path.dirname(path) for path, _ in overflow}),
         })
-    result.extend(singles)
-    if hidden_global:
-        result.append({"change": "hidden", "count": hidden_global})
     return result
 
 

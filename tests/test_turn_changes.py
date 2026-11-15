@@ -147,8 +147,9 @@ def test_compacts_large_directory_and_keeps_lockfile(tmp_path):
 
     assert len(groups) == 1
     assert groups[0]["count"] == 300
-    assert len(groups[0]["files"]) == 20
-    assert groups[0]["hiddenCount"] == 280
+    # 超阈值只留“目录 + 数量”，不再展开明细
+    assert groups[0]["files"] == []
+    assert groups[0]["hiddenCount"] == 300
     assert [item["path"] for item in singles] == [str(bulk / "uv.lock")]
 
 
@@ -167,10 +168,104 @@ def test_global_entry_cap_reports_hidden_count(tmp_path):
     stored = [
         item for item in changes
         if item["change"] != "group" and item["change"] != "hidden"]
+    groups = [item for item in changes if item["change"] == "group"]
     hidden = [item for item in changes if item["change"] == "hidden"]
 
-    assert len(stored) == 200
-    assert hidden and hidden[0]["count"] == 100
+    assert len(stored) == 60
+    # 超预算的 240 个文件按父目录上提成一行，并给出总数与目录数
+    assert len(groups) == 1
+    assert groups[0]["count"] == 240
+    assert hidden and hidden[0]["count"] == 240
+    assert hidden[0]["dirs"] == 24
+
+
+def test_venv_prefixed_dir_reports_single_summary(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    packages = workspace / "venv-pptx" / "lib" / "python3.14" / "site-packages"
+    packages.mkdir(parents=True)
+    for name in ("rich", "pygments", "markdown_it"):
+        target = packages / name
+        target.mkdir()
+        (target / "__init__.py").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+
+    groups = [item for item in changes if item["change"] == "group"]
+    assert len(groups) == 1
+    assert groups[0]["blocked"] is True
+    assert groups[0]["path"].endswith("venv-pptx")
+    assert groups[0]["count"] == 3
+    assert all(item["change"] == "group" for item in changes)
+
+
+def test_site_packages_outside_venv_reports_summary(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    packages = workspace / "env" / "lib" / "python3.12" / "site-packages"
+    packages.mkdir(parents=True)
+    (packages / "dep.py").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+
+    assert len(changes) == 1
+    assert changes[0]["change"] == "group"
+    assert changes[0]["blocked"] is True
+    assert changes[0]["path"].endswith("site-packages")
+
+
+def test_git_repo_filters_dependency_dirs(tmp_path):
+    if shutil.which("git") is None:
+        return
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(workspace), *args], check=True,
+                       capture_output=True, text=True)
+
+    git("init")
+    git("config", "user.email", "zero@example.com")
+    git("config", "user.name", "zero")
+    (workspace / "main.py").write_text("print(1)\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "init")
+
+    tracker = _tracker(workspace)
+    tracker.start()
+    packages = workspace / "venv-pptx" / "lib" / "site-packages"
+    packages.mkdir(parents=True)
+    (packages / "a.py").write_text("x", encoding="utf-8")
+    (packages / "b.py").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+
+    assert len(changes) == 1
+    assert changes[0]["change"] == "group"
+    assert changes[0]["blocked"] is True
+    assert changes[0]["path"].endswith("venv-pptx")
+    assert changes[0]["count"] == 2
+
+
+def test_human_source_files_sort_before_artifacts(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    source = workspace / "main.py"
+    source.write_text("x", encoding="utf-8")
+    artifact = workspace / "assets" / "deep" / "nested" / "blob.bin"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"\x00")
+
+    changes = tracker.finish()
+
+    paths = [item["path"] for item in changes]
+    assert paths.index(str(source)) < paths.index(str(artifact))
 
 
 def test_file_changes_never_enter_model_context():
