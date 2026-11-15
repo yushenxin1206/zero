@@ -116,6 +116,25 @@ def test_granted_root_mid_turn_is_tracked(tmp_path):
     assert str(idle) not in changes
 
 
+def test_granted_ancestor_root_keeps_turn_files(tmp_path):
+    """授权上级目录时，不能把本轮已创建的文件补进“改动前”基线。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    old = workspace / "old.txt"
+    old.write_text("old", encoding="utf-8")
+
+    tracker = _tracker(workspace)
+    tracker.start()
+    fresh = workspace / "fresh.txt"
+    fresh.write_text("new", encoding="utf-8")
+
+    tracker.add_root(tmp_path)          # 获批的是工作区的上级
+
+    changes = {item["path"]: item["change"] for item in tracker.finish()}
+    assert changes[str(fresh)] == CHANGE_ADDED
+    assert str(old) not in changes
+
+
 def test_granted_non_git_root_in_git_workspace(tmp_path):
     """git 工作区叠加普通目录时，新目录不能被整棵跳过。"""
     if shutil.which("git") is None:

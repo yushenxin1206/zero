@@ -106,12 +106,19 @@ class TurnChanges:
         real = Path(root).resolve()
         if not real.is_dir():
             real = real.parent
-        if real in self.roots:
+        # 已被现有根覆盖：快照里本来就有，无需重复扫描
+        if any(real.is_relative_to(existing) for existing in self.roots):
             return
+        known = tuple(self.roots)
         self.roots.append(real)
         snapshot, _ = _snapshot([real])
-        # 已有基线优先：审批前就已存在的文件不能被误判成本轮新增
         for key, state in snapshot.items():
+            # 新根可能是已跟踪根的上级（例如授权 /Users/Admin/Desktop，
+            # 而工作区在 Desktop/thoughts）。这些路径必须沿用轮次开始时的
+            # 基线，否则本轮新建的文件会被事后补进“改动前”而凭空消失。
+            if any(Path(key).is_relative_to(existing) for existing in known):
+                continue
+            # 已有基线优先：审批前就已存在的文件不能被误判成本轮新增
             self.before.setdefault(key, state)
 
     def record(self, path: str) -> None:
