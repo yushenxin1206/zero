@@ -5129,12 +5129,11 @@
     // 弹窗已关：忽略在途事件，后端收到 qr-cancel 会自行收尾
     if (state.modalKind !== "feishu-qr") return;
     state.feishuQr = qr || {};
-    if (state.feishuQr.phase === "waiting") {
-      startQrCountdown(state.feishuQr.expireIn);
-    } else if (state.feishuQr.phase !== "starting") {
-      stopQrCountdown();
-    }
+    const waiting = state.feishuQr.phase === "waiting";
+    if (!waiting && state.feishuQr.phase !== "starting") stopQrCountdown();
+    // 先渲染出 #qr-count 再启动计时，否则第一次读秒会停在占位符
     renderFeishuQrModal();
+    if (waiting) startQrCountdown(state.feishuQr.expireIn);
     if (qr && qr.phase === "success") toast(qr.text || "扫码成功", "info");
   }
 
@@ -5179,6 +5178,17 @@
     send({ type: "feishu", op: "qr-start" });
   }
 
+  function qrSvgMarkup(raw) {
+    // 后端给的是完整 SVG 文档，开头带 <?xml ...?> 声明；直接塞进 innerHTML
+    // 时 XML 声明会被当成一段注释/非法节点，WKWebView 下表现为整块空白。
+    // 这里只截取 <svg>…</svg> 片段，既避开声明，也避免注入任意 HTML。
+    const text = String(raw || "").trim();
+    const start = text.indexOf("<svg");
+    const end = text.lastIndexOf("</svg>");
+    if (start < 0 || end <= start) return "";
+    return text.slice(start, end + "</svg>".length);
+  }
+
   function renderFeishuQrModal() {
     const body = $("#modal-body");
     const qr = state.feishuQr || {};
@@ -5186,11 +5196,18 @@
     const panel = el("div", "qr-panel");
     body.appendChild(panel);
 
-    if (qr.phase === "waiting" && qr.svg) {
-      const box = el("div", "qr-box");
-      // 二维码由后端用本地库生成；只接受 svg 根节点，避免注入任意 HTML
-      box.innerHTML = String(qr.svg).trim().startsWith("<svg") ? qr.svg : "";
-      panel.appendChild(box);
+    if (qr.phase === "waiting") {
+      const svg = qrSvgMarkup(qr.svg);
+      if (svg) {
+        const box = el("div", "qr-box");
+        box.innerHTML = svg;
+        panel.appendChild(box);
+      } else {
+        // 不再留白框：直接说明失败原因，并把链接作为唯一可用入口
+        const failed = el("div", "perm-error");
+        failed.textContent = "二维码加载失败，可用下方链接";
+        panel.appendChild(failed);
+      }
 
       const meta = el("div", "qr-meta");
       meta.appendChild(document.createTextNode("二维码有效期："));
@@ -5210,8 +5227,8 @@
       }
 
       const tip = el("div", "qr-tip");
-      tip.textContent = "用飞书 App 扫一扫，在手机上确认创建应用并授权。"
-        + "二维码只在有效期内可用，过期后重新生成即可。";
+      tip.textContent = "用飞书 App 扫一扫，在手机上确认。确认页可以新建应用，"
+        + "也可以选择之前创建过的应用，本次所需权限会追加到它上面。";
       panel.appendChild(tip);
     } else if (qr.phase === "success") {
       const mark = el("div", "qr-mark");

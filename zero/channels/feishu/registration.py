@@ -76,13 +76,19 @@ RegisterCallback = Callable[..., Any]
 
 
 def qr_svg(url: str) -> str:
-    """把授权链接画成本地 SVG（二维码在后端生成，不依赖任何 CDN）。"""
+    """把授权链接画成本地 SVG（二维码在后端生成，不依赖任何 CDN）。
+
+    返回裸 ``<svg>`` 片段：去掉 qrcode 生成的 XML 声明。前端用 innerHTML
+    注入时，``<?xml ...?>`` 会被 WKWebView 当成非法节点，导致整块二维码
+    渲染成空白（实测过）。
+    """
     image = qrcode.make(
         url, image_factory=qrcode.image.svg.SvgPathImage,
         box_size=10, border=2)
     buffer = io.BytesIO()
     image.save(buffer)
-    return buffer.getvalue().decode("utf-8")
+    markup = buffer.getvalue().decode("utf-8")
+    return markup[markup.index("<svg"):]
 
 
 def probe_tenant_token(app_id: str, app_secret: str) -> tuple[bool, str]:
@@ -184,6 +190,15 @@ class QrConnector:
         try:
             # 二维码回调在同一个事件循环里同步执行：推送事件只是排一个
             # 广播任务，不会拖慢 SDK 的轮询节奏。
+            #
+            # 三个可选参数刻意都不传，含义（见 lark-oapi 官方文档）：
+            # - create_only=True 会让确认页只剩「新建应用」，「选择已有应用」
+            #   入口被隐藏；不传则保留该入口，用户扫过、建过的应用可以直接
+            #   再选中，本次 addons 会追加到它上面。我们要的正是后者。
+            # - app_id 非空时流程会绑定到这个已知应用（QR URL 的 clientID
+            #   参数），语义是「更新该应用的配置」；我们并不知道用户手里有
+            #   哪些应用，所以交给确认页选。
+            # - addons 只做增量：合并到平台基础模板，基础权限不会被移除。
             result = await self._register(
                 on_qr_code=self._on_qr_code,
                 addons=REGISTRATION_ADDONS,

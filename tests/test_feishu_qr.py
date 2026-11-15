@@ -40,10 +40,9 @@ def test_success_emits_local_qr_then_persists():
     """二维码在本地生成；令牌校验通过后才写配置，secret 不出现在事件里。"""
     captured = {}
 
-    async def register(on_qr_code, addons, source):
-        captured["addons"] = addons
-        captured["source"] = source
-        on_qr_code({
+    async def register(**kwargs):
+        captured.update(kwargs)
+        kwargs["on_qr_code"]({
             "url": "https://accounts.feishu.cn/page/launcher?ticket=abc",
             "expire_in": 120,
         })
@@ -59,8 +58,9 @@ def test_success_emits_local_qr_then_persists():
         waiting = events[0]
         assert waiting["expireIn"] == 120
         assert "ticket=abc" in waiting["url"]
-        # 后端生成的 SVG，不依赖任何 CDN
-        assert waiting["svg"].lstrip().startswith(("<?xml", "<svg"))
+        # 后端直接给裸 <svg> 片段：带 XML 声明时 WKWebView 会渲染成空白
+        assert waiting["svg"].startswith("<svg")
+        assert "<?xml" not in waiting["svg"]
         assert manager.credentials == [("cli_x", "sec_x")]
         assert events[1]["appId"] == "cli_x"
         assert events[1]["text"].endswith("重启 zero 后生效")
@@ -73,6 +73,10 @@ def test_success_emits_local_qr_then_persists():
     assert "im:message:send_as_bot" in addons["scopes"]["tenant"]
     assert addons["events"]["items"]["tenant"] == ["im.message.receive_v1"]
     assert captured["source"] == "zero-agent"
+    # 不传 create_only：确认页要保留「选择已有应用」入口
+    assert "create_only" not in captured
+    # 不传 app_id：不把流程钉死在某个未知的已有应用上
+    assert "app_id" not in captured
 
 
 def test_token_failure_discards_credentials():
