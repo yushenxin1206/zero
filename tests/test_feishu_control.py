@@ -82,6 +82,104 @@ def test_enable_connects_and_disable_really_stops():
     asyncio.run(main())
 
 
+def test_snapshot_reports_missing_credentials():
+    controller, _, _ = _controller("", "secret")
+    snapshot = controller.snapshot()
+    assert snapshot["state"] == "unconfigured"
+    assert snapshot["missing"] == ["appId"]
+
+
+def test_channel_failure_is_reported_as_failed():
+    async def main():
+        controller, _, created = _controller()
+        await controller.enable()
+        await asyncio.sleep(0)
+
+        created[0].on_state("failed", "连接失败：凭据无效")
+
+        snapshot = controller.snapshot()
+        assert snapshot["state"] == "failed"
+        assert "凭据无效" in snapshot["error"]
+        await controller.disable()
+
+    asyncio.run(main())
+
+
+def test_failed_state_survives_cleanup():
+    """失败后的收尾不能把状态改回「已关闭」。"""
+
+    class FailingChannel:
+        def __init__(self, on_state):
+            self.on_state = on_state
+            self.cleanup_keep_state = None
+
+        async def start(self) -> None:
+            self.on_state("failed", "连接失败：boom")
+
+        async def stop(self, *, keep_state: bool = False) -> None:
+            self.cleanup_keep_state = keep_state
+
+    created = []
+
+    def factory(config, store, bus, on_state):
+        channel = FailingChannel(on_state)
+        created.append(channel)
+        return channel
+
+    async def main():
+        controller = FeishuController(
+            FeishuConfig(app_id="cli-1", app_secret="secret"),
+            None, None, channel_factory=factory)
+        await controller.enable(persist=False)
+        await asyncio.sleep(0.01)
+
+        snapshot = controller.snapshot()
+        assert snapshot["state"] == "failed"
+        assert "boom" in snapshot["error"]
+        assert created[0].cleanup_keep_state is True
+
+    asyncio.run(main())
+
+
+def test_reconnect_replaces_the_old_channel():
+    async def main():
+        controller, _, created = _controller()
+        await controller.enable()
+        await asyncio.sleep(0)
+
+        await controller.reconnect()
+        await asyncio.sleep(0)
+
+        assert len(created) == 2
+        assert created[0].stop_calls == 1
+        assert controller.snapshot()["state"] == "connected"
+        await controller.disable()
+
+    asyncio.run(main())
+
+
+def test_grace_period_turns_connecting_into_failed():
+    """短暂重连留在「连接中」，超过宽限期才标红。"""
+
+    async def main():
+        states = []
+        channel = FeishuChannel(
+            FeishuConfig(app_id="cli-1", app_secret="secret"), None,
+            on_state=lambda state, error: states.append(state),
+            grace_seconds=0.01)
+        channel._loop = asyncio.get_running_loop()
+        channel._running = True
+        channel._set_state("connecting")
+        channel._arm_grace_timer()
+        await asyncio.sleep(0.05)
+
+        assert channel.state == "failed"
+        assert states[-1] == "failed"
+        assert "超时" in channel.error
+
+    asyncio.run(main())
+
+
 def test_repeated_enable_keeps_single_connection():
     async def main():
         controller, manager, created = _controller()
@@ -115,15 +213,14 @@ def test_start_initial_respects_config():
 
 def test_lark_ws_client_exposes_stop_primitives():
     """停用依赖 SDK 的几个内部入口；升级 lark-oapi 时让它尽早炸出来。"""
+    import inspect
+
     from lark_oapi.ws.client import Client
 
-    client = Client("app-id", "app-secret")
-    assert hasattr(client, "_disconnect")
-    assert hasattr(client, "_conn")
-    assert hasattr(client, "on_reconnecting")
-    assert hasattr(client, "on_reconnected")
-    client._auto_reconnect = False
-    assert client._auto_reconnect is False
+    assert hasattr(Client, "_disconnect")
+    source = inspect.getsource(Client.__init__)
+    for name in ("_auto_reconnect", "on_reconnecting", "on_reconnected", "_conn"):
+        assert name in source
 
 
 class FakeSDKClient:
@@ -190,6 +287,10 @@ class FakeController:
         self.calls.append("disable")
         self.state = "disabled"
 
+    async def reconnect(self) -> None:
+        self.calls.append("reconnect")
+        self.state = "connecting"
+
 
 class FakeWS:
     def __init__(self):
@@ -221,6 +322,10 @@ def test_web_feishu_protocol():
         await channel._on_feishu(ws, {"type": "feishu", "op": "disable"})
         assert ws.sent[-1]["snapshot"]["state"] == "disabled"
         assert controller.calls == ["enable", "disable"]
+
+        await channel._on_feishu(ws, {"type": "feishu", "op": "reconnect"})
+        assert ws.sent[-1]["snapshot"]["state"] == "connecting"
+        assert controller.calls == ["enable", "disable", "reconnect"]
 
         await channel._on_feishu(ws, {"type": "feishu", "op": "bogus"})
         bad = ws.sent[-1]

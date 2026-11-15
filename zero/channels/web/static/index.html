@@ -564,7 +564,10 @@
   }
   .chan-dot.on { background: var(--accent); }
   .chan-dot.wait { background: var(--warn); animation: dot-pulse 1.4s ease-in-out infinite; }
-  .chan-dot.bad { background: var(--danger); }
+  .chan-dot.bad {
+    background: var(--danger);
+    box-shadow: 0 0 0 3px var(--danger-soft-strong);
+  }
   @keyframes dot-pulse {
     50% { opacity: .3; }
   }
@@ -2117,6 +2120,7 @@
     config: null,
     configTab: "form",
     configSaved: false,
+    configFocus: "",
     // 权限设置页
     permission: null,
     permissionBusy: false,
@@ -4522,9 +4526,9 @@
     feishuHead.appendChild(feishuTitle);
     feishu.appendChild(feishuHead);
     const feishuGrid = el("div", "form-grid");
-    feishuGrid.appendChild(fieldRow(
-      "appId",
-      cfgText(doc, ["channels", "feishu", "appId"])));
+    const appIdInput = cfgText(doc, ["channels", "feishu", "appId"]);
+    appIdInput.id = "cfg-feishu-app-id";
+    feishuGrid.appendChild(fieldRow("appId", appIdInput));
     feishuGrid.appendChild(fieldRow(
       "appSecret",
       cfgSecret(doc, ["channels", "feishu", "appSecret"])));
@@ -4676,13 +4680,14 @@
     }
   }
 
-  function openConfigModal() {
+  function openConfigModal(focus) {
     if (state.busy) {
       toast("当前回复未结束，稍后再修改配置", "info");
       return;
     }
     state.modalKind = "config";
     state.configTab = "form";
+    state.configFocus = focus || "";
     openModal("配置", "", `<button id="modal-close">关闭</button>`);
     $("#modal-close").onclick = closeModal;
     $("#modal-body").innerHTML = '<div class="modal-note">读取配置…</div>';
@@ -4899,17 +4904,23 @@
     unconfigured: "未配置",
     connecting: "连接中",
     connected: "已连接",
+    failed: "连接失败",
     disabled: "已关闭",
   };
 
   function reflectFeishu(snap) {
     const dot = $("#feishu-dot");
+    const btn = $("#feishu-btn");
     if (!dot) return;
     dot.className = "chan-dot";
+    if (btn) btn.title = "飞书通道状态与开关";
     if (!snap) return;
     if (snap.state === "connected") dot.classList.add("on");
     else if (snap.state === "connecting") dot.classList.add("wait");
-    else if (snap.error) dot.classList.add("bad");
+    else if (snap.state === "failed") {
+      dot.classList.add("bad");
+      if (btn) btn.title = "飞书连接失败，点击处理";
+    }
   }
 
   function onFeishu(msg) {
@@ -4957,9 +4968,11 @@
     status.appendChild(permStatusRow(
       "凭据", snap.configured ? "已配置" : "未配置",
       snap.configured ? "ok" : "bad"));
+    const tone = snap.state === "connected" ? "ok"
+      : snap.state === "failed" ? "bad"
+        : "";
     status.appendChild(permStatusRow(
-      "通道状态", FEISHU_STATE_TEXT[snap.state] || "未知",
-      snap.state === "connected" ? "ok" : (snap.error ? "bad" : "")));
+      "通道状态", FEISHU_STATE_TEXT[snap.state] || "未知", tone));
     body.appendChild(status);
 
     if (state.feishuError || snap.error) {
@@ -4969,18 +4982,38 @@
     }
     if (snap.state === "unconfigured") {
       const warn = el("div", "perm-warn");
-      warn.textContent = "还没有飞书凭据：请先在「配置 → channels → feishu」"
-        + "填写 appId 与 appSecret，保存并重启后再启用。";
+      const missing = (snap.missing || []).join("、");
+      warn.textContent = (missing ? `缺少 ${missing}：` : "还没有飞书凭据：")
+        + "请先在「配置 → channels → feishu」补上对应内容，"
+        + "保存并重启后再启用。";
       body.appendChild(warn);
+    } else if (snap.state === "failed") {
+      const hint = el("div", "perm-hint");
+      hint.textContent = "如果刚改过飞书应用配置，请检查 appId 与 appSecret "
+        + "是否正确；也可以直接重新连接。";
+      body.appendChild(hint);
     }
 
     const foot = el("div", "config-foot");
-    const active = snap.state === "connecting" || snap.state === "connected";
-    const toggle = el("button", active ? "" : "primary");
-    toggle.type = "button";
-    toggle.textContent = active ? "停用" : "启用";
-    toggle.disabled = state.feishuBusy || snap.state === "unconfigured";
-    toggle.onclick = () => feishuSend(active ? "disable" : "enable");
+    const addAction = (text, primary, handler) => {
+      const btn = el("button", primary ? "primary" : "");
+      btn.type = "button";
+      btn.textContent = text;
+      btn.disabled = state.feishuBusy;
+      btn.onclick = handler;
+      foot.appendChild(btn);
+    };
+    if (snap.state === "failed") {
+      addAction("重新连接", true, () => feishuSend("reconnect"));
+      addAction("去配置", false, () => openConfigModal("feishu"));
+      addAction("停用", false, () => feishuSend("disable"));
+    } else if (snap.state === "unconfigured") {
+      addAction("去配置", true, () => openConfigModal("feishu"));
+    } else if (snap.state === "connecting" || snap.state === "connected") {
+      addAction("停用", false, () => feishuSend("disable"));
+    } else {
+      addAction("启用", true, () => feishuSend("enable"));
+    }
     const refresh = el("button");
     refresh.type = "button";
     refresh.textContent = "刷新";
@@ -4989,13 +5022,12 @@
       state.feishuError = "";
       send({ type: "feishu" });
     };
+    foot.appendChild(refresh);
     const note = el("span", "setup-status");
     note.id = "feishu-status-note";
     note.textContent = state.feishuBusy
       ? "处理中…"
       : "开关会写入 channels.feishu.enabled，立即生效";
-    foot.appendChild(toggle);
-    foot.appendChild(refresh);
     foot.appendChild(note);
     body.appendChild(foot);
   }
@@ -5025,6 +5057,23 @@
       Array.from(pane.querySelectorAll(".cfg-section")).forEach((node, i) => {
         if (i < openState.length) node.open = openState[i];
       });
+      if (state.configFocus === "feishu") {
+        state.configFocus = "";
+        const target = Array.from(pane.querySelectorAll(".cfg-section"))
+          .find((node) => {
+            const name = node.querySelector(".cfg-sec-head span");
+            return name && name.textContent === "channels";
+          });
+        if (target) {
+          target.open = true;
+          setTimeout(() => {
+            // 等 details 展开后再滚动，否则拿到的位置还是折叠态
+            target.scrollIntoView({ block: "center" });
+            const input = $("#cfg-feishu-app-id");
+            if (input) input.focus();
+          }, 0);
+        }
+      }
     } else {
       const area = el("textarea", "config-json");
       area.id = "cfg-json";

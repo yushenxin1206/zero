@@ -16,6 +16,7 @@ from zero.channels.feishu.channel import (
     STATE_CONNECTED,
     STATE_CONNECTING,
     STATE_DISABLED,
+    STATE_FAILED,
     FeishuChannel,
     StateCallback,
 )
@@ -67,8 +68,14 @@ class FeishuController:
         self._on_change = on_change
 
     def snapshot(self) -> dict[str, Any]:
+        missing = []
+        if not self._config.app_id.strip():
+            missing.append("appId")
+        if not self._config.app_secret.strip():
+            missing.append("appSecret")
         return {
             "configured": self.configured,
+            "missing": missing,
             "state": self._state,
             "error": self._error,
         }
@@ -111,6 +118,11 @@ class FeishuController:
             if persist:
                 await self._persist(False)
 
+    async def reconnect(self) -> None:
+        """失败后的手动重试：先彻底停掉旧连接，再新建一条。"""
+        await self.disable(persist=False)
+        await self.enable(persist=False)
+
     async def shutdown(self) -> None:
         """进程退出前的兜底：不落盘，也不把异常抛给关闭流程。"""
         try:
@@ -133,23 +145,26 @@ class FeishuController:
             raise
         except Exception as exc:
             logger.exception("飞书通道异常退出")
-            self._set_state(STATE_DISABLED, f"连接失败：{exc}")
+            self._set_state(STATE_FAILED, f"连接失败：{exc}")
         finally:
             if stop_needed:
-                # 连接自行失败退出时也要把 WS 线程与队列收干净
+                # 连接自行失败退出时也要把 WS 线程与队列收干净，但保留
+                # 失败的对外状态，别让收尾把红点洗成「已关闭」
                 with suppress(Exception):
-                    await channel.stop()
+                    await channel.stop(keep_state=True)
             if self._channel is channel:
                 self._channel = None
             if self._task is task:
                 self._task = None
 
     def _on_channel_state(self, state: str, error: str) -> None:
-        """把通道状态映射成四种对外状态；可能从 WS 线程调用。"""
+        """把通道状态映射成对外状态；可能从 WS 线程调用。"""
         if state == STATE_CONNECTED:
             self._set_state(STATE_CONNECTED)
         elif state == STATE_CONNECTING:
             self._set_state(STATE_CONNECTING)
+        elif state == STATE_FAILED:
+            self._set_state(STATE_FAILED, error)
         else:
             self._set_state(STATE_DISABLED, error)
 

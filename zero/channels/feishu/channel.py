@@ -37,7 +37,10 @@ CHANNEL = CHANNEL_FEISHU
 
 STATE_CONNECTING = "connecting"
 STATE_CONNECTED = "connected"
+STATE_FAILED = "failed"
 STATE_DISABLED = "disabled"
+# 短暂抖动走「连接中」，超过这个时间还没连上才标红，避免状态点乱跳
+CONNECT_GRACE_SECONDS = 15.0
 StateCallback = Callable[[str, str], None]
 
 
@@ -80,12 +83,14 @@ class FeishuChannel:
         session_store: SessionStore,
         msg_bus: MessageBus | None = None,
         on_state: StateCallback | None = None,
+        grace_seconds: float = CONNECT_GRACE_SECONDS,
     ):
         self.config = config
         # 飞书 WS 线程也要解析 session，存储实例由组合根显式传入
         self.session_store = session_store
         self.msg_bus = msg_bus
         self._on_state = on_state
+        self._grace_seconds = grace_seconds
         # 向 bus 认领 feishu 专属出站队列，dispatcher 只会路由 channel=feishu 的消息
         self._out_queue: MessageOutQueue | None = (
             msg_bus.subscribe_out(CHANNEL) if msg_bus else None
@@ -104,6 +109,7 @@ class FeishuChannel:
         self._ws_thread: threading.Thread | None = None
         self._sdk_loop: asyncio.AbstractEventLoop | None = None
         self._watch_task: asyncio.Task | None = None
+        self._grace_task: asyncio.Task | None = None
         self._running = False
         self._state = STATE_DISABLED
         self._error = ""
@@ -237,6 +243,7 @@ class FeishuChannel:
         self._loop = asyncio.get_running_loop()
         self._running = True
         self._set_state(STATE_CONNECTING)
+        self._arm_grace_timer()
         self._start_ws_thread()
         self._watch_task = asyncio.create_task(self._watch_connection())
         try:
@@ -250,6 +257,7 @@ class FeishuChannel:
         while self._running:
             client = self._ws_client
             if client is not None and client._conn is not None:
+                self._cancel_grace_timer()
                 self._set_state(STATE_CONNECTED)
                 return
             thread = self._ws_thread
@@ -275,8 +283,8 @@ class FeishuChannel:
             event_handler=self._event_handler,
             log_level=lark.LogLevel.INFO,
         )
-        client.on_reconnecting = lambda: self._set_state(STATE_CONNECTING)
-        client.on_reconnected = lambda: self._set_state(STATE_CONNECTED)
+        client.on_reconnecting = self._on_reconnecting
+        client.on_reconnected = self._on_reconnected
         self._ws_client = client
 
         def _ws_run() -> None:
@@ -286,7 +294,8 @@ class FeishuChannel:
             except Exception as exc:
                 if self._running:
                     logger.exception("Feishu WebSocket connection error")
-                    self._set_state(STATE_DISABLED, f"连接失败：{exc}")
+                    self._cancel_grace_timer_threadsafe()
+                    self._set_state(STATE_FAILED, f"连接失败：{exc}")
             finally:
                 _close_sdk_loop(sdk_loop)
 
@@ -294,9 +303,57 @@ class FeishuChannel:
             target=_ws_run, daemon=True, name="feishu-ws")
         self._ws_thread.start()
 
-    async def stop(self) -> None:
-        """真正断开长连接：先关 WS，再停 SDK loop 与发送循环。"""
+    def _on_reconnecting(self) -> None:
+        """SDK 开始重连：先按「连接中」展示，超过宽限期仍未连上才标红。"""
+        self._set_state(STATE_CONNECTING)
+        self._arm_grace_timer_threadsafe()
+
+    def _on_reconnected(self) -> None:
+        self._cancel_grace_timer_threadsafe()
+        self._set_state(STATE_CONNECTED)
+
+    def _arm_grace_timer_threadsafe(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._arm_grace_timer)
+
+    def _arm_grace_timer(self) -> None:
+        self._cancel_grace_timer()
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        self._grace_task = loop.create_task(self._grace_expired())
+
+    async def _grace_expired(self) -> None:
+        try:
+            await asyncio.sleep(self._grace_seconds)
+        except asyncio.CancelledError:
+            raise
+        self._grace_task = None
+        if self._running and self._state == STATE_CONNECTING:
+            self._set_state(
+                STATE_FAILED, "连接超时：请检查网络或飞书应用凭据")
+
+    def _cancel_grace_timer(self) -> None:
+        task, self._grace_task = self._grace_task, None
+        if task is not None:
+            task.cancel()
+
+    def _cancel_grace_timer_threadsafe(self) -> None:
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        loop.call_soon_threadsafe(self._cancel_grace_timer)
+
+    async def stop(self, *, keep_state: bool = False) -> None:
+        """真正断开长连接：先关 WS，再停 SDK loop 与发送循环。
+
+        ``keep_state=True`` 供失败后的清理使用：连接本身失败了，不能因为
+        随后的收尾把已经暴露给用户的「连接失败」改写成「已关闭」。
+        """
         self._running = False
+        self._cancel_grace_timer()
         watch, self._watch_task = self._watch_task, None
         if watch is not None:
             watch.cancel()
@@ -323,7 +380,8 @@ class FeishuChannel:
             await asyncio.to_thread(thread.join, 3)
         if self._out_queue is not None:
             self._out_queue.clear()
-        self._set_state(STATE_DISABLED)
+        if not keep_state:
+            self._set_state(STATE_DISABLED)
         logger.info("Feishu channel stopped")
 
     # ------------------------------------------------------------------

@@ -34,6 +34,7 @@ Protocol (JSON text frames):
     {"type": "feishu"}                            channel status
     {"type": "feishu", "op": "enable"}            connect now
     {"type": "feishu", "op": "disable"}           disconnect now
+    {"type": "feishu", "op": "reconnect"}         drop and connect again
 
   server → client
     {"type": "state", ...}         current session / sessions / model / setup
@@ -596,6 +597,8 @@ class WebChannel(BusChannel):
                 await controller.enable()
             elif op == "disable":
                 await controller.disable()
+            elif op == "reconnect":
+                await controller.reconnect()
             elif op != "read":
                 raise ValueError(f"未知的飞书操作：{op}")
         except ValueError as exc:
