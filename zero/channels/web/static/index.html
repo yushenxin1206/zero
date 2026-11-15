@@ -427,14 +427,38 @@
   .sidebar-footer {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
     padding: 9px 14px;
     border-top: 1px solid var(--line-weak);
     font-size: 11.5px;
     color: var(--text-3);
   }
   .sidebar-footer .theme-toggle { flex: 0 0 auto; }
-  .sidebar-footer .conn-dot { margin-left: auto; }
+  .sidebar-footer .feishu-status { margin-left: auto; }
+  /* 飞书降级成状态：常态只露一个点，连接失败才出红点 + 一句提示 */
+  .feishu-status {
+    flex: 0 1 auto;
+    min-width: 0;
+    padding: 3px 6px;
+    font-size: 11.5px;
+    line-height: 1;
+    color: var(--text-3);
+    border-color: transparent;
+    background: transparent;
+  }
+  .feishu-status:hover:not(:disabled) {
+    color: var(--text-2);
+    border-color: var(--line-weak);
+    background: var(--hover);
+  }
+  .feishu-status.bad { color: var(--danger); }
+  .feishu-status .chan-dot { width: 7px; height: 7px; }
+  .feishu-status .feishu-label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   #conn-text {
     min-width: 0;
     overflow: hidden;
@@ -548,16 +572,19 @@
     letter-spacing: .02em;
     min-height: 14px;
   }
-  .top-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+  .top-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  /* 顶栏只留图标按钮：统一尺寸、悬停给提示，不混排图标与文字 */
   .top-btn {
-    padding: 6px 11px;
-    font-size: 12.5px;
+    width: 30px;
+    height: 28px;
+    padding: 0;
+    justify-content: center;
     color: var(--text-2);
     border-color: var(--line-weak);
     background: var(--fill-2);
   }
   .top-btn:hover:not(:disabled) { color: var(--text-1); }
-  .top-btn .icon { width: 13px; height: 13px; }
+  .top-btn .icon { width: 15px; height: 15px; }
   .chan-dot {
     flex: 0 0 auto;
     width: 6px;
@@ -643,6 +670,43 @@
     border-color: var(--accent-line);
     background: var(--accent-soft);
   }
+
+  /* ================= settings hub ================= */
+  .settings-group { margin-bottom: 18px; }
+  .settings-group:last-child { margin-bottom: 0; }
+  .settings-group-label {
+    padding: 0 2px 8px;
+    font: 600 10.5px/1 var(--mono);
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--text-3);
+  }
+  .settings-item {
+    width: 100%;
+    margin-bottom: 7px;
+    padding: 10px 12px;
+    gap: 11px;
+    text-align: left;
+    color: var(--text-1);
+    border-color: var(--line-weak);
+    background: var(--surface-2);
+  }
+  .settings-item:last-child { margin-bottom: 0; }
+  .settings-item:hover:not(:disabled) {
+    background: var(--surface-3);
+    border-color: var(--line);
+  }
+  .settings-item > .icon { width: 15px; height: 15px; color: var(--text-2); }
+  .settings-item-main { flex: 1; min-width: 0; display: block; }
+  .settings-item-title { display: block; font-size: 13px; font-weight: 600; }
+  .settings-item-desc {
+    display: block;
+    margin-top: 2px;
+    font-size: 11.5px;
+    line-height: 1.55;
+    color: var(--text-3);
+  }
+  .settings-item .chevron { width: 14px; height: 14px; color: var(--text-3); }
 
   /* ================= message stream ================= */
   #messages {
@@ -1936,6 +2000,11 @@
     #model-btn { max-width: 160px; }
     #topbar { padding: 11px 20px; }
     #jump { right: 22px; }
+    /* 窄侧栏放不下「红点 + 失败提示」时让它整行换行，不要挤掉连接状态 */
+    .sidebar-footer { flex-wrap: wrap; }
+    .sidebar-footer .feishu-status { order: 4; }
+    .sidebar-footer .conn-dot { order: 2; }
+    #conn-text { order: 3; }
   }
 
   @media (prefers-reduced-motion: reduce) {
@@ -1998,6 +2067,10 @@
         <svg class="icon"><use id="theme-icon" href="#i-sun"/></svg>
         <span id="theme-label">日间</span>
       </button>
+      <button id="feishu-status" class="feishu-status" type="button" title="飞书通道状态">
+        <span id="feishu-dot" class="chan-dot"></span>
+        <span id="feishu-label" class="feishu-label hidden">飞书连接失败</span>
+      </button>
       <span id="conn-dot" class="conn-dot connecting"></span>
       <span id="conn-text">连接中…</span>
     </div>
@@ -2010,25 +2083,12 @@
         <div id="session-sub"></div>
       </div>
       <div class="top-actions">
-        <button id="tasks-btn" class="top-btn" title="查看当前会话的定时任务">
+        <button id="tasks-btn" class="top-btn" title="定时任务" aria-label="定时任务">
           <svg class="icon"><use href="#i-clock"/></svg>
-          <span>定时任务</span>
         </button>
-        <button id="skills-btn" class="top-btn" title="查看内置技能">
-          <svg class="icon"><use href="#i-spark"/></svg>
-          <span>技能</span>
-        </button>
-        <button id="feishu-btn" class="top-btn" title="飞书通道状态与开关">
-          <span id="feishu-dot" class="chan-dot"></span>
-          <span>飞书</span>
-        </button>
-        <button id="permission-btn" class="top-btn" title="管理权限">
-          <svg class="icon"><use href="#i-shield"/></svg>
-          <span>权限</span>
-        </button>
-        <button id="config-btn" class="top-btn" title="打开配置">
+        <button id="settings-btn" class="top-btn" title="设置：模型、权限、渠道与其他配置"
+                aria-label="设置">
           <svg class="icon"><use href="#i-sliders"/></svg>
-          <span>配置</span>
         </button>
       </div>
     </header>
@@ -3468,10 +3528,8 @@
     showCwdModal();
   };
   $("#tasks-btn").onclick = openTasksModal;
-  $("#skills-btn").onclick = openSkillsModal;
-  $("#feishu-btn").onclick = openFeishuModal;
-  $("#permission-btn").onclick = openPermissionModal;
-  $("#config-btn").onclick = openConfigModal;
+  $("#settings-btn").onclick = openSettingsModal;
+  $("#feishu-status").onclick = openFeishuModal;
   $("#config-restart").onclick = () => beginRestart();
   $("#config-dismiss").onclick = () => $("#config-banner").classList.add("hidden");
   $("#setup-save").onclick = setupSubmit;
@@ -3665,6 +3723,79 @@
   }
 
   const TASKS_PAGE_SIZE = 10;
+
+  /* ================= settings hub ================= */
+
+  // 顶栏只留一个设置入口，具体面板按组进入；每一项都复用原有弹窗，
+  // 不改任何功能，只换入口。
+  const SETTINGS_GROUPS = [
+    ["模型", [
+      {
+        icon: "cpu",
+        title: "模型与供应商",
+        desc: "默认模型、models 注册表与 API Key",
+        open: () => openConfigModal("models"),
+      },
+    ]],
+    ["权限", [
+      {
+        icon: "shield",
+        title: "权限",
+        desc: "只读目录、可写目录与免沙箱命令",
+        open: () => openPermissionModal(),
+      },
+    ]],
+    ["渠道", [
+      {
+        icon: "chat",
+        title: "飞书",
+        desc: "连接状态、启停、扫码连接与凭据",
+        open: () => openFeishuModal(),
+      },
+    ]],
+    ["其他", [
+      {
+        icon: "spark",
+        title: "内置技能",
+        desc: "查看已安装技能与其说明",
+        open: () => openSkillsModal(),
+      },
+      {
+        icon: "sliders",
+        title: "全部配置",
+        desc: "运行期、上下文压缩、渠道与维护任务",
+        open: () => openConfigModal(),
+      },
+    ]],
+  ];
+
+  function openSettingsModal() {
+    state.modalKind = "settings";
+    openModal("设置", "", `<button id="modal-close">关闭</button>`);
+    $("#modal-close").onclick = closeModal;
+    const body = $("#modal-body");
+    body.innerHTML = "";
+    SETTINGS_GROUPS.forEach(([label, items]) => {
+      const group = el("div", "settings-group");
+      const head = el("div", "settings-group-label");
+      head.textContent = label;
+      group.appendChild(head);
+      items.forEach((item) => {
+        const btn = el("button", "settings-item");
+        btn.type = "button";
+        btn.innerHTML =
+          icon(item.icon) +
+          `<span class="settings-item-main">` +
+            `<span class="settings-item-title">${escapeHtml(item.title)}</span>` +
+            `<span class="settings-item-desc">${escapeHtml(item.desc)}</span>` +
+          `</span>` +
+          icon("chevron", "chevron");
+        btn.onclick = item.open;
+        group.appendChild(btn);
+      });
+      body.appendChild(group);
+    });
+  }
 
   function openSkillsModal() {
     state.modalKind = "skills";
@@ -4982,16 +5113,34 @@
 
   function reflectFeishu(snap) {
     const dot = $("#feishu-dot");
-    const btn = $("#feishu-btn");
+    const btn = $("#feishu-status");
+    const label = $("#feishu-label");
     if (!dot) return;
     dot.className = "chan-dot";
-    if (btn) btn.title = "飞书通道状态与开关";
+    if (btn) {
+      btn.classList.remove("bad");
+      btn.title = "飞书未启用，点击查看";
+    }
+    if (label) label.classList.add("hidden");
     if (!snap) return;
-    if (snap.state === "connected") dot.classList.add("on");
-    else if (snap.state === "connecting") dot.classList.add("wait");
-    else if (snap.state === "failed") {
+    if (snap.state === "connected") {
+      dot.classList.add("on");
+      if (btn) btn.title = "飞书已连接，点击查看";
+    } else if (snap.state === "connecting") {
+      dot.classList.add("wait");
+      if (btn) btn.title = "飞书连接中，点击查看";
+    } else if (snap.state === "failed") {
+      // 只有失败才把状态点升级成红点 + 一句提示，其余状态保持安静
       dot.classList.add("bad");
-      if (btn) btn.title = "飞书连接失败，点击处理";
+      if (btn) {
+        btn.classList.add("bad");
+        btn.title = "飞书连接失败，点击处理";
+      }
+      if (label) label.classList.remove("hidden");
+    } else if (snap.state === "disabled") {
+      if (btn) btn.title = "飞书已关闭，点击查看";
+    } else if (snap.state === "unconfigured") {
+      if (btn) btn.title = "飞书未配置，点击查看";
     }
   }
 
@@ -5327,20 +5476,25 @@
       Array.from(pane.querySelectorAll(".cfg-section")).forEach((node, i) => {
         if (i < openState.length) node.open = openState[i];
       });
-      if (state.configFocus === "feishu") {
+      if (state.configFocus) {
+        // 设置里的入口可以定位到任意分区；"feishu" 是历史别名，落到 channels
+        const want = state.configFocus === "feishu"
+          ? "channels" : state.configFocus;
         state.configFocus = "";
         const target = Array.from(pane.querySelectorAll(".cfg-section"))
           .find((node) => {
             const name = node.querySelector(".cfg-sec-head span");
-            return name && name.textContent === "channels";
+            return name && name.textContent === want;
           });
         if (target) {
           target.open = true;
           setTimeout(() => {
             // 等 details 展开后再滚动，否则拿到的位置还是折叠态
             target.scrollIntoView({ block: "center" });
-            const input = $("#cfg-feishu-app-id");
-            if (input) input.focus();
+            if (want === "channels") {
+              const input = $("#cfg-feishu-app-id");
+              if (input) input.focus();
+            }
           }, 0);
         }
       }
