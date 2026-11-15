@@ -571,6 +571,61 @@
   @keyframes dot-pulse {
     50% { opacity: .3; }
   }
+  /* 扫码连接飞书 */
+  .qr-panel {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 0 6px;
+  }
+  .qr-box {
+    width: 224px;
+    height: 224px;
+    padding: 10px;
+    /* 二维码必须白底黑码：不跟随主题反色，否则相机识别率会掉 */
+    background: #fff;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    box-shadow: var(--sh-1);
+  }
+  .qr-box svg { display: block; width: 100%; height: 100%; }
+  .qr-meta {
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--text-3);
+    text-align: center;
+  }
+  .qr-meta b { color: var(--text-1); font-variant-numeric: tabular-nums; }
+  .qr-open {
+    font-size: 12px;
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px dashed var(--accent-line);
+  }
+  .qr-open:hover { color: var(--accent-hover); }
+  .qr-tip {
+    max-width: 340px;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--text-3);
+    text-align: center;
+  }
+  .qr-mark {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    height: 64px;
+    font-size: 26px;
+    border-radius: 50%;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .qr-mark.bad {
+    background: var(--danger-soft);
+    color: var(--danger);
+  }
   .theme-toggle {
     min-width: 76px;
     min-height: 30px;
@@ -2131,6 +2186,10 @@
     feishu: null,
     feishuBusy: false,
     feishuError: "",
+    // 扫码连接：qr 为后端回推的最新事件，计时器只在弹窗打开时跑
+    feishuQr: null,
+    qrTimer: 0,
+    qrExpireAt: 0,
   };
 
   function escapeHtml(value) {
@@ -3436,6 +3495,12 @@
   }
 
   function closeModal() {
+    if (state.modalKind === "feishu-qr") {
+      // 关掉弹窗就停倒计时并让后端取消轮询：不留后台任务
+      stopQrCountdown();
+      state.feishuQr = null;
+      send({ type: "feishu", op: "qr-cancel" });
+    }
     $("#modal").classList.add("hidden");
     state.modalKind = "";
     clearTimeout(state.tasksTimer);
@@ -4920,6 +4985,10 @@
   }
 
   function onFeishu(msg) {
+    if (msg.op === "qr") {
+      onFeishuQr(msg.qr || {});
+      return;
+    }
     if (msg.snapshot) state.feishu = msg.snapshot;
     state.feishuBusy = false;
     state.feishuError = msg.ok === false ? (msg.error || "操作失败") : "";
@@ -4963,8 +5032,10 @@
 
     const status = el("div", "perm-status");
     status.appendChild(permStatusRow(
-      "凭据", snap.configured ? "已配置" : "未配置",
-      snap.configured ? "ok" : "bad"));
+      "凭据",
+      snap.configured ? "已配置"
+        : snap.restartRequired ? "已保存，重启后生效" : "未配置",
+      snap.configured || snap.restartRequired ? "ok" : "bad"));
     const tone = snap.state === "connected" ? "ok"
       : snap.state === "failed" ? "bad"
         : "";
@@ -4977,12 +5048,16 @@
       err.textContent = state.feishuError || snap.error;
       body.appendChild(err);
     }
-    if (snap.state === "unconfigured") {
+    if (snap.restartRequired) {
+      const ok = el("div", "perm-hint");
+      ok.textContent = "扫码得到的凭据已保存。重启 zero 后会自动使用新凭据连接，"
+        + "当前进程仍用启动时的配置。";
+      body.appendChild(ok);
+    } else if (snap.state === "unconfigured") {
       const warn = el("div", "perm-warn");
       const missing = (snap.missing || []).join("、");
       warn.textContent = (missing ? `缺少 ${missing}：` : "还没有飞书凭据：")
-        + "请先在「配置 → channels → feishu」补上对应内容，"
-        + "保存并重启后再启用。";
+        + "可以点「扫码连接」自动创建，或到「配置 → channels → feishu」手动填写。";
       body.appendChild(warn);
     } else if (snap.state === "failed") {
       const hint = el("div", "perm-hint");
@@ -5003,13 +5078,17 @@
     if (snap.state === "failed") {
       addAction("重新连接", true, () => feishuSend("reconnect"));
       addAction("去配置", false, () => openConfigModal("feishu"));
+      addAction("扫码连接", false, () => openFeishuQrModal());
       addAction("停用", false, () => feishuSend("disable"));
     } else if (snap.state === "unconfigured") {
-      addAction("去配置", true, () => openConfigModal("feishu"));
+      addAction("扫码连接", !snap.restartRequired, () => openFeishuQrModal());
+      addAction("去配置", snap.restartRequired, () => openConfigModal("feishu"));
     } else if (snap.state === "connecting" || snap.state === "connected") {
       addAction("停用", false, () => feishuSend("disable"));
+      addAction("扫码连接", false, () => openFeishuQrModal());
     } else {
       addAction("启用", true, () => feishuSend("enable"));
+      addAction("扫码连接", false, () => openFeishuQrModal());
     }
     const refresh = el("button");
     refresh.type = "button";
@@ -5026,6 +5105,165 @@
       ? "处理中…"
       : "开关会写入 channels.feishu.enabled，立即生效";
     foot.appendChild(note);
+    body.appendChild(foot);
+  }
+
+  // ------------------------------------------------------------------
+  // 扫码连接飞书（设备授权码流程）
+  // ------------------------------------------------------------------
+
+  function openFeishuQrModal() {
+    state.modalKind = "feishu-qr";
+    state.feishuQr = { phase: "starting" };
+    stopQrCountdown();
+    openModal("扫码连接飞书", "", `<button id="modal-close">关闭</button>`);
+    $("#modal-close").onclick = closeModal;
+    renderFeishuQrModal();
+    if (!send({ type: "feishu", op: "qr-start" })) {
+      state.feishuQr = { phase: "failed", text: "未连接到后端，无法开始扫码" };
+      renderFeishuQrModal();
+    }
+  }
+
+  function onFeishuQr(qr) {
+    // 弹窗已关：忽略在途事件，后端收到 qr-cancel 会自行收尾
+    if (state.modalKind !== "feishu-qr") return;
+    state.feishuQr = qr || {};
+    if (state.feishuQr.phase === "waiting") {
+      startQrCountdown(state.feishuQr.expireIn);
+    } else if (state.feishuQr.phase !== "starting") {
+      stopQrCountdown();
+    }
+    renderFeishuQrModal();
+    if (qr && qr.phase === "success") toast(qr.text || "扫码成功", "info");
+  }
+
+  function stopQrCountdown() {
+    if (state.qrTimer) {
+      clearInterval(state.qrTimer);
+      state.qrTimer = 0;
+    }
+  }
+
+  function startQrCountdown(seconds) {
+    stopQrCountdown();
+    const total = Number(seconds) > 0 ? Number(seconds) : 600;
+    state.qrExpireAt = Date.now() + total * 1000;
+    const tick = () => {
+      const node = $("#qr-count");
+      const left = Math.max(
+        0, Math.round((state.qrExpireAt - Date.now()) / 1000));
+      if (node) {
+        const mm = String(Math.floor(left / 60)).padStart(2, "0");
+        const ss = String(left % 60).padStart(2, "0");
+        node.textContent = `${mm}:${ss}`;
+      }
+      if (left <= 0) {
+        stopQrCountdown();
+        if (state.feishuQr && state.feishuQr.phase === "waiting") {
+          state.feishuQr = {
+            phase: "failed", text: "二维码已过期，请重新生成",
+          };
+          if (state.modalKind === "feishu-qr") renderFeishuQrModal();
+        }
+      }
+    };
+    state.qrTimer = setInterval(tick, 1000);
+    tick();
+  }
+
+  function restartQr() {
+    state.feishuQr = { phase: "starting" };
+    stopQrCountdown();
+    renderFeishuQrModal();
+    send({ type: "feishu", op: "qr-start" });
+  }
+
+  function renderFeishuQrModal() {
+    const body = $("#modal-body");
+    const qr = state.feishuQr || {};
+    body.innerHTML = "";
+    const panel = el("div", "qr-panel");
+    body.appendChild(panel);
+
+    if (qr.phase === "waiting" && qr.svg) {
+      const box = el("div", "qr-box");
+      // 二维码由后端用本地库生成；只接受 svg 根节点，避免注入任意 HTML
+      box.innerHTML = String(qr.svg).trim().startsWith("<svg") ? qr.svg : "";
+      panel.appendChild(box);
+
+      const meta = el("div", "qr-meta");
+      meta.appendChild(document.createTextNode("二维码有效期："));
+      const count = el("b");
+      count.id = "qr-count";
+      count.textContent = "--:--";
+      meta.appendChild(count);
+      panel.appendChild(meta);
+
+      if (qr.url) {
+        const link = el("a", "qr-open");
+        link.href = qr.url;
+        link.target = "_blank";
+        link.rel = "noreferrer";
+        link.textContent = "在飞书中打开";
+        panel.appendChild(link);
+      }
+
+      const tip = el("div", "qr-tip");
+      tip.textContent = "用飞书 App 扫一扫，在手机上确认创建应用并授权。"
+        + "二维码只在有效期内可用，过期后重新生成即可。";
+      panel.appendChild(tip);
+    } else if (qr.phase === "success") {
+      const mark = el("div", "qr-mark");
+      mark.textContent = "✓";
+      panel.appendChild(mark);
+      const text = el("div", "qr-meta");
+      text.textContent = qr.text || "扫码成功";
+      panel.appendChild(text);
+      if (qr.appId) {
+        const id = el("div", "qr-tip");
+        id.textContent = `应用 appId：${qr.appId}`;
+        panel.appendChild(id);
+      }
+      const tip = el("div", "qr-tip");
+      tip.textContent = "新凭据只影响下次启动：当前进程继续使用启动时的配置。";
+      panel.appendChild(tip);
+    } else if (qr.phase === "failed") {
+      const mark = el("div", "qr-mark bad");
+      mark.textContent = "!";
+      panel.appendChild(mark);
+      const text = el("div", "perm-error");
+      text.textContent = qr.text || "扫码失败，请重试";
+      panel.appendChild(text);
+    } else if (qr.phase === "cancelled") {
+      const text = el("div", "qr-meta");
+      text.textContent = qr.text || "已取消扫码";
+      panel.appendChild(text);
+    } else {
+      const text = el("div", "qr-meta");
+      text.textContent = "正在生成二维码…";
+      panel.appendChild(text);
+    }
+
+    const foot = el("div", "config-foot");
+    const addAction = (text, primary, handler) => {
+      const btn = el("button", primary ? "primary" : "");
+      btn.type = "button";
+      btn.textContent = text;
+      btn.onclick = handler;
+      foot.appendChild(btn);
+    };
+    if (qr.phase === "waiting") {
+      addAction("重新生成", false, restartQr);
+      addAction("取消", false, closeModal);
+    } else if (qr.phase === "failed" || qr.phase === "cancelled") {
+      addAction("重新扫码", true, restartQr);
+      addAction("取消", false, closeModal);
+    } else if (qr.phase === "success") {
+      addAction("关闭", true, closeModal);
+    } else {
+      addAction("取消", false, closeModal);
+    }
     body.appendChild(foot);
   }
 

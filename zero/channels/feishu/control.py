@@ -20,6 +20,7 @@ from zero.channels.feishu.channel import (
     FeishuChannel,
     StateCallback,
 )
+from zero.channels.feishu.registration import QrConnector
 from zero.config import ConfigManager
 from zero.models import FeishuConfig
 from zero.session.store import SessionStore
@@ -32,6 +33,7 @@ ChannelFactory = Callable[
     FeishuChannel,
 ]
 ChangeCallback = Callable[[dict[str, Any]], None]
+QrEventCallback = Callable[[dict[str, Any]], None]
 
 
 class FeishuController:
@@ -54,6 +56,13 @@ class FeishuController:
         self._task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
         self._on_change: ChangeCallback | None = None
+        self._on_qr: QrEventCallback | None = None
+        # 扫码结果已经落盘、但当前进程还没用上：重启才生效
+        self._restart_required = False
+        # 没有配置写入入口就没有落盘能力，扫码功能随之关闭
+        self._qr = (
+            QrConnector(manager, self._relay_qr)
+            if manager is not None else None)
         self._error = ""
         self._state = (
             STATE_DISABLED if self.configured else STATE_UNCONFIGURED)
@@ -63,9 +72,14 @@ class FeishuController:
         return bool(
             self._config.app_id.strip() and self._config.app_secret.strip())
 
-    def bind(self, on_change: ChangeCallback) -> None:
-        """挂上状态变化回调；Web 通道用它把状态推给界面。"""
+    def bind(
+        self,
+        on_change: ChangeCallback,
+        on_qr: QrEventCallback | None = None,
+    ) -> None:
+        """挂上状态 / 扫码事件回调；Web 通道用它把状态推给界面。"""
         self._on_change = on_change
+        self._on_qr = on_qr
 
     def snapshot(self) -> dict[str, Any]:
         missing = []
@@ -78,6 +92,7 @@ class FeishuController:
             "missing": missing,
             "state": self._state,
             "error": self._error,
+            "restartRequired": self._restart_required,
         }
 
     async def start_initial(self, enabled: bool) -> None:
@@ -123,9 +138,20 @@ class FeishuController:
         await self.disable(persist=False)
         await self.enable(persist=False)
 
+    async def start_qr(self) -> None:
+        """开始扫码建应用；已有会话会被取消后重新生成。"""
+        if self._qr is None:
+            raise ValueError("当前进程没有配置写入入口，扫码连接不可用")
+        await self._qr.start()
+
+    async def cancel_qr(self) -> None:
+        if self._qr is not None:
+            await self._qr.cancel()
+
     async def shutdown(self) -> None:
         """进程退出前的兜底：不落盘，也不把异常抛给关闭流程。"""
         try:
+            await self.cancel_qr()
             await self.disable(persist=False)
         except Exception:
             logger.exception("关闭飞书通道失败")
@@ -158,9 +184,13 @@ class FeishuController:
                 self._task = None
 
     def _on_channel_state(self, state: str, error: str) -> None:
-        """把通道状态映射成对外状态；可能从 WS 线程调用。"""
+        """把通道状态映射成对外状态；可能从 WS 线程调用。
+
+        connected 也透传 error：发送消息遇到权限未批时的提示，要在保持
+        「已连接」的前提下让用户看到原因。
+        """
         if state == STATE_CONNECTED:
-            self._set_state(STATE_CONNECTED)
+            self._set_state(STATE_CONNECTED, error)
         elif state == STATE_CONNECTING:
             self._set_state(STATE_CONNECTING)
         elif state == STATE_FAILED:
@@ -168,11 +198,23 @@ class FeishuController:
         else:
             self._set_state(STATE_DISABLED, error)
 
+    def _relay_qr(self, payload: dict[str, Any]) -> None:
+        """扫码事件先更新快照状态，再原样转给 Web 通道。"""
+        if payload.get("phase") == "success":
+            # 凭据已经落盘，但当前进程仍用启动时的配置
+            self._restart_required = True
+            self._notify()
+        if self._on_qr is not None:
+            self._on_qr(payload)
+
     def _set_state(self, state: str, error: str = "") -> None:
         if self._state == state and self._error == error:
             return
         self._state = state
         self._error = error
+        self._notify()
+
+    def _notify(self) -> None:
         if self._on_change is not None:
             self._on_change(self.snapshot())
 

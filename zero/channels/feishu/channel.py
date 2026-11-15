@@ -43,6 +43,17 @@ STATE_DISABLED = "disabled"
 CONNECT_GRACE_SECONDS = 15.0
 StateCallback = Callable[[str, str], None]
 
+# 发消息被拒但令牌本身有效时，多半是权限还在等租户管理员审核。
+# 直接把这层解释摆到界面上，免得用户以为是程序坏了。
+SEND_PERMISSION_HINTS = {
+    99991672: (
+        "发送失败：应用缺少发消息权限（im:message:send_as_bot），"
+        "可能仍在等待租户管理员审核；审核通过后再试。"),
+    99991679: (
+        "发送失败：应用权限不足，可能仍在等待租户管理员审核；"
+        "请在飞书开放平台确认 im 相关权限已获批。"),
+}
+
 
 def _close_sdk_loop(loop: asyncio.AbstractEventLoop) -> None:
     """停掉连接专用 loop 上残留的收包 / ping 任务并关闭 loop。
@@ -536,9 +547,19 @@ class FeishuChannel:
                 "Failed to send Feishu message: code=%s, msg=%s, log_id=%s",
                 response.code, response.msg, response.get_log_id(),
             )
+            hint = SEND_PERMISSION_HINTS.get(response.code)
+            if hint:
+                # 连接本身是好的，保持「已连接」，只把原因挂到状态上
+                if self._state == STATE_CONNECTED:
+                    self._set_state(STATE_CONNECTED, hint)
+                raise RuntimeError(hint)
             raise RuntimeError(
                 f"Failed to send Feishu message: code={response.code}, msg={response.msg}"
             )
+
+        if self._state == STATE_CONNECTED and self._error:
+            # 上一次是权限提示，这次发成功了，把旧提示清掉
+            self._set_state(STATE_CONNECTED)
 
         logger.info(
             "Feishu message sent: message_id=%s",

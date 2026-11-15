@@ -188,6 +188,21 @@ def test_feishu_enabled_switch_is_persisted_without_touching_credentials():
     assert manager.masked_doc()["channels"]["feishu"]["enabled"] is True
 
 
+def test_feishu_qr_credentials_are_saved_with_enabled_flag():
+    """扫码成功后只写凭据字段，并自动打开通道开关。"""
+    manager = ConfigManager(current().config)
+    manager.load()
+    manager.save(json.loads(json.dumps(MINIMAL)))
+
+    manager.set_feishu_credentials("cli-new", "secret-new")
+
+    saved = json.loads(current().config.read_text(encoding="utf-8"))
+    assert saved["channels"]["feishu"] == {
+        "enabled": True, "appId": "cli-new", "appSecret": "secret-new"}
+    assert stat.S_IMODE(current().config.stat().st_mode) == 0o600
+    assert manager.masked_doc()["channels"]["feishu"]["appSecret"] == MASKED_SECRET
+
+
 def test_reset_backs_up_broken_file_and_writes_skeleton():
     _write("{ not json")
     manager = ConfigManager(current().config)

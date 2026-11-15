@@ -35,6 +35,8 @@ Protocol (JSON text frames):
     {"type": "feishu", "op": "enable"}            connect now
     {"type": "feishu", "op": "disable"}           disconnect now
     {"type": "feishu", "op": "reconnect"}         drop and connect again
+    {"type": "feishu", "op": "qr-start"}          start QR app registration
+    {"type": "feishu", "op": "qr-cancel"}         cancel QR registration
 
   server → client
     {"type": "state", ...}         current session / sessions / model / setup
@@ -47,6 +49,7 @@ Protocol (JSON text frames):
     {"type": "config", ...}        masked config / save result / test result
     {"type": "permission", ...}    permission snapshot / mutation result
     {"type": "feishu", ...}        channel snapshot / mutation / state push
+    {"type": "feishu", "op": "qr", "qr": {...}}   QR registration event
     {"type": "notice", "level": "info"|"error", "text": "..."}
 """
 import asyncio
@@ -93,7 +96,7 @@ class WebChannel(BusChannel):
         # 飞书开关由控制层持有；Web 只做协议转发与状态推送
         self.feishu = feishu
         if feishu is not None:
-            feishu.bind(self._feishu_changed)
+            feishu.bind(self._feishu_changed, self._feishu_qr)
         self.service = ChannelService(
             CHANNEL, msg_bus=msg_bus, session_store=session_store,
             scheduler_store=scheduler_store, data_paths=data_paths,
@@ -599,6 +602,11 @@ class WebChannel(BusChannel):
                 await controller.disable()
             elif op == "reconnect":
                 await controller.reconnect()
+            elif op == "qr-start":
+                # 只负责拉起后台任务，二维码通过 qr 事件异步回推
+                await controller.start_qr()
+            elif op == "qr-cancel":
+                await controller.cancel_qr()
             elif op != "read":
                 raise ValueError(f"未知的飞书操作：{op}")
         except ValueError as exc:
@@ -634,6 +642,22 @@ class WebChannel(BusChannel):
                 asyncio.create_task(self._broadcast({
                     "type": "feishu", "op": "state",
                     "snapshot": snapshot,
+                }))
+            except RuntimeError:
+                pass
+
+        loop.call_soon_threadsafe(_push)
+
+    def _feishu_qr(self, payload: dict[str, Any]) -> None:
+        """扫码事件 → 广播；回调可能在任意线程，统一回事件循环。"""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def _push() -> None:
+            try:
+                asyncio.create_task(self._broadcast({
+                    "type": "feishu", "op": "qr", "qr": payload,
                 }))
             except RuntimeError:
                 pass

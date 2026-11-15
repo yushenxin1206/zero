@@ -458,6 +458,28 @@ class ConfigManager:
         feishu['enabled'] = bool(enabled)
         self.save(doc)
 
+    def set_feishu_credentials(self, app_id: str, app_secret: str) -> None:
+        """写入扫码得到的飞书凭据，并打开通道开关。
+
+        与 ``set_feishu_enabled`` 一样只走窄写入：不经过 UI 的整份配置，
+        避免把界面上的占位密钥带进来。调用方必须先验证过凭据可用，
+        本方法不做任何网络校验。
+        """
+        doc = copy.deepcopy(self.raw)
+        channels = doc.get('channels')
+        if not isinstance(channels, dict):
+            channels = {}
+            doc['channels'] = channels
+        feishu = channels.get('feishu')
+        if not isinstance(feishu, dict):
+            feishu = {}
+            channels['feishu'] = feishu
+        feishu['appId'] = app_id
+        feishu['appSecret'] = app_secret
+        # 扫码的意图就是「连上」，重启后应自动建连
+        feishu['enabled'] = True
+        self.save(doc)
+
     def save(self, doc: dict[str, Any]) -> Config:
         """校验通过后原子写盘（0600）。保存不改变本进程正在使用的配置。"""
         if not isinstance(doc, dict):

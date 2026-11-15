@@ -17,6 +17,7 @@ dependencies = [
     "rich>=13.9.0",
     "prompt-toolkit>=3.0.0",
     "websockets>=15.0.1",
+    "qrcode>=8.2",
 ]
 
 # 桌面 web 通道的可选依赖：pywebview 在 Windows 上还会带入 pythonnet。
