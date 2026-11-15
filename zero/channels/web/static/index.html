@@ -818,6 +818,25 @@
     padding: 1.5px 5px;
     color: var(--inline-code-text);
   }
+  /* 可点目标：正文与行内代码里的网址 / 路径 */
+  .md-link {
+    color: var(--accent);
+    text-decoration: underline;
+    text-decoration-color: var(--accent-line);
+    text-underline-offset: 2px;
+    word-break: break-word;
+    cursor: pointer;
+    transition: color var(--dur) var(--ease);
+  }
+  .md-link:hover {
+    color: var(--accent-hover);
+    text-decoration-color: currentColor;
+  }
+  .md code .md-link {
+    color: var(--inline-code-text);
+    text-decoration-style: dotted;
+  }
+  .md code .md-link:hover { color: var(--accent-hover); }
   .codeblock {
     margin: 12px 0;
     border: 1px solid var(--line);
@@ -2267,7 +2286,8 @@
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
     s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
     s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+      '<a class="md-link" href="$2" data-open-kind="url" ' +
+      'data-open-value="$2" rel="noreferrer">$1</a>');
     s = s.replace(/\u0001(\d+)\u0001/g, (_, i) => codeSpans[+i]);
     return s.replace(/\n/g, "<br>");
   }
@@ -2375,6 +2395,145 @@
     }
     flushPara(); flushList();
     return html.join("\n");
+  }
+
+  /* ================= clickable targets ================= */
+
+  // 渲染侧兜底：正文与行内代码里的网址、绝对路径都变成可点目标。
+  // 真正的协议 / 存在性校验在后端 opener 里再做一次，这里只负责识别。
+  const TARGET_BOUNDARY = /[\s(（"'`：:，,；;=]/;
+
+  function targetAnchor(text, kind) {
+    const a = document.createElement("a");
+    a.className = "md-link";
+    a.textContent = text;
+    a.dataset.openKind = kind;
+    a.dataset.openValue = text;
+    if (kind === "url") {
+      a.href = text;
+      a.title = "在浏览器中打开";
+      a.target = "_blank";
+      a.rel = "noreferrer";
+    } else {
+      a.href = "#";
+      a.title = "打开该文件或目录";
+    }
+    return a;
+  }
+
+  function trimTarget(value, kind) {
+    let v = String(value).replace(/[.,;:!?。，；：！？]+$/, "");
+    if (kind === "url") {
+      // 正文里常见的 (url) 包一层：只去掉不成对的右括号
+      while (v.endsWith(")") && v.split("(").length < v.split(")").length) {
+        v = v.slice(0, -1);
+      }
+      while (v.endsWith("]") && v.split("[").length < v.split("]").length) {
+        v = v.slice(0, -1);
+      }
+    }
+    return v;
+  }
+
+  function exactTargetKind(raw) {
+    const value = String(raw || "").trim();
+    if (!value) return "";
+    if (/^https?:\/\/[^/?#\s]+/i.test(value) && !/\s/.test(value)) return "url";
+    if (/^(~\/|\/(?!\/)|[A-Za-z]:[\\/])/.test(value)
+        && !/[\x00-\x1f<>"'`]/.test(value)) {
+      return "path";
+    }
+    return "";
+  }
+
+  function linkifyTextNode(node) {
+    const text = node.nodeValue;
+    const parts = [];
+    let cursor = 0;
+    const re = /https?:\/\/[^\s<>"'`]+|(?:~\/|\/|[A-Za-z]:[\\/])[^\s<>"'`，。；：、（）【】《》「」“”‘’]+/g;
+    let match;
+    while ((match = re.exec(text)) !== null) {
+      const kind = /^https?:/i.test(match[0]) ? "url" : "path";
+      const value = trimTarget(match[0], kind);
+      if (!value) continue;
+      if (kind === "path") {
+        const before = match.index > 0 ? text[match.index - 1] : "";
+        // 路径要从词边界开始，避免把 and/or、URL 片段当成路径
+        if (before && !TARGET_BOUNDARY.test(before)) continue;
+        if (value.startsWith("//") || value === "/" || value === "~/") continue;
+      } else if (!/^https?:\/\/[^/?#\s]+/i.test(value)) {
+        continue;
+      }
+      if (match.index > cursor) {
+        parts.push(document.createTextNode(text.slice(cursor, match.index)));
+      }
+      parts.push(targetAnchor(value, kind));
+      cursor = match.index + value.length;
+      re.lastIndex = cursor;
+    }
+    if (!parts.length) return;
+    if (cursor < text.length) {
+      parts.push(document.createTextNode(text.slice(cursor)));
+    }
+    const frag = document.createDocumentFragment();
+    parts.forEach((part) => frag.appendChild(part));
+    node.parentNode.replaceChild(frag, node);
+  }
+
+  function linkifyTargets(root) {
+    if (!root) return;
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.nodeValue || !node.nodeValue.trim()) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        for (let parent = node.parentElement; parent && parent !== root;
+             parent = parent.parentElement) {
+          if (/^(A|CODE|PRE|SCRIPT|STYLE|TEXTAREA)$/.test(parent.tagName)) {
+            return NodeFilter.FILTER_REJECT;
+          }
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+    const nodes = [];
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    nodes.forEach(linkifyTextNode);
+    // 行内代码：只有整段就是路径 / 网址时才可点，避免把命令也变成链接
+    root.querySelectorAll("code").forEach((code) => {
+      if (code.closest("pre") || code.querySelector("a")) return;
+      const raw = code.textContent.trim();
+      const kind = exactTargetKind(raw);
+      if (!kind) return;
+      code.textContent = "";
+      code.appendChild(targetAnchor(raw, kind));
+    });
+  }
+
+  function renderMarkdownInto(node, text) {
+    node.innerHTML = renderMarkdown(text);
+    linkifyTargets(node);
+  }
+
+  async function openTarget(kind, value) {
+    const api = window.pywebview && window.pywebview.api;
+    if (api && api.open_target) {
+      try {
+        const result = await api.open_target(kind, value);
+        if (!result || result.ok === false) {
+          toast((result && result.error) || "打开失败", "error");
+        }
+      } catch (err) {
+        toast("打开失败：" + err, "error");
+      }
+      return;
+    }
+    // 浏览器里没有 pywebview：网址退回新标签，路径无法安全打开
+    if (kind === "url") {
+      window.open(value, "_blank", "noopener");
+    } else {
+      toast("请在桌面客户端中打开本地路径", "info");
+    }
   }
 
   /* ================= empty / skeleton ================= */
@@ -2682,7 +2841,7 @@
     removeEmpty();
     const { row, bubble } = assistantRow("zero");
     const content = el("div", "md");
-    content.innerHTML = renderMarkdown(text);
+    renderMarkdownInto(content, text);
     bubble.appendChild(content);
     scrollBottom(false);
     return row;
@@ -2706,7 +2865,7 @@
     const label = el("div", "lbl");
     label.innerHTML = icon("branch") + "<span>子 agent 结果</span>";
     const body = el("div", "md");
-    body.innerHTML = renderMarkdown(text);
+    renderMarkdownInto(body, text);
     card.appendChild(label);
     card.appendChild(body);
     bubble.appendChild(card);
@@ -2860,6 +3019,7 @@
       const part = el("div", "part-text");
       const md = el("div", "md");
       md.innerHTML = renderMarkdown(entry.text);
+      linkifyTargets(md);
       part.appendChild(md);
       return part;
     });
@@ -3028,7 +3188,10 @@
     // 一个节流窗口里可能同时产生多个正文段（文本→工具→文本），
     // 必须全部渲染，否则前一段会一直停在空节点
     active.pendingText.forEach((item) => {
-      if (item.node) item.node.innerHTML = renderMarkdown(item.text);
+      if (item.node) {
+        item.node.innerHTML = renderMarkdown(item.text);
+        linkifyTargets(item.node);
+      }
     });
     active.pendingText.clear();
     scrollBottom(false);
@@ -3328,7 +3491,7 @@
           active.items.push({ type: "text", text: ev.content });
           const part = el("div", "part-text");
           const md = el("div", "md");
-          md.innerHTML = renderMarkdown(ev.content);
+          renderMarkdownInto(md, ev.content);
           part.appendChild(md);
           active.parts.appendChild(part);
         }
@@ -3510,6 +3673,13 @@
   $("#tasks-btn").onclick = openTasksModal;
   $("#settings-btn").onclick = openSettingsModal;
   $("#feishu-status").onclick = openFeishuModal;
+  // 聊天里的链接统一交给系统打开：网址走浏览器，路径走文件管理器
+  $("#messages").addEventListener("click", (ev) => {
+    const link = ev.target.closest("a.md-link");
+    if (!link) return;
+    ev.preventDefault();
+    openTarget(link.dataset.openKind, link.dataset.openValue);
+  });
   $("#config-restart").onclick = () => beginRestart();
   $("#config-dismiss").onclick = () => $("#config-banner").classList.add("hidden");
   $("#setup-save").onclick = setupSubmit;
@@ -3859,6 +4029,7 @@
       });
       const md = el("div", "skill-body md");
       md.innerHTML = renderMarkdown(skill.content || "");
+      linkifyTargets(md);
       item.appendChild(head);
       if (rows.length) item.appendChild(meta);
       item.appendChild(md);

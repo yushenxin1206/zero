@@ -22,6 +22,8 @@ import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from zero.channels.web import opener
+
 logger = logging.getLogger(__name__)
 
 STATIC_PATH = Path(__file__).with_name("static") / "index.html"
@@ -118,6 +120,10 @@ class _BootstrapApi:
         if not result:
             return ""
         return str(result[0])
+
+    def open_target(self, kind: str, value: str) -> dict[str, Any]:
+        """打开聊天里的网址 / 本地路径；只打开或定位，绝不执行。"""
+        return opener.open_target(kind, value)
 
 
 def _launch_command() -> tuple[list[str], str]:
