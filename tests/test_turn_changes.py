@@ -85,14 +85,32 @@ def test_dependency_dirs_only_report_group_summary(tmp_path):
     deps = workspace / "node_modules"
     deps.mkdir()
     (deps / "dep.js").write_text("x", encoding="utf-8")
+    (deps / "dep2.js").write_text("x", encoding="utf-8")
 
     changes = tracker.finish()
 
     assert len(changes) == 1
     assert changes[0]["change"] == "group"
     assert changes[0]["blocked"] is True
-    assert changes[0]["count"] == 1
+    assert changes[0]["count"] == 2
     assert changes[0]["path"].endswith("node_modules")
+
+
+def test_single_file_in_dependency_dir_stays_explicit(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    deps = workspace / "node_modules"
+    deps.mkdir()
+    (deps / "dep.js").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+
+    # 单文件目录不成组，直接给出文件自己的绝对路径
+    assert len(changes) == 1
+    assert changes[0]["change"] == CHANGE_MODIFIED
+    assert changes[0]["path"] == str(deps / "dep.js")
 
 
 def test_git_repo_uses_status_for_candidates(tmp_path):
@@ -153,7 +171,7 @@ def test_compacts_large_directory_and_keeps_lockfile(tmp_path):
     assert [item["path"] for item in singles] == [str(bulk / "uv.lock")]
 
 
-def test_global_entry_cap_reports_hidden_count(tmp_path):
+def test_global_entry_cap_groups_overflow_by_parent(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     tracker = _tracker(workspace)
@@ -172,11 +190,39 @@ def test_global_entry_cap_reports_hidden_count(tmp_path):
     hidden = [item for item in changes if item["change"] == "hidden"]
 
     assert len(stored) == 60
-    # 超预算的 240 个文件按父目录上提成一行，并给出总数与目录数
+    # 超预算的 240 个文件按父目录上提成一行，且不再重复汇总
     assert len(groups) == 1
     assert groups[0]["count"] == 240
-    assert hidden and hidden[0]["count"] == 240
-    assert hidden[0]["dirs"] == 24
+    assert hidden == []
+
+
+def test_single_file_directory_is_not_grouped(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    tracker = _tracker(workspace)
+    tracker.start()
+    # 先塞满 60 条预算，让后面的文件进入超预算聚合
+    for bucket in range(3):
+        directory = workspace / f"d{bucket}"
+        directory.mkdir()
+        for index in range(20):
+            (directory / f"f{index:02d}.py").write_text("x", encoding="utf-8")
+    lonely = workspace / "d3"
+    lonely.mkdir()
+    alone = lonely / "alone.py"
+    alone.write_text("x", encoding="utf-8")
+    crowded = workspace / "d4"
+    crowded.mkdir()
+    for index in range(19):
+        (crowded / f"g{index:02d}.py").write_text("x", encoding="utf-8")
+
+    changes = tracker.finish()
+    groups = [item for item in changes if item["change"] == "group"]
+
+    assert changes[0]["change"] == CHANGE_ADDED
+    assert all(item["count"] != 1 for item in groups)
+    assert str(alone) in [item["path"] for item in changes]
+    assert any(item["count"] == 19 for item in groups)
 
 
 def test_venv_prefixed_dir_reports_single_summary(tmp_path):
@@ -209,6 +255,7 @@ def test_site_packages_outside_venv_reports_summary(tmp_path):
     packages = workspace / "env" / "lib" / "python3.12" / "site-packages"
     packages.mkdir(parents=True)
     (packages / "dep.py").write_text("x", encoding="utf-8")
+    (packages / "dep2.py").write_text("x", encoding="utf-8")
 
     changes = tracker.finish()
 

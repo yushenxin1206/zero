@@ -121,13 +121,17 @@ class TurnChanges:
                     or (after_state or {}).get("code") == "IGNORED"):
                 if _skip_changed(before_state, after_state):
                     state = after_state or before_state or {}
-                    groups.append({
+                    entry = {
                         "path": key,
                         "change": CHANGE_GROUP,
                         "count": int(state.get("count", 0)),
                         "capped": bool(state.get("capped")),
                         "blocked": True,
-                    })
+                    }
+                    # 单文件目录不包装成“批量 1”，带上文件路径供压缩时展开
+                    if state.get("file"):
+                        entry["file"] = state["file"]
+                    groups.append(entry)
                 continue
             change = _classify(
                 before_state, after_state, key in self.touched, self.git)
@@ -182,6 +186,8 @@ def _git_status(root: Path) -> dict[str, dict[str, Any]] | None:
                 "mtime": 0, "capped": False,
             })
             summary["count"] = int(summary["count"]) + 1
+            if summary["count"] == 1:
+                summary["file"] = str(path)
             try:
                 mtime = path.stat().st_mtime_ns
             except OSError:
@@ -233,10 +239,13 @@ def _skip_summary(path: Path) -> dict[str, Any]:
     """依赖 / 缓存目录只数到上限，给摘要一个数量与时间指纹。"""
     count = 0
     newest = 0
+    only = ""
     try:
         for current, _dirs, files in os.walk(path):
             for name in files:
                 count += 1
+                if count == 1:
+                    only = os.path.join(current, name)
                 try:
                     info = os.stat(os.path.join(current, name))
                 except OSError:
@@ -250,10 +259,14 @@ def _skip_summary(path: Path) -> dict[str, Any]:
                     }
     except OSError:
         pass
-    return {
+    summary = {
         "code": "IGNORED", "exists": True, "count": count,
         "mtime": newest, "capped": False,
     }
+    # 只有一个文件时记住路径，前端直接展示文件本身而不是“批量 1”
+    if count == 1:
+        summary["file"] = only
+    return summary
 
 
 def _skip_changed(before: dict[str, Any] | None,
@@ -350,16 +363,31 @@ def _path_score(path: str) -> tuple[int, int, str]:
 
 def _overflow_rows(
         overflow: list[tuple[str, str]]) -> list[dict[str, Any]]:
-    """超预算的明细按父目录聚合；行数仍超标就继续向父目录上提。"""
+    """超预算的明细按父目录聚合；单文件目录直接给文件自己的路径。
+
+    行数超过 ``MAX_OVERFLOW_GROUPS`` 时继续向父目录上提，因此不会丢条目，
+    末尾也就不需要再补一条重复计数的汇总。
+    """
     if not overflow:
         return []
     buckets: dict[str, dict[str, Any]] = {}
-    for path, _change in overflow:
+    for path, change in overflow:
         directory = os.path.dirname(path)
         entry = buckets.setdefault(
-            directory, {"count": 0, "best": _path_score(path)})
+            directory, {"count": 0, "best": _path_score(path), "paths": []})
         entry["count"] += 1
         entry["best"] = min(entry["best"], _path_score(path))
+        entry["paths"].append((path, change))
+
+    rows: list[dict[str, Any]] = []
+    # 只有一个文件的目录不成组，直接展示文件路径
+    for directory in [key for key, entry in buckets.items()
+                      if entry["count"] == 1]:
+        path, change = buckets.pop(directory)["paths"][0]
+        rows.append({
+            "path": path, "change": change, "_score": _path_score(path),
+        })
+
     while len(buckets) > MAX_OVERFLOW_GROUPS:
         lifted: dict[str, dict[str, Any]] = {}
         for directory, entry in buckets.items():
@@ -371,7 +399,8 @@ def _overflow_rows(
         if set(lifted) == set(buckets):
             break
         buckets = lifted
-    return [
+
+    rows.extend(
         {
             "path": directory,
             "change": CHANGE_GROUP,
@@ -379,28 +408,31 @@ def _overflow_rows(
             "files": [],
             "hiddenCount": entry["count"],
             "blocked": False,
+            "_score": entry["best"],
         }
-        for directory, entry in sorted(
-            buckets.items(), key=lambda item: item[1]["best"])
-    ]
+        for directory, entry in buckets.items())
+    rows.sort(key=lambda item: item["_score"])
+    for row in rows:
+        row.pop("_score")
+    return rows
 
 
 def _compact(changes: dict[str, str],
              blocked: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """压缩清单：依赖并摘要、单目录超阈值出一行、明细总量限额。
 
-    依赖目录里的改动只并成一条摘要；单目录超过 ``PER_DIR_DETAIL`` 条
-    只留“目录 + 数量”；逐文件明细共享 ``MAX_STORED_ENTRIES`` 预算，
-    超出的按父目录聚合成少量行，末尾再给一条总数汇总。清单只用于展示，
-    不会进入模型上下文。
+    依赖目录里的改动并成一条摘要（只有一个文件时直接给文件路径）；
+    单目录超过 ``PER_DIR_DETAIL`` 条只留“目录 + 数量”；逐文件明细共享
+    ``MAX_STORED_ENTRIES`` 预算，超出的按父目录聚合成少量行。每个文件
+    最多出现一次，因此不再额外补汇总。清单只用于展示，不会进入模型上下文。
     """
     locks: list[dict[str, Any]] = []
-    deps: dict[str, int] = {}
+    deps: dict[str, list[tuple[str, str]]] = {}
     by_dir: dict[str, list[tuple[str, str]]] = {}
     for path, change in sorted(changes.items()):
         dep_root = _dependency_root(path)
         if dep_root is not None:
-            deps[dep_root] = deps.get(dep_root, 0) + 1
+            deps.setdefault(dep_root, []).append((path, change))
             continue
         if os.path.basename(path) in LOCKFILES:
             locks.append({"path": path, "change": change})
@@ -434,21 +466,26 @@ def _compact(changes: dict[str, str],
         {key: value for key, value in group.items() if key != "_score"}
         for group in sorted(folded, key=lambda item: item["_score"]))
     result.extend(_overflow_rows(overflow))
-    result.extend({
-        "path": root,
-        "change": CHANGE_GROUP,
-        "count": count,
-        "capped": False,
-        "blocked": True,
-    } for root, count in sorted(deps.items()))
-    # 依赖 / 缓存目录摘要统一放最后，避免把用户改动挤到下面
-    result.extend(blocked)
-    if overflow:
+    for root, items in sorted(deps.items()):
+        # 单个文件不包装成“批量 1”，直接给文件路径
+        if len(items) == 1:
+            path, change = items[0]
+            result.append({"path": path, "change": change})
+            continue
         result.append({
-            "change": "hidden",
-            "count": len(overflow),
-            "dirs": len({os.path.dirname(path) for path, _ in overflow}),
+            "path": root,
+            "change": CHANGE_GROUP,
+            "count": len(items),
+            "capped": False,
+            "blocked": True,
         })
+    # 依赖 / 缓存目录摘要统一放最后，避免把用户改动挤到下面
+    for item in blocked:
+        entry = {key: value for key, value in item.items() if key != "file"}
+        if item.get("count") == 1 and item.get("file"):
+            result.append({"path": item["file"], "change": CHANGE_MODIFIED})
+            continue
+        result.append(entry)
     return result
 
 
