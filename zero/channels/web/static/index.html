@@ -1073,6 +1073,13 @@
     color: var(--text-3);
     letter-spacing: .02em;
   }
+  /* 删除确认：按钮放在内容左下角，取消在左、危险操作在右 */
+  .danger-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-start;
+    margin-top: 18px;
+  }
 
   /* approval */
   .approval {
@@ -2933,9 +2940,7 @@
       return;
     }
     state.modalKind = "delete-session";
-    openModal("删除会话", "",
-      `<button id="modal-close">取消</button><button id="delete-save" class="danger">删除</button>`);
-    $("#modal-close").onclick = closeModal;
+    openModal("删除会话", "", "");
     const body = $("#modal-body");
     body.innerHTML = "";
     const warn = el("div", "perm-warn");
@@ -2945,10 +2950,24 @@
     name.textContent = "会话：" + (session.title || "未命名会话");
     body.appendChild(warn);
     body.appendChild(name);
-    $("#delete-save").onclick = () => {
+
+    // 按钮靠左下角：取消在左、删除在右；默认焦点给取消
+    const actions = el("div", "danger-actions");
+    const cancel = el("button");
+    cancel.id = "modal-close";
+    cancel.textContent = "取消";
+    const remove = el("button", "danger");
+    remove.id = "delete-save";
+    remove.textContent = "删除";
+    actions.appendChild(cancel);
+    actions.appendChild(remove);
+    body.appendChild(actions);
+    cancel.onclick = closeModal;
+    remove.onclick = () => {
       send({ type: "delete", sessionId: session.id });
       closeModal();
     };
+    setTimeout(() => cancel.focus(), 30);
   }
 
   /* ================= message rendering ================= */
