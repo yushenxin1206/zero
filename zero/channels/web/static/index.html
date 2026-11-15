@@ -3375,8 +3375,6 @@
     if (setupVisible()) return; // 首次配置引导不可关闭
     if (!$("#modal").classList.contains("hidden")) {
       event.preventDefault();
-      // 配置窗口与引导页同样只能点「关闭」退出
-      if (state.modalKind === "config") return;
       closeModal();
     } else if (state.busy && event.target !== $("#input")) {
       event.preventDefault();
@@ -3447,8 +3445,6 @@
 
   $("#modal").addEventListener("click", (event) => {
     if (event.target !== $("#modal")) return;
-    // 配置窗口只能点「关闭」退出：遮罩误点会丢掉未保存的编辑
-    if (state.modalKind === "config") return;
     closeModal();
   });
 
@@ -4949,6 +4945,7 @@
     state.feishuBusy = false;
     state.feishuError = "";
     openModal("飞书通道", "", `<button id="modal-close">关闭</button>`);
+    $("#modal-close").onclick = closeModal;
     renderFeishuModal();
     send({ type: "feishu" });
   }
