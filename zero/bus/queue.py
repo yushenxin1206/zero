@@ -77,6 +77,14 @@ class MessageQueue(ABC, Generic[T]):
     async def dequeue(self) -> T:
         return await self.queue.get()
 
+    def clear(self) -> None:
+        """丢弃队列中所有待处理项；用于通道停用后避免恢复时补发旧消息。"""
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+
     @property
     def size(self) -> int:
         return self.queue.qsize()

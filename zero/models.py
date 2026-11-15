@@ -465,6 +465,10 @@ class AgentRuntimeConfig(AgentRuntimeSpec):
 
 class FeishuConfig(Base):
     """Feishu bot configuration for WebSocket long connection."""
+
+    # 是否启用飞书通道：启动时据此决定要不要建连；运行期界面开关也回写此字段。
+    # 默认关闭，与历史上「只有显式 --feishu 才启动」保持一致。
+    enabled: bool = False
     app_id: str = ''
     app_secret: str = ''
 

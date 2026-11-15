@@ -1,0 +1,167 @@
+"""飞书通道的运行期开关。
+
+同一时刻只允许一条长连接：启停都经过同一把锁，重复点击不会拉起第二条连接。
+开关会回写 ``channels.feishu.enabled``，但本模块不读回配置——运行期状态以
+实际连接为准，避免「配置说开着、连接早断了」的假象。
+"""
+
+import asyncio
+import logging
+from collections.abc import Callable
+from contextlib import suppress
+from typing import Any
+
+from zero.bus.queue import MessageBus
+from zero.channels.feishu.channel import (
+    STATE_CONNECTED,
+    STATE_CONNECTING,
+    STATE_DISABLED,
+    FeishuChannel,
+    StateCallback,
+)
+from zero.config import ConfigManager
+from zero.models import FeishuConfig
+from zero.session.store import SessionStore
+
+logger = logging.getLogger(__name__)
+
+STATE_UNCONFIGURED = "unconfigured"
+ChannelFactory = Callable[
+    [FeishuConfig, SessionStore, MessageBus | None, StateCallback | None],
+    FeishuChannel,
+]
+ChangeCallback = Callable[[dict[str, Any]], None]
+
+
+class FeishuController:
+    """管理飞书长连接的启动、停止与状态快照。"""
+
+    def __init__(
+        self,
+        config: FeishuConfig,
+        session_store: SessionStore,
+        msg_bus: MessageBus | None = None,
+        manager: ConfigManager | None = None,
+        channel_factory: ChannelFactory | None = None,
+    ):
+        self._config = config
+        self._session_store = session_store
+        self._msg_bus = msg_bus
+        self._manager = manager
+        self._factory: ChannelFactory = channel_factory or FeishuChannel
+        self._channel: FeishuChannel | None = None
+        self._task: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self._on_change: ChangeCallback | None = None
+        self._error = ""
+        self._state = (
+            STATE_DISABLED if self.configured else STATE_UNCONFIGURED)
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            self._config.app_id.strip() and self._config.app_secret.strip())
+
+    def bind(self, on_change: ChangeCallback) -> None:
+        """挂上状态变化回调；Web 通道用它把状态推给界面。"""
+        self._on_change = on_change
+
+    def snapshot(self) -> dict[str, Any]:
+        return {
+            "configured": self.configured,
+            "state": self._state,
+            "error": self._error,
+        }
+
+    async def start_initial(self, enabled: bool) -> None:
+        """启动时按配置决定是否建连；未配置时只更新状态。"""
+        if not self.configured:
+            self._set_state(STATE_UNCONFIGURED)
+            return
+        if enabled:
+            await self.enable(persist=False)
+
+    async def enable(self, *, persist: bool = True) -> None:
+        async with self._lock:
+            if not self.configured:
+                self._set_state(
+                    STATE_UNCONFIGURED,
+                    "请先在「配置」里填写飞书 appId 与 appSecret")
+                raise ValueError(
+                    "飞书未配置：请先在「配置」里填写 appId 与 appSecret")
+            if self._task is not None and not self._task.done():
+                return
+            if persist:
+                await self._persist(True)
+            self._set_state(STATE_CONNECTING)
+            self._task = asyncio.create_task(self._run())
+
+    async def disable(self, *, persist: bool = True) -> None:
+        async with self._lock:
+            task, self._task = self._task, None
+            channel, self._channel = self._channel, None
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            if channel is not None:
+                await channel.stop()
+            self._set_state(
+                STATE_DISABLED if self.configured else STATE_UNCONFIGURED)
+            if persist:
+                await self._persist(False)
+
+    async def shutdown(self) -> None:
+        """进程退出前的兜底：不落盘，也不把异常抛给关闭流程。"""
+        try:
+            await self.disable(persist=False)
+        except Exception:
+            logger.exception("关闭飞书通道失败")
+
+    async def _run(self) -> None:
+        task = asyncio.current_task()
+        channel = self._factory(
+            self._config, self._session_store, self._msg_bus,
+            self._on_channel_state)
+        self._channel = channel
+        stop_needed = True
+        try:
+            await channel.start()
+        except asyncio.CancelledError:
+            # 取消由 disable() 统一收尾，避免两处同时等同一个 WS 线程
+            stop_needed = False
+            raise
+        except Exception as exc:
+            logger.exception("飞书通道异常退出")
+            self._set_state(STATE_DISABLED, f"连接失败：{exc}")
+        finally:
+            if stop_needed:
+                # 连接自行失败退出时也要把 WS 线程与队列收干净
+                with suppress(Exception):
+                    await channel.stop()
+            if self._channel is channel:
+                self._channel = None
+            if self._task is task:
+                self._task = None
+
+    def _on_channel_state(self, state: str, error: str) -> None:
+        """把通道状态映射成四种对外状态；可能从 WS 线程调用。"""
+        if state == STATE_CONNECTED:
+            self._set_state(STATE_CONNECTED)
+        elif state == STATE_CONNECTING:
+            self._set_state(STATE_CONNECTING)
+        else:
+            self._set_state(STATE_DISABLED, error)
+
+    def _set_state(self, state: str, error: str = "") -> None:
+        if self._state == state and self._error == error:
+            return
+        self._state = state
+        self._error = error
+        if self._on_change is not None:
+            self._on_change(self.snapshot())
+
+    async def _persist(self, enabled: bool) -> None:
+        if self._manager is not None:
+            await asyncio.to_thread(
+                self._manager.set_feishu_enabled, enabled)

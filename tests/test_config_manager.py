@@ -172,6 +172,22 @@ def test_feishu_app_secret_is_masked_and_restored():
     assert manager.raw["channels"]["feishu"]["appSecret"] == "secret-1"
 
 
+def test_feishu_enabled_switch_is_persisted_without_touching_credentials():
+    doc = json.loads(json.dumps(MINIMAL))
+    doc["channels"] = {"feishu": {"appId": "cli-1", "appSecret": "secret-1"}}
+    manager = ConfigManager(current().config)
+    manager.load()
+    manager.save(doc)
+
+    manager.set_feishu_enabled(True)
+
+    saved = json.loads(current().config.read_text(encoding="utf-8"))
+    assert saved["channels"]["feishu"]["enabled"] is True
+    assert saved["channels"]["feishu"]["appSecret"] == "secret-1"
+    assert manager.raw["channels"]["feishu"]["enabled"] is True
+    assert manager.masked_doc()["channels"]["feishu"]["enabled"] is True
+
+
 def test_reset_backs_up_broken_file_and_writes_skeleton():
     _write("{ not json")
     manager = ConfigManager(current().config)

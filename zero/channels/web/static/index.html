@@ -555,6 +555,19 @@
   }
   .top-btn:hover:not(:disabled) { color: var(--text-1); }
   .top-btn .icon { width: 13px; height: 13px; }
+  .chan-dot {
+    flex: 0 0 auto;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--text-3);
+  }
+  .chan-dot.on { background: var(--accent); }
+  .chan-dot.wait { background: var(--warn); animation: dot-pulse 1.4s ease-in-out infinite; }
+  .chan-dot.bad { background: var(--danger); }
+  @keyframes dot-pulse {
+    50% { opacity: .3; }
+  }
   .theme-toggle {
     min-width: 76px;
     min-height: 30px;
@@ -1890,6 +1903,7 @@
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18.5 7H20M4 17h4M13.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="10.5" cy="17" r="2.2"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
   <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.4 19 6.2v5.5c0 4.2-2.9 7.8-7 9.1-4.1-1.3-7-4.9-7-9.1V6.2Z"/><path d="m8.9 12 2.1 2.1 4.1-4.1"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4 6.2A2.2 2.2 0 0 1 6.2 4h11.6A2.2 2.2 0 0 1 20 6.2v7.6a2.2 2.2 0 0 1-2.2 2.2H10l-4.2 3.2v-3.2H6.2A2.2 2.2 0 0 1 4 13.8Z"/></symbol>
 </svg>
 
 <div id="splash">
@@ -1935,6 +1949,10 @@
         <button id="skills-btn" class="top-btn" title="查看内置技能">
           <svg class="icon"><use href="#i-spark"/></svg>
           <span>技能</span>
+        </button>
+        <button id="feishu-btn" class="top-btn" title="飞书通道状态与开关">
+          <span id="feishu-dot" class="chan-dot"></span>
+          <span>飞书</span>
         </button>
         <button id="permission-btn" class="top-btn" title="管理权限">
           <svg class="icon"><use href="#i-shield"/></svg>
@@ -2105,6 +2123,10 @@
     permissionError: "",
     permissionOp: "",
     permissionDraft: { root: "", unsandbox: "" },
+    // 飞书通道
+    feishu: null,
+    feishuBusy: false,
+    feishuError: "",
   };
 
   function escapeHtml(value) {
@@ -3268,6 +3290,9 @@
       case "permission":
         onPermission(msg);
         break;
+      case "feishu":
+        onFeishu(msg);
+        break;
       case "notice":
         toast(msg.text || "", msg.level || "info");
         if (msg.level === "error") {
@@ -3372,6 +3397,7 @@
   };
   $("#tasks-btn").onclick = openTasksModal;
   $("#skills-btn").onclick = openSkillsModal;
+  $("#feishu-btn").onclick = openFeishuModal;
   $("#permission-btn").onclick = openPermissionModal;
   $("#config-btn").onclick = openConfigModal;
   $("#config-restart").onclick = () => beginRestart();
@@ -4503,6 +4529,10 @@
       "appSecret",
       cfgSecret(doc, ["channels", "feishu", "appSecret"])));
     feishu.appendChild(feishuGrid);
+    cfgCheckbox(
+      feishu,
+      "启用飞书通道（保存并重启后自动连接；运行期开关在顶部「飞书」）",
+      doc, ["channels", "feishu", "enabled"], false);
     body.appendChild(feishu);
 
     const web = el("div", "cfg-sub");
@@ -4860,6 +4890,114 @@
     body.appendChild(foot);
 
     body.scrollTop = scrollTop;
+  }
+
+  // ------------------------------------------------------------------
+  // 飞书通道
+  // ------------------------------------------------------------------
+  const FEISHU_STATE_TEXT = {
+    unconfigured: "未配置",
+    connecting: "连接中",
+    connected: "已连接",
+    disabled: "已关闭",
+  };
+
+  function reflectFeishu(snap) {
+    const dot = $("#feishu-dot");
+    if (!dot) return;
+    dot.className = "chan-dot";
+    if (!snap) return;
+    if (snap.state === "connected") dot.classList.add("on");
+    else if (snap.state === "connecting") dot.classList.add("wait");
+    else if (snap.error) dot.classList.add("bad");
+  }
+
+  function onFeishu(msg) {
+    if (msg.snapshot) state.feishu = msg.snapshot;
+    state.feishuBusy = false;
+    state.feishuError = msg.ok === false ? (msg.error || "操作失败") : "";
+    reflectFeishu(state.feishu);
+    if (state.modalKind === "feishu") renderFeishuModal();
+  }
+
+  function feishuSend(op) {
+    if (state.feishuBusy) return;
+    state.feishuBusy = true;
+    state.feishuError = "";
+    const note = $("#feishu-status-note");
+    if (note) note.textContent = "处理中…";
+    if (!send({ type: "feishu", op })) {
+      state.feishuBusy = false;
+      state.feishuError = "未连接到后端，开关未生效";
+      if (state.modalKind === "feishu") renderFeishuModal();
+    }
+  }
+
+  function openFeishuModal() {
+    state.modalKind = "feishu";
+    state.feishuBusy = false;
+    state.feishuError = "";
+    openModal("飞书通道", "", `<button id="modal-close">关闭</button>`);
+    renderFeishuModal();
+    send({ type: "feishu" });
+  }
+
+  function renderFeishuModal() {
+    const body = $("#modal-body");
+    const snap = state.feishu;
+    body.innerHTML = "";
+    if (!snap) {
+      const loading = el("div", "perm-empty");
+      loading.textContent = "正在读取通道状态…";
+      body.appendChild(loading);
+      return;
+    }
+
+    const status = el("div", "perm-status");
+    status.appendChild(permStatusRow(
+      "凭据", snap.configured ? "已配置" : "未配置",
+      snap.configured ? "ok" : "bad"));
+    status.appendChild(permStatusRow(
+      "通道状态", FEISHU_STATE_TEXT[snap.state] || "未知",
+      snap.state === "connected" ? "ok" : (snap.error ? "bad" : "")));
+    body.appendChild(status);
+
+    if (state.feishuError || snap.error) {
+      const err = el("div", "perm-error");
+      err.textContent = state.feishuError || snap.error;
+      body.appendChild(err);
+    }
+    if (snap.state === "unconfigured") {
+      const warn = el("div", "perm-warn");
+      warn.textContent = "还没有飞书凭据：请先在「配置 → channels → feishu」"
+        + "填写 appId 与 appSecret，保存并重启后再启用。";
+      body.appendChild(warn);
+    }
+
+    const foot = el("div", "config-foot");
+    const active = snap.state === "connecting" || snap.state === "connected";
+    const toggle = el("button", active ? "" : "primary");
+    toggle.type = "button";
+    toggle.textContent = active ? "停用" : "启用";
+    toggle.disabled = state.feishuBusy || snap.state === "unconfigured";
+    toggle.onclick = () => feishuSend(active ? "disable" : "enable");
+    const refresh = el("button");
+    refresh.type = "button";
+    refresh.textContent = "刷新";
+    refresh.disabled = state.feishuBusy;
+    refresh.onclick = () => {
+      state.feishuError = "";
+      send({ type: "feishu" });
+    };
+    const note = el("span", "setup-status");
+    note.id = "feishu-status-note";
+    note.textContent = state.feishuBusy
+      ? "处理中…"
+      : "开关会写入 channels.feishu.enabled，立即生效";
+    foot.appendChild(toggle);
+    foot.appendChild(refresh);
+    foot.appendChild(note);
+    body.appendChild(foot);
   }
 
   function renderConfigModal() {

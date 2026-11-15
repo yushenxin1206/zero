@@ -31,6 +31,9 @@ Protocol (JSON text frames):
     {"type": "permission", "op": "remove-root", "path": "/abs/path"}
     {"type": "permission", "op": "add-unsandbox", "name": "brew"}
     {"type": "permission", "op": "remove-unsandbox", "name": "brew"}
+    {"type": "feishu"}                            channel status
+    {"type": "feishu", "op": "enable"}            connect now
+    {"type": "feishu", "op": "disable"}           disconnect now
 
   server → client
     {"type": "state", ...}         current session / sessions / model / setup
@@ -42,13 +45,14 @@ Protocol (JSON text frames):
     {"type": "skills", ...}        skill metadata + skill.md content
     {"type": "config", ...}        masked config / save result / test result
     {"type": "permission", ...}    permission snapshot / mutation result
+    {"type": "feishu", ...}        channel snapshot / mutation / state push
     {"type": "notice", "level": "info"|"error", "text": "..."}
 """
 import asyncio
 import json
 import logging
 import secrets
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlsplit
 
 from websockets.asyncio.server import ServerConnection, serve
@@ -65,6 +69,9 @@ from zero.scheduler.models import SCHEDULED_TASK_PREFIX
 from zero.scheduler.store import SchedulerStore
 from zero.session.store import SessionStore
 
+if TYPE_CHECKING:
+    from zero.channels.feishu.control import FeishuController
+
 logger = logging.getLogger(__name__)
 
 CHANNEL = CHANNEL_WEB
@@ -79,8 +86,13 @@ class WebChannel(BusChannel):
                  scheduler_store: SchedulerStore, data_paths: DataPaths,
                  permission: PermissionState,
                  config: Config | None = None,
-                 config_manager: ConfigManager | None = None):
+                 config_manager: ConfigManager | None = None,
+                 feishu: "FeishuController | None" = None):
         super().__init__(msg_bus)
+        # 飞书开关由控制层持有；Web 只做协议转发与状态推送
+        self.feishu = feishu
+        if feishu is not None:
+            feishu.bind(self._feishu_changed)
         self.service = ChannelService(
             CHANNEL, msg_bus=msg_bus, session_store=session_store,
             scheduler_store=scheduler_store, data_paths=data_paths,
@@ -305,6 +317,10 @@ class WebChannel(BusChannel):
         self._clients.add(ws)
         try:
             await self._send(ws, {"type": "state", **await self._state()})
+            if self.feishu is not None:
+                # 顶栏状态点不用等用户点开面板才知道当前连接状态
+                await self._send(ws, {
+                    "type": "feishu", "snapshot": self.feishu.snapshot()})
             async for raw in ws:
                 try:
                     data = json.loads(raw)
@@ -409,6 +425,8 @@ class WebChannel(BusChannel):
             await self._on_config(ws, data)
         elif kind == "permission":
             await self._on_permission(ws, data)
+        elif kind == "feishu":
+            await self._on_feishu(ws, data)
         else:
             logger.warning("unknown web message type: %r", kind)
 
@@ -559,6 +577,65 @@ class WebChannel(BusChannel):
         except Exception:  # noqa: BLE001 - 快照失败只影响回显，不掩盖操作结果
             logger.exception("permission snapshot failed")
             return None
+
+    async def _on_feishu(
+            self, ws: ServerConnection, data: dict[str, Any]) -> None:
+        """飞书通道运行期开关：状态读取 / 启用 / 停用。"""
+        controller = self.feishu
+        if controller is None:
+            await self._send(ws, {
+                "type": "feishu", "ok": False,
+                "error": "当前进程未接入飞书通道",
+                "snapshot": {
+                    "configured": False, "state": "unconfigured", "error": ""},
+            })
+            return
+        op = str(data.get("op") or "read")
+        try:
+            if op == "enable":
+                await controller.enable()
+            elif op == "disable":
+                await controller.disable()
+            elif op != "read":
+                raise ValueError(f"未知的飞书操作：{op}")
+        except ValueError as exc:
+            await self._send(ws, {
+                "type": "feishu", "ok": False, "error": str(exc),
+                "snapshot": controller.snapshot(),
+            })
+            return
+        except OSError as exc:
+            logger.exception("feishu switch persist failed")
+            await self._send(ws, {
+                "type": "feishu", "ok": False,
+                "error": f"飞书开关写入失败：{exc}",
+                "snapshot": controller.snapshot(),
+            })
+            return
+        await self._send(ws, {
+            "type": "feishu", "ok": True,
+            "snapshot": controller.snapshot(),
+        })
+
+    def _feishu_changed(self, snapshot: dict[str, Any]) -> None:
+        """控制器状态变化 → 广播。
+
+        可能从 WS 线程回调，必须经 ``call_soon_threadsafe`` 回到事件循环。
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+
+        def _push() -> None:
+            try:
+                asyncio.create_task(self._broadcast({
+                    "type": "feishu", "op": "state",
+                    "snapshot": snapshot,
+                }))
+            except RuntimeError:
+                pass
+
+        loop.call_soon_threadsafe(_push)
 
     async def _on_send(self, ws: ServerConnection, data: dict[str, Any]) -> None:
         text = str(data.get("text") or "").strip()

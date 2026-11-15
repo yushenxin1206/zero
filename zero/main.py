@@ -9,6 +9,7 @@ from zero.core.hooks import HookChain, Hooks
 from zero.core.loop import AgentLoop, TurnFinishedHook
 from zero.channels.cli import CLIChannel
 from zero.channels.feishu import FeishuChannel
+from zero.channels.feishu.control import FeishuController
 from zero.maintenance import MaintenanceEngine
 from zero.scheduler import Scheduler
 from zero.subagent import SubagentManager
@@ -189,8 +190,16 @@ def start_feishu(msg_bus: MessageBus, config: Config,
         return None
     channel = FeishuChannel(
         config=feishu_cfg, session_store=session_store, msg_bus=msg_bus)
-    # channel.start() 内部启动 WS 线程收消息 + bus sender 循环发回复
-    return asyncio.create_task(_guard(channel.start(), CHANNEL_FEISHU))
+
+    async def _serve() -> None:
+        try:
+            # channel.start() 内部建立 WS 收消息 + bus sender 循环发回复
+            await channel.start()
+        finally:
+            # headless 退出（Ctrl+C / CLI 退出）时也要真正断开长连接
+            await channel.stop()
+
+    return asyncio.create_task(_guard(_serve(), CHANNEL_FEISHU))
 
 
 async def run(config: Config, data_paths: DataPaths, *,
@@ -246,10 +255,9 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
 
         core = build_core(config, data_paths)
         background = start_background(core)
-        if with_feishu:
-            task = start_feishu(core.msg_bus, config, core.session_store)
-            if task is not None:
-                background.append(task)
+        feishu_cfg = config.channels.feishu
+        feishu = FeishuController(
+            feishu_cfg, core.session_store, core.msg_bus, config_manager)
 
         cli_task = None
         if with_cli:
@@ -260,7 +268,7 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
             msg_bus=core.msg_bus, session_store=core.session_store,
             scheduler_store=core.scheduler_store, data_paths=data_paths,
             permission=core.permission, config=config,
-            config_manager=config_manager)
+            config_manager=config_manager, feishu=feishu)
         holder["stop"] = channel.stop_event
         if holder.get("closed"):
             channel.stop_event.set()
@@ -279,6 +287,8 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
                 return
             holder.update(
                 ready=True, wsUrl=channel.ws_url, token=channel.token)
+            # 配置里开着（或本次显式 --feishu）就建连；界面开关随时可改
+            await feishu.start_initial(with_feishu or feishu_cfg.enabled)
 
             done, _ = await asyncio.wait(
                 tasks, return_when=asyncio.FIRST_COMPLETED)
@@ -291,6 +301,7 @@ def run_web_desktop(config: Config, data_paths: DataPaths,
         finally:
             # 窗口关闭后必须等所有任务真正收尾再关闭事件循环，
             # 否则会留下 "Task was destroyed but it is pending" 告警
+            await feishu.shutdown()
             pending = background + [core_task, serve_task]
             if cli_task is not None:
                 pending.append(cli_task)
@@ -379,16 +390,19 @@ def main():
             return 1
         else:
             feishu_cfg = config.channels.feishu
-            if args.feishu and not (feishu_cfg.app_id.strip()
-                                    and feishu_cfg.app_secret.strip()):
+            wants_feishu = args.feishu or feishu_cfg.enabled
+            configured = bool(
+                feishu_cfg.app_id.strip() and feishu_cfg.app_secret.strip())
+            if wants_feishu and not configured:
                 print("未配置飞书 appId / appSecret，跳过 feishu 通道",
                       file=sys.stderr)
-                if not args.cli:
+                # 显式 --feishu 却缺凭据仍按原行为退出；只是配置里开着则
+                # 继续启动界面，让用户在「飞书」面板里看到「未配置」并补配置
+                if args.feishu and not args.cli:
                     return 1
             asyncio.run(run(
                 config, data_paths, cli=args.cli,
-                feishu=args.feishu and bool(
-                    feishu_cfg.app_id.strip() and feishu_cfg.app_secret.strip())))
+                feishu=wants_feishu and configured))
     except KeyboardInterrupt:
         pass
     return 0

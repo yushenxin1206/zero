@@ -440,6 +440,24 @@ class ConfigManager:
             return None, [problem]
         return cfg, []
 
+    def set_feishu_enabled(self, enabled: bool) -> None:
+        """只改飞书通道开关并落盘，供运行期开关使用。
+
+        不要求 UI 提交整份配置：避免把界面上未打开的其他字段（尤其是密钥
+        占位）带进回写路径。校验与原子写入仍复用 ``save``。
+        """
+        doc = copy.deepcopy(self.raw)
+        channels = doc.get('channels')
+        if not isinstance(channels, dict):
+            channels = {}
+            doc['channels'] = channels
+        feishu = channels.get('feishu')
+        if not isinstance(feishu, dict):
+            feishu = {}
+            channels['feishu'] = feishu
+        feishu['enabled'] = bool(enabled)
+        self.save(doc)
+
     def save(self, doc: dict[str, Any]) -> Config:
         """校验通过后原子写盘（0600）。保存不改变本进程正在使用的配置。"""
         if not isinstance(doc, dict):
