@@ -759,11 +759,14 @@
     animation: fade-up .3s var(--ease) both;
   }
   .msg.user { justify-content: flex-end; }
-  /* 时间戳只做锚点：绝对定位在气泡下方，不参与正文排版 */
+  /* 时间与 token 用量共用一行页脚，绝对定位不参与正文排版 */
   .msg { position: relative; }
-  .msg-time {
+  .msg-meta {
     position: absolute;
     bottom: -17px;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
     font-size: 10.5px;
     line-height: 1;
     letter-spacing: .02em;
@@ -771,9 +774,11 @@
     opacity: .78;
     pointer-events: none;
     user-select: none;
+    white-space: nowrap;
   }
-  .msg.user .msg-time { right: 0; }
-  .msg.assistant .msg-time { left: 41px; }
+  .msg.user .msg-meta { right: 0; }
+  .msg.assistant .msg-meta { left: 41px; }
+  .msg-usage { font-family: var(--mono); }
   .avatar {
     width: 28px; height: 28px;
     flex: 0 0 28px;
@@ -3020,18 +3025,37 @@
       + "-" + date.getHours() + "-" + date.getMinutes();
   }
 
+  function stampLabel(date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    const time = pad(date.getHours()) + ":" + pad(date.getMinutes());
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+      && date.getMonth() === now.getMonth()
+      && date.getDate() === now.getDate();
+    if (sameDay) return time;
+    return date.getFullYear() + "-" + pad(date.getMonth() + 1) + "-"
+      + pad(date.getDate()) + " " + time;
+  }
+
+  function ensureMeta(row) {
+    let meta = row.querySelector(".msg-meta");
+    if (!meta) {
+      meta = el("div", "msg-meta");
+      row.appendChild(meta);
+    }
+    return meta;
+  }
+
   function appendStamp(row, at) {
     const raw = Number(at);
     const date = new Date(Number.isFinite(raw) && raw > 0 ? raw : Date.now());
     const key = stampKey(date);
     if (key === state.lastStampKey) return;
     state.lastStampKey = key;
-    const stamp = el("div", "msg-time");
-    stamp.textContent =
-      String(date.getHours()).padStart(2, "0") + ":"
-      + String(date.getMinutes()).padStart(2, "0");
+    const stamp = el("span", "msg-time");
+    stamp.textContent = stampLabel(date);
     stamp.title = date.toLocaleString("zh-CN", { hour12: false });
-    row.appendChild(stamp);
+    ensureMeta(row).appendChild(stamp);
   }
 
   function addUser(text, at) {
@@ -3120,7 +3144,9 @@
         });
       });
       if ((m.content || "").trim()) {
-        current.entries.push({ kind: "text", at, text: m.content });
+        current.entries.push({
+          kind: "text", at, text: m.content, usage: m.usage || null,
+        });
       }
     });
 
@@ -3236,6 +3262,9 @@
       return part;
     });
     appendGrouped(parts, nodes);
+    const usage = turn.entries.reduce(
+      (last, entry) => entry.usage || last, null);
+    if (usage) addUsage(row, usage);
     scrollBottom(false);
     return row;
   }
@@ -3461,13 +3490,13 @@
     active.extras.appendChild(box);
   }
 
-  function addUsage(active, usage) {
-    if (!usage) return;
-    const box = el("div", "usage");
+  function addUsage(row, usage) {
+    if (!row || !usage) return;
+    const box = el("span", "msg-usage");
     box.textContent =
       `tokens ${usage.promptTokens || 0} in · ${usage.completionTokens || 0} out · ` +
       `${usage.totalTokens || 0} total`;
-    active.extras.appendChild(box);
+    ensureMeta(row).appendChild(box);
   }
 
   function addApprovalCard(active, req) {
@@ -3710,7 +3739,7 @@
           active.parts.appendChild(part);
         }
         if (ev.cancelled) addMarker(active, "已终止（以上为已生成内容）");
-        if (ev.tokenUsage) addUsage(active, ev.tokenUsage);
+        if (ev.tokenUsage) addUsage(active.row, ev.tokenUsage);
         finalize(ev.turnId);
         break;
       }

@@ -231,6 +231,9 @@ class WebChannel(BusChannel):
                     "name": call.function.name,
                     "arguments": (call.function.arguments or "")[:400],
                 } for call in calls]
+            if msg.body.token_usage is not None:
+                item["usage"] = msg.body.token_usage.model_dump(
+                    mode="json", by_alias=True)
             messages.append(item)
         # 只回显仍有可见消息的轮次：崩溃残留轮次会被 load_history 整轮
         # 丢弃，但审批审计文件独立存在；不过滤就会变成无主审批卡
