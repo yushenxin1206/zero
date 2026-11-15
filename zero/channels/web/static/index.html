@@ -456,6 +456,10 @@
     background: var(--danger-soft);
   }
   .session.unread::after { right: 56px; }
+  @media (hover: none) {
+    /* 触屏没有悬停：操作入口常驻，避免无法改名/删除 */
+    .session-actions { opacity: 1; pointer-events: auto; }
+  }
   button.danger {
     color: var(--danger-ink);
     background: var(--danger-soft);
