@@ -553,15 +553,6 @@
     border-color: var(--accent-line);
     background: var(--accent-soft);
   }
-  .model-badge {
-    max-width: 190px;
-    color: var(--info);
-    border-color: var(--info-line);
-    background: var(--info-soft);
-    font: 500 11.5px/1.4 var(--mono);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  }
-  .model-badge:hover:not(:disabled) { background: var(--info-soft-strong); border-color: var(--info); }
 
   /* ================= message stream ================= */
   #messages {
@@ -1074,10 +1065,10 @@
     max-width: var(--read-w);
     margin: 0 auto;
     display: flex;
-    gap: 9px;
-    align-items: flex-end;
-    padding: 6px;
-    border-radius: var(--r-lg);
+    flex-direction: column;
+    gap: 2px;
+    padding: 12px 14px 8px;
+    border-radius: var(--r-xl);
     border: 1px solid var(--line);
     background: var(--surface-1);
     box-shadow: var(--sh-1);
@@ -1090,11 +1081,12 @@
     box-shadow: 0 0 0 3px var(--focus-glow), var(--sh-1);
   }
   #input {
-    flex: 1;
+    flex: none;
+    width: 100%;
     resize: none;
-    min-height: 40px;
+    min-height: 52px;
     max-height: 200px;
-    padding: 8px 10px;
+    padding: 0 2px 4px;
     border: none;
     background: transparent;
     color: var(--text-1);
@@ -1103,30 +1095,42 @@
     outline: none;
   }
   #input::placeholder { color: var(--text-3); }
-  #cwd-btn {
-    flex: 0 0 auto;
-    align-self: flex-end;
-    display: inline-flex;
+  .composer-bar {
+    display: flex;
     align-items: center;
     gap: 6px;
-    max-width: 210px;
-    height: 38px;
-    padding: 0 10px;
-    border-radius: var(--r-md);
-    border: 1px solid var(--line);
-    background: var(--surface-2);
+    min-height: 34px;
+  }
+  .composer-spacer { flex: 1; min-width: 8px; }
+  .ghost-select {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+    max-width: 240px;
+    height: 32px;
+    padding: 0 6px;
+    border: 1px solid transparent;
+    border-radius: var(--r-sm);
+    background: transparent;
     color: var(--text-2);
-    font-size: 12px;
+    font-size: 12.5px;
     white-space: nowrap;
   }
-  #cwd-btn:hover:not(:disabled) {
-    border-color: var(--accent-line);
-    color: var(--accent);
-    background: var(--accent-soft);
+  .ghost-select:hover:not(:disabled) {
+    background: var(--hover);
+    color: var(--text-1);
   }
-  #cwd-btn .icon { flex: 0 0 auto; width: 14px; height: 14px; }
-  #cwd-label { overflow: hidden; text-overflow: ellipsis; }
-  #cwd-btn.unset { color: var(--text-3); border-style: dashed; }
+  .ghost-select .icon {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    color: var(--text-3);
+  }
+  .ghost-select .chevron { width: 12px; height: 12px; opacity: .75; }
+  .ghost-select span { overflow: hidden; text-overflow: ellipsis; }
+  #cwd-btn.unset { color: var(--text-3); }
+  #model-btn { max-width: 220px; }
   .cwd-actions {
     display: flex;
     align-items: center;
@@ -1139,28 +1143,37 @@
   .cwd-status { min-height: 18px; margin-top: 8px; font-size: 12px; color: var(--danger); }
   #send, #stop {
     flex: 0 0 auto;
-    height: 38px;
-    min-width: 38px;
     justify-content: center;
     border-radius: var(--r-md);
   }
   #send {
-    padding: 0 14px;
+    width: 34px;
+    height: 34px;
+    min-width: 34px;
+    padding: 0;
+    background: var(--accent-soft);
+    border-color: transparent;
+    color: var(--accent);
+  }
+  #send:hover:not(:disabled) {
     background: var(--accent);
     border-color: var(--accent);
     color: var(--accent-ink);
-    font-weight: 600;
-    font-size: 13px;
   }
-  #send:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
-  #send:disabled { background: var(--surface-3); border-color: var(--line); color: var(--text-3); opacity: 1; }
+  #send:disabled {
+    background: var(--surface-3);
+    border-color: transparent;
+    color: var(--text-3);
+    opacity: 1;
+  }
   #send .icon { width: 16px; height: 16px; stroke-width: 2.1; }
   #stop {
-    padding: 0 12px;
+    height: 32px;
+    padding: 0 10px;
     color: var(--danger);
     border-color: var(--danger-line);
     background: var(--danger-soft);
-    font-size: 12.5px;
+    font-size: 12px;
     animation: fade-in .18s var(--ease);
   }
   #stop:hover:not(:disabled) { background: var(--danger-soft-strong); }
@@ -1169,7 +1182,7 @@
   #jump {
     position: absolute;
     right: 34px;
-    bottom: 104px;
+    bottom: 156px;
     z-index: 4;
     width: 34px; height: 34px;
     padding: 0;
@@ -1730,6 +1743,7 @@
     #messages { padding: 22px 20px 12px; }
     #composer { padding: 12px 20px 16px; }
     #cwd-btn { max-width: 150px; }
+    #model-btn { max-width: 160px; }
     #topbar { padding: 11px 20px; }
     #jump { right: 22px; }
   }
@@ -1753,6 +1767,7 @@
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5M6.5 10.5 12 5l5.5 5.5"/></symbol>
   <symbol id="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2"/></symbol>
   <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+  <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
   <symbol id="i-down" viewBox="0 0 24 24"><path d="M12 5v14M6.5 13.5 12 19l5.5-5.5"/></symbol>
   <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.6-5.9"/><path d="M20 4v4.5h-4.5"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
@@ -1815,10 +1830,6 @@
           <svg class="icon"><use href="#i-sliders"/></svg>
           <span>配置</span>
         </button>
-        <button id="model-btn" class="model-badge" title="切换模型">
-          <svg class="icon"><use href="#i-cpu"/></svg>
-          <span id="model-name">model</span>
-        </button>
       </div>
     </header>
 
@@ -1837,19 +1848,26 @@
 
     <div id="composer">
       <div class="composer-inner">
-        <button id="cwd-btn" class="cwd-chip unset" type="button" title="选择会话工作目录">
-          <svg class="icon"><use href="#i-folder"/></svg>
-          <span id="cwd-label">选择工作目录</span>
-        </button>
         <textarea id="input" rows="1" placeholder="输入消息…" autocomplete="off" spellcheck="false"></textarea>
-        <button id="stop" class="hidden" title="终止当前回复 (Esc)">
-          <svg class="icon"><use href="#i-stop"/></svg>
-          <span>停止</span>
-        </button>
-        <button id="send" title="发送 (Enter)">
-          <svg class="icon"><use href="#i-send"/></svg>
-          <span>发送</span>
-        </button>
+        <div class="composer-bar">
+          <button id="cwd-btn" class="ghost-select unset" type="button" title="选择会话工作目录">
+            <svg class="icon"><use href="#i-folder"/></svg>
+            <span id="cwd-label">选择工作目录</span>
+            <svg class="icon chevron"><use href="#i-chevron-down"/></svg>
+          </button>
+          <span class="composer-spacer"></span>
+          <button id="model-btn" class="ghost-select" title="切换模型">
+            <span id="model-name">model</span>
+            <svg class="icon chevron"><use href="#i-chevron-down"/></svg>
+          </button>
+          <button id="stop" class="hidden" title="终止当前回复 (Esc)">
+            <svg class="icon"><use href="#i-stop"/></svg>
+            <span>停止</span>
+          </button>
+          <button id="send" title="发送 (Enter)" aria-label="发送">
+            <svg class="icon"><use href="#i-send"/></svg>
+          </button>
+        </div>
       </div>
     </div>
   </main>

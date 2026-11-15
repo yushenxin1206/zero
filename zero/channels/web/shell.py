@@ -24,6 +24,7 @@ from typing import Any, Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 STATIC_PATH = Path(__file__).with_name("static") / "index.html"
+APP_ICON_PATH = Path(__file__).with_name("static") / "zero-icon.png"
 
 THEMES = ("light", "dark")
 DEFAULT_THEME = "light"
@@ -102,7 +103,7 @@ class _BootstrapApi:
         directory = start if start and Path(start).is_dir() else ""
         try:
             result = self._window.create_file_dialog(
-                webview.FOLDER_DIALOG, directory=directory)
+                webview.FileDialog.FOLDER, directory=directory)
         except Exception:  # noqa: BLE001 - 对话框失败不能拖垮窗口
             logger.warning("folder picker failed", exc_info=True)
             return ""
@@ -131,6 +132,26 @@ def _relaunch() -> bool:
         return False
     logger.info("restarted: %s", cmd)
     return True
+
+
+def _apply_macos_icon(path: Path) -> None:
+    """把当前进程的 Dock 图标换成 app 图标（macOS only）。
+
+    非打包运行没有 .app bundle，Dock 默认是 Python 图标；这里用 PyObjC
+    直接设置共享 NSApplication 的图标。pywebview 的 ``icon`` 参数只支持
+    GTK/QT，macOS 必须走这条路。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSApplication, NSImage
+    except ImportError:  # pragma: no cover - pywebview 的 macOS 依赖已包含 PyObjC
+        return
+    image = NSImage.alloc().initWithContentsOfFile_(str(path))
+    if image is None:
+        logger.warning("app icon not found: %s", path)
+        return
+    NSApplication.sharedApplication().setApplicationIconImage_(image)
 
 
 def run_desktop(
@@ -210,4 +231,5 @@ def run_desktop(
                     time.sleep(0.4)
                     os._exit(0)
 
+    _apply_macos_icon(APP_ICON_PATH)
     webview.start(func=worker, private_mode=False)

@@ -208,6 +208,24 @@ def test_environment_note_follows_settled_capability():
     assert "The kernel sandbox is unavailable here" in prompt(False)
 
 
+def test_channel_hint_follows_channel():
+    """提示词不仅给渠道名，还说明该渠道的渲染方式。"""
+    cases = (
+        ("web", "desktop chat UI"),
+        ("cli", "Terminal"),
+        ("feishu", "Chat app"),
+        ("custom", "plain text"),
+    )
+    for channel, needle in cases:
+        ctx = Context(
+            session_id=f"s-{channel}", channel=channel,
+            session_store=make_store(), data_paths=make_data_paths(),
+            working_dir=None, sandbox_available=True)
+        prompt = ctx.system_prompt
+        assert f"The current channel is `{channel}`." in prompt
+        assert needle in prompt, channel
+
+
 def test_no_working_dir_omits_project_memory():
     """未选择工作目录：提示词明说未设置，且不渲染项目记忆段。"""
     ctx = Context(
