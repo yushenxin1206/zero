@@ -13,6 +13,7 @@ the backend then cancels its tasks and returns, which lets ``webview.start``
 finish and the process exit.
 """
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -60,14 +61,21 @@ class _BootstrapApi:
             "error": self._holder.get("error", ""),
         }
 
-    def restart_app(self) -> bool:
+    def restart_app(self) -> dict[str, Any]:
         """保存配置后的重启入口：只停后端，窗口由 worker 在收尾时关闭。
 
         千万不能在 js_api 线程里同步关窗：那会先结束 GUI 循环，让后端在
         无窗口状态下继续收尾，旧进程既退不掉、端口也没释放，表现为
         「点了重启窗口还在但没响应」。正确顺序由 worker 统一执行：
         后端收敛 → 拉起新进程 → 关窗 → 退出旧进程。
+
+        返回值带失败原因：预检不通过时后端不停止，界面可以留在原地把
+        原因说清楚，而不是让窗口直接消失。
         """
+        cmd, error = _launch_command()
+        if not cmd:
+            logger.error("restart preflight failed: %s", error)
+            return {"ok": False, "error": error}
         self._holder["restart"] = True
         loop = self._holder.get("loop")
         stop = self._holder.get("stop")
@@ -75,7 +83,7 @@ class _BootstrapApi:
             loop.call_soon_threadsafe(stop.set)
         else:
             self._holder["closed"] = True
-        return True
+        return {"ok": True, "error": ""}
 
     def set_theme(self, theme: str) -> bool:
         """持久化主题选择。file:// 下 localStorage 不可用，所以写文件。"""
@@ -112,26 +120,65 @@ class _BootstrapApi:
         return str(result[0])
 
 
-def _relaunch() -> bool:
-    """按当前启动方式拉起新进程（配置保存后的重启）。
+def _launch_command() -> tuple[list[str], str]:
+    """算出自重启命令；返回 (命令, 失败原因)。
 
-    - ``python -m zero``：argv[0] 是 __main__.py，按模块方式重启；
-    - 控制台脚本 ``zero``：argv[0] 是脚本路径，用当前解释器执行它。
+    预检放在真正停后端之前：启动脚本被移走、解释器不可用这类问题要在
+    窗口还活着的时候告诉用户，而不是关掉应用后才发现起不来。
     """
     args = list(sys.argv[1:])
     entry = sys.argv[0] if sys.argv else ""
     if not entry or entry.endswith("__main__.py"):
-        cmd = [sys.executable, "-m", "zero", *args]
-    else:
-        cmd = [sys.executable, entry, *args]
+        return [sys.executable, "-m", "zero", *args], ""
+    if not Path(entry).exists():
+        return [], f"找不到启动脚本 {entry}"
+    return [sys.executable, entry, *args], ""
+
+
+def _relaunch() -> str:
+    """按当前启动方式拉起新进程；返回空串表示成功，否则是失败原因。"""
+    cmd, error = _launch_command()
+    if not cmd:
+        return error
     try:
         # 后端已退出（端口/句柄已释放），这里拉起的新进程可以直接绑定
         subprocess.Popen(cmd, close_fds=True, start_new_session=True)
-    except OSError:
+    except OSError as exc:
         logger.exception("restart failed: %s", cmd)
-        return False
+        return f"无法启动新进程：{exc}"
     logger.info("restarted: %s", cmd)
-    return True
+    return ""
+
+
+def _finish_after_backend(holder: dict[str, Any], window: Any) -> None:
+    """后端收敛后的重启收尾：拉起新进程 → 关窗 → 退出旧进程。
+
+    顺序是硬约束：关窗排在最后，旧窗口才不会在无后端状态下空转成
+    「假死」。新进程起不来时保留窗口，把原因留在重启遮罩上。
+    """
+    if not holder.get("restart"):
+        return
+    error = _relaunch()
+    if error:
+        logger.error("重启失败：%s", error)
+        # 别让窗口直接消失：把原因留在重启遮罩上，用户至少
+        # 知道发生了什么，可以手动重开而不是以为程序崩了。
+        message = f"重启失败：{error}。请手动关闭窗口并重新启动 zero。"
+        try:
+            window.evaluate_js(
+                "var n=document.getElementById('restarting-text');"
+                f"if(n){{n.textContent={json.dumps(message)};}}")
+        except Exception:  # noqa: BLE001 - 提示失败也不能崩
+            logger.warning("写入重启失败提示失败", exc_info=True)
+        return
+    try:
+        window.destroy()
+    except Exception:  # noqa: BLE001 - 关窗失败也要退出旧进程
+        logger.warning("关闭旧窗口失败", exc_info=True)
+    # 给主线程一点时间处理关窗，再强制退出，避免
+    # GUI 线程与后台线程互相等待导致进程挂着不退
+    time.sleep(0.4)
+    os._exit(0)
 
 
 def run_desktop(
@@ -197,19 +244,7 @@ def run_desktop(
                 loop.run_until_complete(loop.shutdown_asyncgens())
             finally:
                 loop.close()
-                if holder.get("restart"):
-                    # 顺序是硬约束：后端收敛 → 拉起新进程 → 关窗 → 退出旧进程。
-                    # 关窗排在最后，旧窗口才不会在无后端状态下空转成「假死」。
-                    if not _relaunch():
-                        logger.error("重启失败：无法拉起新进程，请手动重新启动 zero")
-                    try:
-                        window.destroy()
-                    except Exception:  # noqa: BLE001 - 关窗失败也要退出旧进程
-                        logger.warning("关闭旧窗口失败", exc_info=True)
-                    # 给主线程一点时间处理关窗，再强制退出，避免
-                    # GUI 线程与后台线程互相等待导致进程挂着不退
-                    time.sleep(0.4)
-                    os._exit(0)
+                _finish_after_backend(holder, window)
 
     webview.start(
         func=worker, private_mode=False, icon=str(APP_ICON_PATH))

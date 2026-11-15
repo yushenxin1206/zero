@@ -1870,6 +1870,13 @@
     font-size: 13px;
     color: var(--text-2);
   }
+  .restart-hint {
+    max-width: 300px;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-3);
+    text-align: center;
+  }
 
   /* ================= animation ================= */
   @keyframes fade-up {
@@ -2091,7 +2098,8 @@
 <div id="restarting" class="hidden">
   <div class="restart-card">
     <div class="dots"><i></i><i></i><i></i></div>
-    <div>正在重启应用…</div>
+    <div id="restarting-text">正在重启应用…</div>
+    <div class="restart-hint">窗口会短暂关闭后自动重新打开，请稍等几秒</div>
   </div>
 </div>
 
@@ -5075,19 +5083,25 @@
       btn.onclick = handler;
       foot.appendChild(btn);
     };
+    if (snap.restartRequired) {
+      // 扫码保存的新凭据只有重启后才生效，这里直接给一键重启
+      addAction("立即重启", true, beginRestart);
+    }
     if (snap.state === "failed") {
-      addAction("重新连接", true, () => feishuSend("reconnect"));
+      addAction("重新连接", !snap.restartRequired,
+        () => feishuSend("reconnect"));
       addAction("去配置", false, () => openConfigModal("feishu"));
       addAction("扫码连接", false, () => openFeishuQrModal());
       addAction("停用", false, () => feishuSend("disable"));
     } else if (snap.state === "unconfigured") {
       addAction("扫码连接", !snap.restartRequired, () => openFeishuQrModal());
-      addAction("去配置", snap.restartRequired, () => openConfigModal("feishu"));
+      addAction("去配置", !snap.restartRequired,
+        () => openConfigModal("feishu"));
     } else if (snap.state === "connecting" || snap.state === "connected") {
       addAction("停用", false, () => feishuSend("disable"));
       addAction("扫码连接", false, () => openFeishuQrModal());
     } else {
-      addAction("启用", true, () => feishuSend("enable"));
+      addAction("启用", !snap.restartRequired, () => feishuSend("enable"));
       addAction("扫码连接", false, () => openFeishuQrModal());
     }
     const refresh = el("button");
@@ -5277,7 +5291,8 @@
       addAction("重新扫码", true, restartQr);
       addAction("取消", false, closeModal);
     } else if (qr.phase === "success") {
-      addAction("关闭", true, closeModal);
+      addAction("立即重启", true, beginRestart);
+      addAction("稍后重启", false, closeModal);
     } else {
       addAction("取消", false, closeModal);
     }
@@ -5495,13 +5510,16 @@
     banner.classList.remove("hidden");
   }
 
-  function restartUnavailable() {
+  function restartUnavailable(reason) {
     $("#restarting").classList.add("hidden");
-    showConfigBanner("配置已保存：请手动关闭并重新启动 zero");
+    const msg = reason
+      ? `无法自动重启：${reason}。请手动关闭并重新启动 zero`
+      : "配置已保存：请手动关闭并重新启动 zero";
+    showConfigBanner(msg);
     if (setupVisible()) {
-      setConfigStatus("setup", "已保存：请手动关闭并重新启动 zero", "err");
+      setConfigStatus("setup", msg, "err");
     } else {
-      toast("配置已保存，请手动重启应用", "error");
+      toast(msg, "error");
     }
   }
 
@@ -5509,12 +5527,18 @@
     $("#restarting").classList.remove("hidden");
     const api = window.pywebview && window.pywebview.api;
     if (!api || !api.restart_app) {
-      restartUnavailable();
+      restartUnavailable("当前窗口不支持自动重启");
       return;
     }
-    Promise.resolve(api.restart_app()).then((ok) => {
-      if (ok === false) restartUnavailable();
-    }).catch(restartUnavailable);
+    Promise.resolve(api.restart_app()).then((res) => {
+      if (res === false) {
+        restartUnavailable("");
+      } else if (res && res.ok === false) {
+        restartUnavailable(res.error || "未知原因");
+      }
+    }).catch((err) => {
+      restartUnavailable(String((err && err.message) || err || "未知原因"));
+    });
   }
 
   /* ================= toast ================= */
