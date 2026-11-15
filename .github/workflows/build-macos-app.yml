@@ -1,0 +1,63 @@
+name: Build macOS app
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build-arm64:
+    # macos-14 起，GitHub 托管的标准 runner 就是 Apple Silicon（arm64）。
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Confirm arm64 runner
+        run: |
+          uname -m
+          test "$(uname -m)" = "arm64"
+
+      - name: Sync dependencies
+        # pyproject 只要求 >=3.12；这里显式用 3.14，既让 uv 装上 arm64 的
+        # 3.14 解释器（构建脚本要拿它内嵌），也让宿主能代编字节码。
+        run: uv sync --frozen --python 3.14
+
+      - name: Build Zero.app
+        run: uv run --frozen python scripts/build_macos_app.py --arch arm64
+
+      - name: Verify architecture
+        run: |
+          lipo -archs dist/arm64/Zero.app/Contents/Resources/python/bin/python3.14
+          lipo -archs dist/arm64/Zero.app/Contents/MacOS/Zero
+          lipo -archs dist/arm64/Zero.app/Contents/Resources/python/bin/python3.14 | grep -qw arm64
+
+      - name: Read version
+        id: version
+        run: |
+          echo "value=$(grep -m1 '^version = ' pyproject.toml | cut -d'"' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Archive app
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/arm64/Zero.app \
+            "Zero-arm64-${{ steps.version.outputs.value }}.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Zero-arm64-${{ steps.version.outputs.value }}
+          path: Zero-arm64-*.zip
+          if-no-files-found: error
+          retention-days: 14
