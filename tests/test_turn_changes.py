@@ -189,10 +189,10 @@ def test_global_entry_cap_groups_overflow_by_parent(tmp_path):
     groups = [item for item in changes if item["change"] == "group"]
     hidden = [item for item in changes if item["change"] == "hidden"]
 
-    assert len(stored) == 60
-    # 超预算的 240 个文件按父目录上提成一行，且不再重复汇总
+    assert len(stored) == 20
+    # 超预算的 280 个文件按父目录上提成一行，且不再重复汇总
     assert len(groups) == 1
-    assert groups[0]["count"] == 240
+    assert groups[0]["count"] == 280
     assert hidden == []
 
 
@@ -201,19 +201,19 @@ def test_single_file_directory_is_not_grouped(tmp_path):
     workspace.mkdir()
     tracker = _tracker(workspace)
     tracker.start()
-    # 先塞满 60 条预算，让后面的文件进入超预算聚合
-    for bucket in range(3):
+    # 两个目录各 10 条刚好填满 20 条预算，让后面的文件进入超预算聚合
+    for bucket in range(2):
         directory = workspace / f"d{bucket}"
         directory.mkdir()
-        for index in range(20):
+        for index in range(10):
             (directory / f"f{index:02d}.py").write_text("x", encoding="utf-8")
-    lonely = workspace / "d3"
+    lonely = workspace / "d2"
     lonely.mkdir()
     alone = lonely / "alone.py"
     alone.write_text("x", encoding="utf-8")
-    crowded = workspace / "d4"
+    crowded = workspace / "d3"
     crowded.mkdir()
-    for index in range(19):
+    for index in range(9):
         (crowded / f"g{index:02d}.py").write_text("x", encoding="utf-8")
 
     changes = tracker.finish()
@@ -222,7 +222,7 @@ def test_single_file_directory_is_not_grouped(tmp_path):
     assert changes[0]["change"] == CHANGE_ADDED
     assert all(item["count"] != 1 for item in groups)
     assert str(alone) in [item["path"] for item in changes]
-    assert any(item["count"] == 19 for item in groups)
+    assert any(item["count"] == 9 for item in groups)
 
 
 def test_venv_prefixed_dir_reports_single_summary(tmp_path):

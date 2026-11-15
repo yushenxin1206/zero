@@ -3657,7 +3657,7 @@
   const CHANGE_LABELS = {
     added: "新增", modified: "修改", deleted: "删除",
   };
-  const CHANGE_GROUP_THRESHOLD = 20;
+  const CHANGE_GROUP_THRESHOLD = 10;
   // 锁文件是有意义的单点变化，即使落在批量目录里也单独列出
   const LOCKFILES = new Set([
     "uv.lock", "poetry.lock", "Pipfile.lock", "package-lock.json",

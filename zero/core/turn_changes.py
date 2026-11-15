@@ -24,9 +24,9 @@ MAX_FILES = 5000
 # 依赖目录最多数这么多个文件，避免把轮末卡在 node_modules 上
 SKIP_COUNT_CAP = 200
 # 单目录超过这个条数就只出一行“目录 + 数量”，不再逐文件展示
-PER_DIR_DETAIL = 20
-# 逐文件明细的总预算；超出的按父目录聚合成少量目录行，再超出只留汇总
-MAX_STORED_ENTRIES = 60
+PER_DIR_DETAIL = 10
+# 逐文件明细的总预算；超出的按父目录聚合成少量目录行
+MAX_STORED_ENTRIES = 20
 # 超预算聚合后最多保留的目录行数，超过就继续向父目录上提
 MAX_OVERFLOW_GROUPS = 10
 GIT_TIMEOUT = 3.0
