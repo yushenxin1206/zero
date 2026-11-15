@@ -60,6 +60,8 @@
     --fill-1: rgba(15, 26, 41, .05);
     --fill-2: rgba(15, 26, 41, .035);
     --fill-3: rgba(15, 26, 41, .08);
+    /* 未连接 / 已关闭的状态点：刻意压到很淡，和绿/橙/红拉开视觉层次 */
+    --dot-idle: rgba(15, 26, 41, .12);
 
     /* 面板毛玻璃与浮层 */
     --glass-sidebar:  linear-gradient(180deg, rgba(255, 255, 255, .94), rgba(246, 248, 251, .96));
@@ -174,6 +176,7 @@
     --fill-1: rgba(255, 255, 255, .06);
     --fill-2: rgba(255, 255, 255, .035);
     --fill-3: rgba(255, 255, 255, .09);
+    --dot-idle: rgba(255, 255, 255, .14);
 
     --glass-sidebar:  linear-gradient(180deg, rgba(32, 39, 48, .94), rgba(24, 30, 38, .96));
     --glass-topbar:   rgba(28, 33, 40, .72);
@@ -560,7 +563,7 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: var(--text-3);
+    background: var(--dot-idle);
   }
   .chan-dot.on { background: var(--accent); }
   .chan-dot.wait { background: var(--warn); animation: dot-pulse 1.4s ease-in-out infinite; }
