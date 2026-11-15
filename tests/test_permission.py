@@ -15,6 +15,7 @@
 """
 import ast
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -27,6 +28,7 @@ import pytest
 from tests.support import current, make_scheduler_store, make_store
 
 import zero.channels as channels_pkg
+from zero.channels.service import ChannelService
 from zero.permission import envelope, seatbelt
 from zero.permission.envelope import PermissionState
 
@@ -232,6 +234,108 @@ def test_validate_workspace(tmp_path, permission):
     not_dir.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError):
         envelope.validate_workspace(str(not_dir), permission.data_paths)
+
+
+def test_policy_edit_roundtrip(tmp_path, permission):
+    """长期策略的增删必须落盘、可撤销，且重复撤销是幂等的。"""
+    root = tmp_path / "shared"
+    root.mkdir()
+    permission.add_extra_root(root)
+    assert envelope._real(root) in permission.extra_roots()
+    assert permission.remove_extra_root(str(root)) is True
+    assert permission.extra_roots() == []
+    assert permission.remove_extra_root(str(root)) is False
+
+    permission.add_unsandbox("brew")
+    assert permission.unsandbox_names() == ["brew"]
+    assert permission.remove_unsandbox(" brew ") is True
+    assert permission.unsandbox_names() == []
+    assert permission.remove_unsandbox("brew") is False
+
+
+def test_permission_admin_validation(tmp_path, permission):
+    """GUI 权限入口沿用工作目录的边界校验，坏输入必须当场拒绝。"""
+    service = ChannelService(
+        "web",
+        msg_bus=MessageBus(),
+        session_store=make_store(),
+        scheduler_store=make_scheduler_store(),
+        data_paths=permission.data_paths,
+        permission=permission,
+    )
+    root = tmp_path / "shared"
+    root.mkdir()
+    assert service.grant_write_root(str(root)) == str(envelope._real(root))
+    assert service.revoke_write_root(str(root)) is True
+
+    with pytest.raises(ValueError):
+        service.grant_write_root("relative/path")
+    with pytest.raises(ValueError):
+        service.grant_write_root(str(envelope.HOME))
+
+    with pytest.raises(ValueError):
+        service.grant_unsandbox("")
+    with pytest.raises(ValueError):
+        service.grant_unsandbox("/usr/bin/brew")
+    with pytest.raises(ValueError):
+        service.grant_unsandbox("brew --verbose")
+
+    assert service.grant_unsandbox(" brew ") == "brew"
+    snapshot = service.permission_snapshot()
+    assert snapshot["unsandbox"] == ["brew"]
+    assert snapshot["extraRoots"] == []
+    assert "sandbox" in snapshot
+
+
+def test_web_permission_protocol(tmp_path, permission):
+    """Web 权限页协议：快照 + 增删 + 坏输入回显错误。"""
+    from zero.channels.web.server import WebChannel
+
+    class FakeWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send(self, text):
+            self.sent.append(json.loads(text))
+
+    async def main():
+        channel = WebChannel(
+            msg_bus=MessageBus(),
+            session_store=make_store(),
+            scheduler_store=make_scheduler_store(),
+            data_paths=permission.data_paths,
+            permission=permission,
+        )
+        ws = FakeWS()
+        root = tmp_path / "shared"
+        root.mkdir()
+
+        await channel._dispatch(ws, {"type": "permission"})
+        read = ws.sent[-1]
+        assert read["type"] == "permission" and read["ok"] is True
+        assert "sandbox" in read["snapshot"]
+
+        await channel._dispatch(ws, {
+            "type": "permission", "op": "add-root", "path": str(root)})
+        added = ws.sent[-1]
+        assert added["ok"] is True
+        assert str(envelope._real(root)) in added["snapshot"]["extraRoots"]
+
+        await channel._dispatch(ws, {
+            "type": "permission", "op": "remove-root", "path": str(root)})
+        assert ws.sent[-1]["snapshot"]["extraRoots"] == []
+
+        await channel._dispatch(ws, {
+            "type": "permission", "op": "add-unsandbox", "name": "brew"})
+        assert ws.sent[-1]["snapshot"]["unsandbox"] == ["brew"]
+
+        await channel._dispatch(ws, {
+            "type": "permission", "op": "add-unsandbox",
+            "name": "/usr/bin/brew"})
+        bad = ws.sent[-1]
+        assert bad["ok"] is False and "命令名" in bad["error"]
+
+    asyncio.run(main())
 
 
 def test_envelope_workspace_optional(permission):

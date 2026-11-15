@@ -25,8 +25,8 @@ from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
 from zero.models import (
-    APPROVAL_TIMEOUT_SECONDS, EVENT_APPROVAL, ApprovalOption, ApprovalRecord,
-    ApprovalRequest, ApprovalStatus, StreamEvent)
+    APPROVAL_TIMEOUT_SECONDS, CHANNEL_WEB, EVENT_APPROVAL, ApprovalOption,
+    ApprovalRecord, ApprovalRequest, ApprovalStatus, StreamEvent)
 from zero.permission import envelope
 from zero.permission.envelope import PermissionState
 from zero.utils.file import require_absolute_path
@@ -52,8 +52,6 @@ _EXPAND = (
 # tests/test_permission.py::test_guard_covers_all_file_tools 会因此变红。
 HANDLED_TOOLS = ("shell", "read", "write", "edit")
 
-_TIMEOUT_HINT = "已按拒绝处理。需要长期放行请执行 zero-permission add-root <path>"
-
 _DEGRADED_UNATTENDED = (
     "permission: 本机内核沙箱不可用（探针未通过），且当前渠道无人值守，"
     "命令未执行。这类环境下没有「包络内免审批」，一律 fail-closed"
@@ -62,10 +60,23 @@ _UNATTENDED_UNSANDBOX = (
     "permission: 该命令命中脱离沙箱白名单，但当前渠道无人值守，命令未执行。"
     "如需长期放行请用户执行 zero-permission add-unsandbox 后重试"
 )
+_UNATTENDED_UNSANDBOX_WEB = (
+    "permission: 该命令命中脱离沙箱白名单，但当前渠道无人值守，命令未执行。"
+    "如需长期放行请用户在顶部「权限」页把该命令加入「脱离沙箱命令」后重试"
+)
 _UNATTENDED_EXPAND = (
     "permission: 该操作申请写入包络外路径（{targets}），但当前渠道无人值守，"
     "操作未执行。请用户执行 zero-permission add-root <path> 后重试"
 )
+_UNATTENDED_EXPAND_WEB = (
+    "permission: 该操作申请写入包络外路径（{targets}），但当前渠道无人值守，"
+    "操作未执行。请用户在顶部「权限」页把该目录加入「长期可写根」后重试"
+)
+
+
+def _remedy(ctx: HookContext, *, cli: str, web: str) -> str:
+    """按渠道给出可执行的补救路径：Web 指向设置页，其余指向 CLI。"""
+    return web if getattr(ctx, "channel", "") == CHANNEL_WEB else cli
 
 
 async def request(
@@ -77,11 +88,14 @@ async def request(
         detail: str,
         options: tuple[ApprovalOption, ...],
         store: "SessionStore | None" = None,
+        timeout_hint: str = "",
 ) -> str | None:
     """发出审批请求并等待作答。返回选项 key，None = 超时/已终止。
 
     ``store`` 存在时把最终态写进会话的审批审计文件，供切会话后的历史
-    回显使用；写盘失败只记日志，不影响审批结果。
+    回显使用；写盘失败只记日志，不影响审批结果。``timeout_hint`` 是超时
+    时展示给用户的补救路径，由调用方按渠道提供（Web 指向设置页，CLI 指向
+    命令行），避免把一种渠道的补救方式教给另一种渠道的用户。
     """
     req_id = uuid4().hex[:12]
     created_at = datetime.now()
@@ -102,7 +116,7 @@ async def request(
                 summary=summary,
                 detail=detail,
                 options=list(options),
-                timeout_hint=_TIMEOUT_HINT,
+                timeout_hint=timeout_hint,
                 deadline=time.time() + APPROVAL_TIMEOUT_SECONDS,
             ).model_dump_json(),
         ))
@@ -294,9 +308,13 @@ class PermissionGuard:
         if not pending:
             return None
         if not self._attended(ctx):
+            targets = "、".join(pending)
             return ToolCallDecision(
                 proceed=False,
-                reason=_UNATTENDED_EXPAND.format(targets="、".join(pending)))
+                reason=_remedy(
+                    ctx,
+                    cli=_UNATTENDED_EXPAND.format(targets=targets),
+                    web=_UNATTENDED_EXPAND_WEB.format(targets=targets)))
         answer = await request(
             self.msg_bus, ctx,
             title=title,
@@ -304,6 +322,11 @@ class PermissionGuard:
             detail="批准后该路径进入可写集合",
             options=_EXPAND,
             store=self.permission.session_store,
+            timeout_hint=_remedy(
+                ctx,
+                cli="已按拒绝处理。需要长期放行请执行 "
+                    "zero-permission add-root <path>",
+                web="已按拒绝处理。可在顶部「权限」页添加长期可写目录"),
         )
         if answer == "s":
             for p in pending:
@@ -357,6 +380,11 @@ class PermissionGuard:
                 detail=self.permission.sandbox_unavailable_reason(),
                 options=_YN,
                 store=self.permission.session_store,
+                timeout_hint=_remedy(
+                    ctx,
+                    cli="已按拒绝处理。运行 zero-permission check 查看"
+                        "沙箱不可用的原因",
+                    web="已按拒绝处理。可在顶部「权限」页查看沙箱状态"),
             )
             if answer == "y":
                 return ToolCallDecision(
@@ -368,7 +396,11 @@ class PermissionGuard:
         if self.permission.matches_unsandbox(argv):
             if not self._attended(ctx):
                 return ToolCallDecision(
-                    proceed=False, reason=_UNATTENDED_UNSANDBOX)
+                    proceed=False,
+                    reason=_remedy(
+                        ctx,
+                        cli=_UNATTENDED_UNSANDBOX,
+                        web=_UNATTENDED_UNSANDBOX_WEB))
             answer = await request(
                 self.msg_bus, ctx,
                 title="脱离沙箱执行审批",
@@ -376,6 +408,12 @@ class PermissionGuard:
                 detail="该命令命中脱离沙箱白名单，将在内核沙箱外执行",
                 options=_YN,
                 store=self.permission.session_store,
+                timeout_hint=_remedy(
+                    ctx,
+                    cli="已按拒绝处理。需要长期放行请执行 "
+                        "zero-permission add-unsandbox <命令名>",
+                    web="已按拒绝处理。可在顶部「权限」页把该命令加入"
+                        "「脱离沙箱命令」"),
             )
             if answer == "y":
                 return ToolCallDecision(

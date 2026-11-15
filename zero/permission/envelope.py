@@ -61,16 +61,17 @@ def _real(path) -> Path:
     return Path(os.path.realpath(os.path.expanduser(str(path))))
 
 
-def validate_workspace(raw, data_paths: DataPaths) -> Path:
-    """校验用户选择的工作目录，返回 realpath。
+def validate_workspace(raw, data_paths: DataPaths, *,
+                       label: str = "工作目录") -> Path:
+    """校验用户选择的可写目录，返回 realpath。
 
-    工作目录会成为该会话的免审批写区与沙箱根，所以必须在入口挡掉
-    「范围过宽的根」与系统/数据目录——这类目录要么让沙箱失去意义，
-    要么会把 Zero 自己的配置暴露成可写区。
+    工作目录会成为该会话的免审批写区与沙箱根；长期授权根也会进入写
+    集合，所以两者共用同一套边界：必须是已存在的具体目录，不能是
+    范围过宽的根，也不能落在系统目录或 Zero 自己的数据目录里。
     """
     text = str(raw or "").strip()
     if not text:
-        raise ValueError("工作目录不能为空")
+        raise ValueError(f"{label}不能为空")
     value = os.path.expanduser(text)
     if not Path(value).is_absolute():
         raise ValueError(f"只支持绝对路径（可用 ~）：{text!r}")
@@ -82,18 +83,18 @@ def validate_workspace(raw, data_paths: DataPaths) -> Path:
     home = _real(HOME)
     if path == Path(path.anchor) or path == home or home.is_relative_to(path):
         raise ValueError(
-            f"工作目录范围过宽：{path}。请选择一个具体的项目目录，"
+            f"{label}范围过宽：{path}。请选择一个具体的项目目录，"
             f"不要使用 /、{home} 或其上级目录")
     data_root = _real(data_paths.root)
     if path.is_relative_to(data_root) or data_root.is_relative_to(path):
         raise ValueError(
-            f"工作目录不能与 Zero 的数据目录重叠：{path}。"
+            f"{label}不能与 Zero 的数据目录重叠：{path}。"
             f"请选择一个项目目录")
     for system in (Path("/etc"), Path("/System"), Path("/usr"), Path("/bin"),
                    Path("/sbin"), Path("/Library"), Path("/dev")):
         if path.is_relative_to(_real(system)):
             raise ValueError(
-                f"工作目录不能是系统目录：{path}。请选择一个项目目录")
+                f"{label}不能是系统目录：{path}。请选择一个项目目录")
     return path
 
 
@@ -376,6 +377,21 @@ class PermissionState:
             self.save_profile(data)
         return p
 
+    def remove_extra_root(self, path) -> bool:
+        """撤销长期扩权根。不存在时返回 False（幂等，不报错）。"""
+        target = _real(path)
+        data = self.load_profile()
+        roots = data.get("extraRoots")
+        if not isinstance(roots, list):
+            return False
+        kept = [item for item in roots
+                if not (isinstance(item, str) and _real(item) == target)]
+        if len(kept) == len(roots):
+            return False
+        data["extraRoots"] = kept
+        self.save_profile(data)
+        return True
+
     def unsandbox_names(self) -> list[str]:
         """脱离沙箱白名单：这些命令无法在沙箱内跑（如 brew），命中即强制审批。"""
         return [n for n in self.load_profile().get("unsandbox", [])
@@ -387,6 +403,20 @@ class PermissionState:
         if name not in names:
             names.append(name)
             self.save_profile(data)
+
+    def remove_unsandbox(self, name: str) -> bool:
+        """撤销脱离沙箱白名单项。不存在时返回 False（幂等，不报错）。"""
+        value = str(name or "").strip()
+        data = self.load_profile()
+        names = data.get("unsandbox")
+        if not isinstance(names, list):
+            return False
+        kept = [item for item in names if item != value]
+        if len(kept) == len(names):
+            return False
+        data["unsandbox"] = kept
+        self.save_profile(data)
+        return True
 
     def matches_unsandbox(self, argv: list[str]) -> bool:
         """按首个 token 的 basename 精确匹配——不做 glob 引擎。"""

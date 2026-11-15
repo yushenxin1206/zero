@@ -14,6 +14,7 @@ import json
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -107,6 +108,8 @@ class ChannelService:
         self.session_store = session_store
         self.scheduler_store = scheduler_store
         self.data_paths = data_paths
+        # 权限设置页需要读写长期策略（profile.json）；这是全局状态，不随渠道变化
+        self.permission = permission
         # 切换模型时要重建 Context（含环境段）：沙箱能力在构造时结算为纯事实
         self.sandbox_available = permission.sandbox_available()
         self._binding_path = (
@@ -232,6 +235,48 @@ class ChannelService:
         if not ok:
             raise ValueError("当前会话不在索引中，无法设置工作目录")
         return canonical
+
+    # ------------------------------------------------------------------
+    # Permissions（全局长期策略，所有渠道共享）
+    # ------------------------------------------------------------------
+
+    def permission_snapshot(self) -> dict[str, Any]:
+        """权限设置页的一次性快照：沙箱事实 + 可编辑的长期策略。"""
+        state = self.permission
+        available = state.sandbox_available()
+        return {
+            "sandbox": {
+                "available": available,
+                "reason": "" if available else state.sandbox_unavailable_reason(),
+                "networkEnforced": state.network_enforced() if available else False,
+            },
+            "extraRoots": [str(path) for path in state.extra_roots()],
+            "unsandbox": state.unsandbox_names(),
+        }
+
+    def grant_write_root(self, path: str) -> str:
+        """新增长期可写根；校验边界与工作目录一致。"""
+        canonical = validate_workspace(path, self.data_paths, label="可写目录")
+        self.permission.add_extra_root(canonical)
+        return str(canonical)
+
+    def revoke_write_root(self, path: str) -> bool:
+        return self.permission.remove_extra_root(path)
+
+    def grant_unsandbox(self, name: str) -> str:
+        """新增脱离沙箱命令；只接受命令名，避免把路径或参数塞进白名单。"""
+        value = str(name or "").strip()
+        if not value:
+            raise ValueError("命令名不能为空")
+        if value != Path(value).name:
+            raise ValueError("只填命令名（如 brew），不要带路径")
+        if any(ch.isspace() for ch in value):
+            raise ValueError("命令名不能包含空白字符")
+        self.permission.add_unsandbox(value)
+        return value
+
+    def revoke_unsandbox(self, name: str) -> bool:
+        return self.permission.remove_unsandbox(name)
 
     # ------------------------------------------------------------------
     # History

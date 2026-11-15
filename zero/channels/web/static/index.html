@@ -1673,6 +1673,99 @@
   .cfg-inline .form-input { flex: 1; min-width: 0; }
   .setup-foot button, .config-foot button { min-height: 36px; }
 
+  /* 权限设置 */
+  .perm-status { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+  .perm-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--text-2);
+    background: var(--fill-2);
+    border: 1px solid var(--line-weak);
+    border-radius: var(--r-sm);
+  }
+  .perm-key { color: var(--text-3); }
+  .perm-badge {
+    padding: 1px 9px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-2);
+    background: var(--surface-1);
+    border: 1px solid var(--line-weak);
+    border-radius: 999px;
+  }
+  .perm-badge.ok {
+    color: var(--accent);
+    background: var(--accent-soft);
+    border-color: var(--accent-line);
+  }
+  .perm-badge.bad {
+    color: var(--danger);
+    background: var(--danger-soft);
+    border-color: var(--danger-line);
+  }
+  .perm-hint {
+    flex: 1 0 100%;
+    font-size: 11.5px;
+    line-height: 1.6;
+    color: var(--text-3);
+    overflow-wrap: anywhere;
+  }
+  .perm-warn {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--danger-ink);
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-line);
+    border-radius: var(--r-sm);
+  }
+  .perm-error {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    font-size: 11.5px;
+    line-height: 1.7;
+    color: var(--danger-ink);
+    background: var(--danger-soft);
+    border: 1px solid var(--danger-line);
+    border-radius: var(--r-sm);
+  }
+  .perm-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    font-size: 12px;
+    background: var(--surface-1);
+    border: 1px solid var(--line-weak);
+    border-radius: var(--r-sm);
+  }
+  .perm-path {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font: 11.5px/1.6 var(--mono);
+    color: var(--text-2);
+  }
+  .perm-del {
+    flex: 0 0 auto;
+    min-height: 28px;
+    padding: 0 9px;
+    font-size: 11.5px;
+    color: var(--danger);
+    border-color: var(--danger-line);
+  }
+  .perm-empty { padding: 6px 2px; font-size: 11.5px; color: var(--text-3); }
+  .perm-add { display: flex; align-items: stretch; gap: 6px; }
+  .perm-add .form-input { flex: 1; min-width: 0; }
+  .perm-add button { flex: 0 0 auto; min-height: 36px; }
+
   #restarting {
     position: fixed;
     inset: 0;
@@ -1780,6 +1873,7 @@
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 13.2A8.2 8.2 0 0 1 10.8 4a8.4 8.4 0 1 0 9.2 9.2Z"/></symbol>
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18.5 7H20M4 17h4M13.5 17H20"/><circle cx="15.5" cy="7" r="2.2"/><circle cx="10.5" cy="17" r="2.2"/></symbol>
   <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2.2h7a2 2 0 0 1 2 2v7.8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2Z"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3.4 19 6.2v5.5c0 4.2-2.9 7.8-7 9.1-4.1-1.3-7-4.9-7-9.1V6.2Z"/><path d="m8.9 12 2.1 2.1 4.1-4.1"/></symbol>
 </svg>
 
 <div id="splash">
@@ -1825,6 +1919,10 @@
         <button id="skills-btn" class="top-btn" title="查看内置技能">
           <svg class="icon"><use href="#i-spark"/></svg>
           <span>技能</span>
+        </button>
+        <button id="permission-btn" class="top-btn" title="管理权限">
+          <svg class="icon"><use href="#i-shield"/></svg>
+          <span>权限</span>
         </button>
         <button id="config-btn" class="top-btn" title="打开配置">
           <svg class="icon"><use href="#i-sliders"/></svg>
@@ -1985,6 +2083,12 @@
     config: null,
     configTab: "form",
     configSaved: false,
+    // 权限设置页
+    permission: null,
+    permissionBusy: false,
+    permissionError: "",
+    permissionOp: "",
+    permissionDraft: { root: "", unsandbox: "" },
   };
 
   function escapeHtml(value) {
@@ -3145,6 +3249,9 @@
       case "config":
         onConfig(msg);
         break;
+      case "permission":
+        onPermission(msg);
+        break;
       case "notice":
         toast(msg.text || "", msg.level || "info");
         if (msg.level === "error") {
@@ -3249,6 +3356,7 @@
   };
   $("#tasks-btn").onclick = openTasksModal;
   $("#skills-btn").onclick = openSkillsModal;
+  $("#permission-btn").onclick = openPermissionModal;
   $("#config-btn").onclick = openConfigModal;
   $("#config-restart").onclick = () => beginRestart();
   $("#config-dismiss").onclick = () => $("#config-banner").classList.add("hidden");
@@ -4536,6 +4644,206 @@
       $("#modal-body").innerHTML =
         `<div class="modal-state">${icon("alert")}<div>未连接到后端</div></div>`;
     }
+  }
+
+  /* ================= permission ================= */
+
+  function openPermissionModal() {
+    state.modalKind = "permission";
+    state.permission = null;
+    state.permissionBusy = false;
+    state.permissionError = "";
+    state.permissionOp = "";
+    openModal("权限", "", `<button id="modal-close">关闭</button>`);
+    $("#modal-close").onclick = closeModal;
+    $("#modal-body").innerHTML = '<div class="modal-note">读取权限状态…</div>';
+    if (!send({ type: "permission" })) {
+      $("#modal-body").innerHTML =
+        `<div class="modal-state">${icon("alert")}<div>未连接到后端</div></div>`;
+    }
+  }
+
+  function onPermission(msg) {
+    // 快照缺失（读取失败）时保留上一次结果，避免面板被清空
+    state.permission = msg.snapshot || state.permission;
+    state.permissionBusy = false;
+    state.permissionError = msg.ok === false ? (msg.error || "操作失败") : "";
+    // 成功后清空对应的输入草稿；失败时保留，用户改一处即可重试
+    if (msg.ok !== false && state.permissionOp === "add-root") {
+      state.permissionDraft.root = "";
+    }
+    if (msg.ok !== false && state.permissionOp === "add-unsandbox") {
+      state.permissionDraft.unsandbox = "";
+    }
+    state.permissionOp = "";
+    if (state.modalKind === "permission") renderPermissionModal();
+  }
+
+  function permSend(op, extra) {
+    if (state.permissionBusy) return;
+    state.permissionBusy = true;
+    state.permissionOp = op;
+    const status = $("#perm-status");
+    if (status) status.textContent = "处理中…";
+    if (!send(Object.assign({ type: "permission", op }, extra || {}))) {
+      state.permissionBusy = false;
+      state.permissionOp = "";
+      if (status) status.textContent = "未连接到后端，权限未修改";
+    }
+  }
+
+  function permStatusRow(label, value, cls, hint) {
+    const row = el("div", "perm-status-row");
+    const key = el("span", "perm-key");
+    key.textContent = label;
+    const badge = el("span", "perm-badge " + cls);
+    badge.textContent = value;
+    row.appendChild(key);
+    row.appendChild(badge);
+    if (hint) {
+      const note = el("span", "perm-hint");
+      note.textContent = hint;
+      row.appendChild(note);
+    }
+    return row;
+  }
+
+  function permRow(text, onRemove) {
+    const row = el("div", "perm-row");
+    const label = el("span", "perm-path");
+    label.textContent = text;
+    label.title = text;
+    const del = el("button", "perm-del");
+    del.type = "button";
+    del.textContent = "移除";
+    del.onclick = onRemove;
+    row.appendChild(label);
+    row.appendChild(del);
+    return row;
+  }
+
+  function permAddRow(placeholder, onAdd, withPicker, draftKey) {
+    const box = el("div", "perm-add");
+    const input = el("input", "form-input");
+    input.placeholder = placeholder;
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    // 草稿跨重渲染保留：校验失败时不让用户重新输入
+    input.value = state.permissionDraft[draftKey] || "";
+    input.oninput = () => {
+      state.permissionDraft[draftKey] = input.value;
+    };
+    box.appendChild(input);
+    if (withPicker) {
+      const pick = el("button");
+      pick.type = "button";
+      pick.textContent = "选择…";
+      pick.onclick = async () => {
+        const picked = await pickFolder(input.value.trim());
+        if (picked) {
+          input.value = picked;
+          state.permissionDraft[draftKey] = picked;
+        }
+      };
+      box.appendChild(pick);
+    }
+    const add = el("button", "primary");
+    add.type = "button";
+    add.textContent = "添加";
+    add.onclick = () => {
+      const value = input.value.trim();
+      if (!value) {
+        input.focus();
+        return;
+      }
+      onAdd(value);
+    };
+    box.appendChild(add);
+    return box;
+  }
+
+  function renderPermissionModal() {
+    const body = $("#modal-body");
+    const snap = state.permission || {};
+    const sandbox = snap.sandbox || {};
+    const scrollTop = body.scrollTop;
+    body.innerHTML = "";
+
+    const status = el("div", "perm-status");
+    status.appendChild(permStatusRow(
+      "内核沙箱", sandbox.available ? "可用" : "不可用",
+      sandbox.available ? "ok" : "bad", sandbox.reason || ""));
+    status.appendChild(permStatusRow(
+      "断网档", sandbox.networkEnforced ? "生效" : "未通过",
+      sandbox.networkEnforced ? "ok" : "bad",
+      sandbox.available ? "" : "内核沙箱不可用，无法验证"));
+    body.appendChild(status);
+
+    if (!sandbox.available) {
+      const warn = el("div", "perm-warn");
+      warn.textContent = "内核沙箱不可用时，每条 shell 命令都需要人工审批；"
+        + "定时任务与子 agent 的 shell 会被直接拒绝。";
+      body.appendChild(warn);
+    }
+    if (state.permissionError) {
+      const err = el("div", "perm-error");
+      err.textContent = state.permissionError;
+      body.appendChild(err);
+    }
+
+    const roots = cfgSection(body, "长期可写根",
+      "这些目录里的写入不再逐次审批", true);
+    const rootsNote = el("div", "cfg-note");
+    rootsNote.textContent = "只能选择已存在的具体目录；不能是 /、用户主目录、"
+      + "系统目录或 Zero 的数据目录。修改立即生效。";
+    roots.appendChild(rootsNote);
+    const rootItems = snap.extraRoots || [];
+    if (!rootItems.length) {
+      const empty = el("div", "perm-empty");
+      empty.textContent = "还没有长期可写目录";
+      roots.appendChild(empty);
+    }
+    rootItems.forEach((path) => {
+      roots.appendChild(permRow(path, () => permSend("remove-root", { path })));
+    });
+    roots.appendChild(permAddRow("/Users/you/project",
+      (value) => permSend("add-root", { path: value }), true, "root"));
+
+    const unbox = cfgSection(body, "脱离沙箱命令",
+      "命中时在沙箱外执行，但每次仍需批准", false);
+    const unboxNote = el("div", "cfg-note");
+    unboxNote.textContent = "只填命令名（如 brew），不要带路径或参数。"
+      + "它不会变成永久放行：命中的命令每次仍需人工确认。";
+    unbox.appendChild(unboxNote);
+    const unboxItems = snap.unsandbox || [];
+    if (!unboxItems.length) {
+      const empty = el("div", "perm-empty");
+      empty.textContent = "还没有脱离沙箱的命令";
+      unbox.appendChild(empty);
+    }
+    unboxItems.forEach((name) => {
+      unbox.appendChild(
+        permRow(name, () => permSend("remove-unsandbox", { name })));
+    });
+    unbox.appendChild(permAddRow("brew",
+      (value) => permSend("add-unsandbox", { name: value }), false, "unsandbox"));
+
+    const foot = el("div", "config-foot");
+    const refresh = el("button");
+    refresh.type = "button";
+    refresh.textContent = "刷新";
+    refresh.onclick = () => {
+      state.permissionError = "";
+      send({ type: "permission" });
+    };
+    const hint = el("span", "setup-status");
+    hint.id = "perm-status";
+    hint.textContent = "修改立即生效，不需要重启";
+    foot.appendChild(refresh);
+    foot.appendChild(hint);
+    body.appendChild(foot);
+
+    body.scrollTop = scrollTop;
   }
 
   function renderConfigModal() {

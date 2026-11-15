@@ -26,6 +26,11 @@ Protocol (JSON text frames):
     {"type": "config", "op": "save", "config": {...}}    validate + persist
     {"type": "config", "op": "test", "config": {...}}    test the draft config
     {"type": "config", "op": "reset"}             backup + rebuild skeleton
+    {"type": "permission"}                        sandbox status + long-term policy
+    {"type": "permission", "op": "add-root", "path": "/abs/path"}
+    {"type": "permission", "op": "remove-root", "path": "/abs/path"}
+    {"type": "permission", "op": "add-unsandbox", "name": "brew"}
+    {"type": "permission", "op": "remove-unsandbox", "name": "brew"}
 
   server → client
     {"type": "state", ...}         current session / sessions / model / setup
@@ -36,6 +41,7 @@ Protocol (JSON text frames):
     {"type": "tasks", ...}
     {"type": "skills", ...}        skill metadata + skill.md content
     {"type": "config", ...}        masked config / save result / test result
+    {"type": "permission", ...}    permission snapshot / mutation result
     {"type": "notice", "level": "info"|"error", "text": "..."}
 """
 import asyncio
@@ -401,6 +407,8 @@ class WebChannel(BusChannel):
             })
         elif kind == "config":
             await self._on_config(ws, data)
+        elif kind == "permission":
+            await self._on_permission(ws, data)
         else:
             logger.warning("unknown web message type: %r", kind)
 
@@ -502,6 +510,55 @@ class WebChannel(BusChannel):
             logger.exception("config connection test failed")
             result = {"ok": False, "error": f"连接测试失败：{exc}"}
         await self._send(ws, {"type": "config", "op": "test", **result})
+
+    async def _on_permission(
+            self, ws: ServerConnection, data: dict[str, Any]) -> None:
+        """权限设置页：状态快照 + 长期策略增删。
+
+        与 config 不同，这里的改动立即生效（每次判定都重读 profile.json），
+        所以没有 restartRequired。所有操作都必须由用户消息触发，绝不能
+        注册成工具交给模型调用——否则模型可以自己给自己提权。
+        """
+        op = str(data.get("op") or "read")
+        try:
+            if op == "add-root":
+                await asyncio.to_thread(
+                    self.service.grant_write_root, str(data.get("path") or ""))
+            elif op == "remove-root":
+                await asyncio.to_thread(
+                    self.service.revoke_write_root, str(data.get("path") or ""))
+            elif op == "add-unsandbox":
+                await asyncio.to_thread(
+                    self.service.grant_unsandbox, str(data.get("name") or ""))
+            elif op == "remove-unsandbox":
+                await asyncio.to_thread(
+                    self.service.revoke_unsandbox, str(data.get("name") or ""))
+            elif op != "read":
+                raise ValueError(f"未知的权限操作：{op}")
+        except ValueError as exc:
+            await self._send(ws, {
+                "type": "permission", "ok": False, "error": str(exc),
+                "snapshot": await self._permission_snapshot(),
+            })
+            return
+        except OSError as exc:
+            logger.exception("permission policy write failed")
+            await self._send(ws, {
+                "type": "permission", "ok": False,
+                "error": f"权限策略写入失败：{exc}",
+            })
+            return
+        await self._send(ws, {
+            "type": "permission", "ok": True,
+            "snapshot": await self._permission_snapshot(),
+        })
+
+    async def _permission_snapshot(self) -> dict[str, Any] | None:
+        try:
+            return await asyncio.to_thread(self.service.permission_snapshot)
+        except Exception:  # noqa: BLE001 - 快照失败只影响回显，不掩盖操作结果
+            logger.exception("permission snapshot failed")
+            return None
 
     async def _on_send(self, ws: ServerConnection, data: dict[str, Any]) -> None:
         text = str(data.get("text") or "").strip()
