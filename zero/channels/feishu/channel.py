@@ -55,6 +55,60 @@ SEND_PERMISSION_HINTS = {
 }
 
 
+_INTENTIONAL_STOP = threading.Event()
+
+
+class _ExpectedSdkCloseFilter(logging.Filter):
+    """主动停用时，SDK 把正常关闭当成 ERROR 打出来，这里只吞那一条。
+
+    SDK 的收包循环不区分「我们主动断开」和「对端异常断开」，两种情况都
+    会打 ``receive message loop exit``。标志只在本类的 stop() 期间置位，
+    且只放过关闭码 1000（正常关闭）的那一条；意外断开时标志未置位，
+    或者关闭码不是 1000，错误照旧输出。
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not _INTENTIONAL_STOP.is_set() or record.levelno < logging.ERROR:
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        expected = (
+            "receive message loop exit" in message
+            and "1000 (OK)" in message)
+        return not expected
+
+
+_LARK_LOGGER = logging.getLogger("Lark")
+if not any(isinstance(f, _ExpectedSdkCloseFilter) for f in _LARK_LOGGER.filters):
+    _LARK_LOGGER.addFilter(_ExpectedSdkCloseFilter())
+
+
+async def _snapshot_sdk_tasks() -> list[asyncio.Task]:
+    """抓一份 SDK loop 上当前任务的强引用（快照本身除外）。
+
+    必须在发起断开之前抓：收包任务一旦以异常结束就会从 all_tasks 里消失，
+    之后再想取走它的异常就晚了。
+    """
+    current = asyncio.current_task()
+    return [task for task in asyncio.all_tasks() if task is not current]
+
+
+async def _drain_sdk_tasks(tasks: list[asyncio.Task]) -> None:
+    """取消并等干净这些任务，顺手取走它们的异常。
+
+    收包任务在主动断开后会以 ConnectionClosedOK 收尾；如果不 await 它，
+    任务对象被回收时 asyncio 会打 ``Task exception was never retrieved``。
+    gather(return_exceptions=True) 既把异常标记为已处理，也能让任务真正结束。
+    """
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 def _close_sdk_loop(loop: asyncio.AbstractEventLoop) -> None:
     """停掉连接专用 loop 上残留的收包 / ping 任务并关闭 loop。
 
@@ -304,7 +358,9 @@ class FeishuChannel:
                 client.start()
             except Exception as exc:
                 if self._running:
-                    logger.exception("Feishu WebSocket connection error")
+                    # 只有非主动停止时才落这条：带「意外断开」语义，
+                    # 与 stop() 路径的主动关闭日志区分开
+                    logger.exception("Feishu WebSocket closed unexpectedly")
                     self._cancel_grace_timer_threadsafe()
                     self._set_state(STATE_FAILED, f"连接失败：{exc}")
             finally:
@@ -378,13 +434,36 @@ class FeishuChannel:
         if client is not None and loop is not None and loop.is_running():
             # SDK 的自动重连是无限循环，必须先关掉再断开，否则刚停就重连
             client._auto_reconnect = False
+            _INTENTIONAL_STOP.set()
             try:
-                fut = asyncio.run_coroutine_threadsafe(
-                    client._disconnect(), loop)
-                await asyncio.wait_for(asyncio.wrap_future(fut), 3)
-            except Exception:
-                logger.warning(
-                    "Feishu 长连接断开超时，强制停止", exc_info=True)
+                # 断开之前先抓住收包 / ping 任务：断开后它们会带着异常结束，
+                # 届时 all_tasks 里已经找不到，异常就永远没人取
+                try:
+                    snap = asyncio.run_coroutine_threadsafe(
+                        _snapshot_sdk_tasks(), loop)
+                    sdk_tasks = await asyncio.wait_for(
+                        asyncio.wrap_future(snap), 3)
+                except Exception:
+                    logger.debug("Feishu SDK 任务快照失败", exc_info=True)
+                    sdk_tasks = []
+                try:
+                    fut = asyncio.run_coroutine_threadsafe(
+                        client._disconnect(), loop)
+                    await asyncio.wait_for(asyncio.wrap_future(fut), 3)
+                except Exception:
+                    logger.warning(
+                        "Feishu 长连接断开超时，强制停止", exc_info=True)
+                # 取走退出任务的异常，免得 asyncio 回收时报
+                # "Task exception was never retrieved"
+                try:
+                    drain = asyncio.run_coroutine_threadsafe(
+                        _drain_sdk_tasks(sdk_tasks), loop)
+                    await asyncio.wait_for(asyncio.wrap_future(drain), 3)
+                except Exception:
+                    logger.debug(
+                        "Feishu SDK 任务收尾失败", exc_info=True)
+            finally:
+                _INTENTIONAL_STOP.clear()
             with suppress(RuntimeError):
                 loop.call_soon_threadsafe(loop.stop)
         if thread is not None and thread.is_alive():
