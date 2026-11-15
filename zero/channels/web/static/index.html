@@ -778,6 +778,11 @@
   .msg.user .msg-meta { right: 0; }
   .msg.assistant .msg-meta { left: 41px; }
   .msg-usage { font-family: var(--mono); }
+  .msg-usage::before {
+    content: "·";
+    margin-right: 6px;
+    font-family: var(--font);
+  }
   .avatar {
     width: 28px; height: 28px;
     flex: 0 0 28px;
@@ -2309,8 +2314,8 @@
     reconnectCount: 0,
     booted: false,
     follow: true,
-    // 最近一条已显示时间戳的分钟，用于相邻消息去重
-    lastStampKey: "",
+    // 各角色最近一条已显示时间戳的分钟：只对同角色的连续消息去重
+    lastStamps: { user: "", assistant: "" },
     modalKind: "",
     tasksTimer: 0,
     tasksAll: false,
@@ -2795,7 +2800,7 @@
       send({ type: "history", sessionId: state.session.id });
     } else if (!state.session.id && !state.busy) {
       $("#messages").innerHTML = emptyStateHtml();
-      state.lastStampKey = "";
+      state.lastStamps = { user: "", assistant: "" };
     }
 
     if (!state.booted) {
@@ -3055,12 +3060,12 @@
     return meta;
   }
 
-  function appendStamp(row, at) {
+  function appendStamp(row, at, role) {
     const raw = Number(at);
     const date = new Date(Number.isFinite(raw) && raw > 0 ? raw : Date.now());
     const key = stampKey(date);
-    if (key === state.lastStampKey) return;
-    state.lastStampKey = key;
+    if (key === state.lastStamps[role]) return;
+    state.lastStamps[role] = key;
     const stamp = el("span", "msg-time");
     stamp.textContent = stampLabel(date);
     stamp.title = date.toLocaleString("zh-CN", { hour12: false });
@@ -3073,7 +3078,7 @@
     const bubble = el("div", "bubble");
     bubble.textContent = text;
     row.appendChild(bubble);
-    appendStamp(row, at);
+    appendStamp(row, at, "user");
     $("#messages").appendChild(row);
     scrollBottom(true);
     return row;
@@ -3255,7 +3260,7 @@
   function addHistoricalTurn(turn) {
     removeEmpty();
     const { row, bubble } = assistantRow("zero");
-    appendStamp(row, turn.at);
+    appendStamp(row, turn.at, "assistant");
     const parts = el("div", "parts");
     bubble.appendChild(parts);
     const nodes = turn.entries.map((entry) => {
@@ -3291,7 +3296,7 @@
 
     const box = $("#messages");
     box.innerHTML = "";
-    state.lastStampKey = "";
+    state.lastStamps = { user: "", assistant: "" };
     const turns = buildHistoryTurns(
       msg.messages || [], msg.approvals || []);
     const rows = [];
@@ -3319,7 +3324,7 @@
   function createAssistantBubble(turnId) {
     removeEmpty();
     const { row, bubble } = assistantRow("zero");
-    appendStamp(row, Date.now());
+    appendStamp(row, Date.now(), "assistant");
 
     const status = el("div", "turn-status");
     status.dataset.state = "thinking";
