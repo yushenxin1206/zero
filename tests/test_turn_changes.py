@@ -10,6 +10,9 @@ from zero.core.turn_changes import (
     CHANGE_MODIFIED,
     TurnChanges,
     build_turn_changes,
+    register_granted_roots,
+    register_tracker,
+    unregister_tracker,
 )
 
 
@@ -75,6 +78,72 @@ def test_record_ignores_paths_outside_roots(tmp_path):
     tracker.record(str(outside))
 
     assert tracker.finish() == []
+
+
+def test_granted_root_mid_turn_is_tracked(tmp_path):
+    """轮中审批放行的新目录要补进快照范围，否则写入的文件会漏报。"""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    granted = tmp_path / "granted"
+    granted.mkdir()
+    old = granted / "old.txt"
+    old.write_text("before", encoding="utf-8")
+    idle = granted / "idle.txt"
+    idle.write_text("idle", encoding="utf-8")
+
+    class _Ctx:
+        channel = "web"
+        session_id = "s"
+        turn_id = "t"
+
+    tracker = _tracker(workspace)
+    register_tracker(_Ctx, tracker)
+    try:
+        tracker.start()
+        register_granted_roots(_Ctx, [str(granted)])
+
+        fresh = granted / "fresh.txt"
+        fresh.write_text("new", encoding="utf-8")
+        old.write_text("after", encoding="utf-8")
+
+        changes = {item["path"]: item["change"] for item in tracker.finish()}
+    finally:
+        unregister_tracker(_Ctx)
+
+    assert changes[str(fresh)] == CHANGE_ADDED
+    assert changes[str(old)] == CHANGE_MODIFIED
+    # 审批前就存在且没动过的文件不能被算成本轮新增
+    assert str(idle) not in changes
+
+
+def test_granted_non_git_root_in_git_workspace(tmp_path):
+    """git 工作区叠加普通目录时，新目录不能被整棵跳过。"""
+    if shutil.which("git") is None:
+        return
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(workspace), *args], check=True,
+                       capture_output=True, text=True)
+
+    git("init")
+    git("config", "user.email", "zero@example.com")
+    git("config", "user.name", "zero")
+    (workspace / "seed.txt").write_text("seed", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "init")
+    granted = tmp_path / "plain"
+    granted.mkdir()
+
+    tracker = _tracker(workspace)
+    tracker.start()
+    tracker.add_root(granted)
+    fresh = granted / "fresh.txt"
+    fresh.write_text("new", encoding="utf-8")
+
+    changes = {item["path"]: item["change"] for item in tracker.finish()}
+    assert changes[str(fresh)] == CHANGE_ADDED
 
 
 def test_dependency_dirs_only_report_group_summary(tmp_path):

@@ -93,7 +93,26 @@ class TurnChanges:
         if not self.enabled:
             return
         self.git = any(_is_git_root(root) for root in self.roots)
-        self.before = _snapshot(self.roots, git=self.git)[0]
+        self.before = _snapshot(self.roots)[0]
+
+    def add_root(self, root: Path) -> None:
+        """补登记轮中才获批的写根，并立即快照作为“改动前”基线。
+
+        根在轮次开始时结算；审批放行发生在轮中，如果不补进来，快照和
+        写记账都覆盖不到新目录，就会出现“文件建了但清单没有”。
+        """
+        if not self.enabled:
+            return
+        real = Path(root).resolve()
+        if not real.is_dir():
+            real = real.parent
+        if real in self.roots:
+            return
+        self.roots.append(real)
+        snapshot, _ = _snapshot([real])
+        # 已有基线优先：审批前就已存在的文件不能被误判成本轮新增
+        for key, state in snapshot.items():
+            self.before.setdefault(key, state)
 
     def record(self, path: str) -> None:
         """工具写文件时直接记账；只收本轮可写根内的路径。"""
@@ -109,7 +128,7 @@ class TurnChanges:
     def finish(self) -> list[dict[str, str]]:
         if not self.enabled:
             return []
-        after, truncated = _snapshot(self.roots, git=self.git)
+        after, truncated = _snapshot(self.roots)
         self.truncated = truncated
         changes: dict[str, str] = {}
         keys = set(self.before) | set(after) | self.touched
@@ -303,26 +322,25 @@ def _find_skip_dirs(root: Path, max_depth: int = 3) -> list[Path]:
 
 
 def _snapshot(
-        roots: list[Path], *, git: bool) -> tuple[dict[str, dict[str, Any]], bool]:
-    if git:
-        entries: dict[str, dict[str, Any]] = {}
-        for root in roots:
-            if not _is_git_root(root):
-                continue
+        roots: list[Path]) -> tuple[dict[str, dict[str, Any]], bool]:
+    """按根分别选扫描方式：git 根走 status，普通根走目录遍历。
+
+    轮中审批可能追加非 git 的写根，不能沿用首个根的 git 判定，
+    否则新根会被整棵跳过，写入的文件也就漏报了。
+    """
+    entries: dict[str, dict[str, Any]] = {}
+    truncated = False
+    for root in roots:
+        if _is_git_root(root):
             status = _git_status(root)
             if status:
                 entries.update(status)
             for skip_dir in _find_skip_dirs(root):
                 entries[str(skip_dir.resolve())] = _skip_summary(skip_dir)
-            if len(entries) >= MAX_FILES:
-                return entries, True
-        return entries, False
-    entries = {}
-    truncated = False
-    for root in roots:
-        walked, cut = _walk(root)
-        entries.update(walked)
-        truncated = truncated or cut
+        else:
+            walked, cut = _walk(root)
+            entries.update(walked)
+            truncated = truncated or cut
         if len(entries) >= MAX_FILES:
             return entries, True
     return entries, truncated
@@ -496,7 +514,8 @@ def _classify(before: dict[str, Any] | None,
         return ""
     if before is None:
         assert after is not None
-        if not git:
+        # 普通目录遍历的快照 code 为空串，恒按新增处理
+        if not git or not after.get("code"):
             return CHANGE_ADDED
         code = after.get("code", "")
         if "D" in code:
@@ -562,6 +581,23 @@ def record_write(tool_context, path: str) -> None:
     tracker = _ACTIVE.get(_key(tool_context)) if tool_context is not None else None
     if tracker is not None:
         tracker.record(path)
+
+
+def register_granted_roots(tool_context, paths: list[str]) -> None:
+    """审批放行写根后调用：把新目录补进本轮快照范围。
+
+    tracker 的根在轮次开始时结算，轮中才获批的目录如果不补进来，
+    之后写进去的文件就不会出现在改动清单里。补根要扫盘，调用方应在
+    线程里执行（guard 用 ``asyncio.to_thread``）。
+    """
+    tracker = _ACTIVE.get(_key(tool_context)) if tool_context is not None else None
+    if tracker is None:
+        return
+    for raw in paths:
+        try:
+            tracker.add_root(Path(raw))
+        except (OSError, RuntimeError):
+            logger.debug("登记轮中新增写根失败：%s", raw, exc_info=True)
 
 
 def _key(tool_context) -> tuple[str, str, str]:

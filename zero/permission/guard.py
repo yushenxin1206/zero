@@ -24,6 +24,7 @@ from uuid import uuid4
 from zero.bus.queue import MessageBus
 from zero.core.cancellation import TurnCancelled
 from zero.core.hooks import HookContext, ToolCallDecision
+from zero.core.turn_changes import register_granted_roots
 from zero.models import (
     APPROVAL_TIMEOUT_SECONDS, CHANNEL_WEB, EVENT_APPROVAL, ApprovalOption,
     ApprovalRecord, ApprovalRequest, ApprovalStatus, StreamEvent)
@@ -331,11 +332,14 @@ class PermissionGuard:
         if answer == "s":
             for p in pending:
                 self.permission.grant_write_root(p, ctx, "session")
+            # 补基线要扫目录，放到线程里，别阻塞事件循环
+            await asyncio.to_thread(register_granted_roots, ctx, pending)
             return ToolCallDecision(
                 note=f"用户已批准扩权（本会话）：{'、'.join(pending)}")
         if answer == "a":
             for p in pending:
                 self.permission.grant_write_root(p, ctx, "always")
+            await asyncio.to_thread(register_granted_roots, ctx, pending)
             return ToolCallDecision(
                 note=f"用户已批准扩权（总是）：{'、'.join(pending)}")
         return ToolCallDecision(

@@ -3731,7 +3731,6 @@
     groups.forEach((item) => {
       const files = Array.isArray(item.files) ? item.files : [];
       const count = Number(item.count) || files.length;
-      const hidden = Number(item.hiddenCount) || 0;
       const row = el("li", "change-group");
       const isBlocked = !!item.blocked;
       const headRow = el("div", "change-group-head");
@@ -3763,11 +3762,6 @@
       headRow.appendChild(hint);
       const detail = el("ul", "change-group-list hidden");
       files.forEach((file) => detail.appendChild(changeRow(file, true)));
-      if (hidden > 0) {
-        const note = el("li", "change-hidden");
-        note.textContent = "另有 " + hidden + " 个文件未列出";
-        detail.appendChild(note);
-      }
       const toggle = () => {
         const isHidden = detail.classList.toggle("hidden");
         hint.textContent = isHidden ? "展开" : "收起";
