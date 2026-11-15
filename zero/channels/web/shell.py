@@ -125,8 +125,17 @@ def _launch_command() -> tuple[list[str], str]:
 
     预检放在真正停后端之前：启动脚本被移走、解释器不可用这类问题要在
     窗口还活着的时候告诉用户，而不是关掉应用后才发现起不来。
+
+    打包后的 .app 由启动器注入 ``ZERO_APP_BUNDLE``：直接 exec 内嵌解释器
+    会丢掉 LaunchServices 的应用身份（Dock 显示 python3.14），所以改走
+    ``open -n`` 重开应用包。
     """
     args = list(sys.argv[1:])
+    bundle = os.environ.get("ZERO_APP_BUNDLE", "")
+    if bundle:
+        if not Path(bundle).is_dir():
+            return [], f"找不到应用包 {bundle}"
+        return ["/usr/bin/open", "-n", bundle, "--args", *args], ""
     entry = sys.argv[0] if sys.argv else ""
     if not entry or entry.endswith("__main__.py"):
         return [sys.executable, "-m", "zero", *args], ""

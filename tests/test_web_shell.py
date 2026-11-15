@@ -6,6 +6,7 @@ from zero.channels.web import shell
 
 
 def test_launch_command_rejects_missing_entry(monkeypatch, tmp_path):
+    monkeypatch.delenv("ZERO_APP_BUNDLE", raising=False)
     missing = tmp_path / "gone-zero"
     monkeypatch.setattr(shell.sys, "argv", [str(missing), "--web"])
 
@@ -14,6 +15,30 @@ def test_launch_command_rejects_missing_entry(monkeypatch, tmp_path):
     assert cmd == []
     assert "找不到启动脚本" in error
     assert str(missing) in error
+
+
+def test_launch_command_reopens_bundle_through_launchservices(
+        monkeypatch, tmp_path):
+    bundle = tmp_path / "Zero.app"
+    bundle.mkdir()
+    monkeypatch.setenv("ZERO_APP_BUNDLE", str(bundle))
+    monkeypatch.setattr(shell.sys, "argv", ["ignored", "--web"])
+
+    cmd, error = shell._launch_command()
+
+    assert cmd == ["/usr/bin/open", "-n", str(bundle), "--args", "--web"]
+    assert error == ""
+
+
+def test_launch_command_rejects_missing_bundle(monkeypatch, tmp_path):
+    missing = tmp_path / "Gone.app"
+    monkeypatch.setenv("ZERO_APP_BUNDLE", str(missing))
+    monkeypatch.setattr(shell.sys, "argv", ["ignored"])
+
+    cmd, error = shell._launch_command()
+
+    assert cmd == []
+    assert "找不到应用包" in error
 
 
 def test_restart_api_does_not_stop_backend_on_preflight_failure(

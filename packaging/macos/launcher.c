@@ -94,6 +94,8 @@ int main(int argc, char **argv) {
     setenv("PYTHONPATH", python_path, 1);
     setenv("PYTHONDONTWRITEBYTECODE", "1", 1);
     setenv("PYTHONNOUSERSITE", "1", 1);
+    /* 自重启据此走 LaunchServices 重开应用包，保住 Zero 的应用身份。 */
+    setenv("ZERO_APP_BUNDLE", root, 1);
 
     /*
      * Finder 启动时 PATH 只有系统目录：把内嵌解释器放最前，技能脚本里的
