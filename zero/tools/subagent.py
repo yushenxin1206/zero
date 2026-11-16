@@ -27,12 +27,15 @@ class SubagentTool(Tool):
             "that run in PARALLEL and report their results back to this "
             "conversation when finished. Use this for self-contained work that "
             "can proceed while you keep helping the user (e.g. researching "
-            "several topics, summarizing multiple files). Each task is run by "
-            "an isolated agent with read/write/edit tools (no shell) and "
-            "returns its own findings. This call returns immediately with the "
-            "launched task ids — the results arrive later as new messages, so "
-            "do NOT wait or repeat the work. Split only work that is genuinely "
-            "independent; keep dependent steps in the main conversation."
+            "several topics, summarizing multiple files). Each task runs in an "
+            "isolated agent with the same tool set as this conversation, "
+            "except `subagent` itself (no recursive delegation). Background "
+            "execution is unattended: actions that would need approval fail "
+            "instead of prompting, and shell commands run without network. "
+            "This call returns immediately with the launched task ids — the "
+            "results arrive later as new messages, so do NOT wait or repeat "
+            "the work. Split only work that is genuinely independent; keep "
+            "dependent steps in the main conversation."
         )
 
     @property
