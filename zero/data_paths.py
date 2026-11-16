@@ -38,6 +38,11 @@ class DataPaths:
         return self.root / "memory.md"
 
     @property
+    def skills(self) -> Path:
+        """用户技能根：用户可在运行期新增/修改，包内技能只读。"""
+        return self.root / "skills"
+
+    @property
     def sessions(self) -> Path:
         return self.root / "sessions"
 

@@ -1710,6 +1710,31 @@
     transition: transform var(--dur) var(--ease);
   }
   .skill-item[open] .skill-caret { transform: rotate(90deg); }
+  .skill-badge {
+    flex: 0 0 auto;
+    padding: 1px 6px;
+    border-radius: var(--r-pill);
+    border: 1px solid var(--line-weak);
+    background: var(--fill-2);
+    color: var(--text-3);
+    font: 500 10px/1.6 var(--font);
+    white-space: nowrap;
+  }
+  .skill-badge.user {
+    color: var(--accent);
+    border-color: var(--accent-line);
+    background: var(--accent-soft);
+  }
+  .skill-badge.override {
+    color: var(--info);
+    border-color: var(--info-line);
+    background: var(--info-soft);
+  }
+  .skill-group-label {
+    margin: 14px 0 4px;
+    font: 600 11px/1.6 var(--font);
+    color: var(--text-3);
+  }
   .skill-meta {
     display: flex;
     flex-direction: column;
@@ -4463,8 +4488,8 @@
     ["其他", [
       {
         icon: "spark",
-        title: "内置技能",
-        desc: "查看已安装技能与其说明",
+        title: "技能",
+        desc: "查看内置技能与用户新增技能",
         open: () => openSkillsModal(),
       },
     ]],
@@ -4557,40 +4582,63 @@
     body.innerHTML = "";
     if (!skills.length) {
       body.innerHTML =
-        `<div class="modal-state">${icon("spark")}<div>暂无内置技能</div></div>`;
+        `<div class="modal-state">${icon("spark")}<div>暂无技能</div></div>`;
       return;
     }
+    const userSkills = skills.filter((skill) => skill.source === "user");
+    const builtinSkills = skills.filter((skill) => skill.source !== "user");
     const note = el("div", "modal-note");
-    note.textContent = `共 ${skills.length} 个内置技能`;
+    note.textContent =
+      `共 ${skills.length} 个技能（用户 ${userSkills.length} · ` +
+      `内置 ${builtinSkills.length}）`;
     body.appendChild(note);
-    skills.forEach((skill) => {
-      const item = el("details", "skill-item");
-      const head = el("summary", "skill-head");
-      head.innerHTML =
-        `<span class="skill-name">${escapeHtml(skill.name)}</span>` +
-        `<span class="skill-desc">${escapeHtml(skill.description || "")}</span>` +
-        icon("chevron", "skill-caret");
-      const meta = el("div", "skill-meta");
-      const rows = Object.entries(skill.meta || {});
-      if (skill.location) rows.push(["location", skill.location]);
-      rows.forEach(([key, value]) => {
-        const row = el("div", "skill-meta-row");
-        const k = el("span", "skill-meta-key");
-        k.textContent = key;
-        const v = el("span", "skill-meta-val");
-        v.textContent = String(value || "");
-        row.appendChild(k);
-        row.appendChild(v);
-        meta.appendChild(row);
-      });
-      const md = el("div", "skill-body md");
-      md.innerHTML = renderMarkdown(skill.content || "");
-      linkifyTargets(md);
-      item.appendChild(head);
-      if (rows.length) item.appendChild(meta);
-      item.appendChild(md);
-      body.appendChild(item);
+    [
+      ["用户技能", userSkills],
+      ["内置技能", builtinSkills],
+    ].forEach(([label, items]) => {
+      if (!items.length) return;
+      const groupLabel = el("div", "skill-group-label");
+      groupLabel.textContent = `${label}（${items.length}）`;
+      body.appendChild(groupLabel);
+      items.forEach((skill) => body.appendChild(skillItem(skill)));
     });
+  }
+
+  function skillItem(skill) {
+    const item = el("details", "skill-item");
+    const head = el("summary", "skill-head");
+    const isUser = skill.source === "user";
+    const badges =
+      `<span class="skill-badge ${isUser ? "user" : "builtin"}">` +
+      `${isUser ? "用户" : "内置"}</span>` +
+      (skill.overrides
+        ? '<span class="skill-badge override">覆盖内置</span>'
+        : "");
+    head.innerHTML =
+      `<span class="skill-name">${escapeHtml(skill.name)}</span>` +
+      badges +
+      `<span class="skill-desc">${escapeHtml(skill.description || "")}</span>` +
+      icon("chevron", "skill-caret");
+    const meta = el("div", "skill-meta");
+    const rows = Object.entries(skill.meta || {});
+    if (skill.location) rows.push(["location", skill.location]);
+    rows.forEach(([key, value]) => {
+      const row = el("div", "skill-meta-row");
+      const k = el("span", "skill-meta-key");
+      k.textContent = key;
+      const v = el("span", "skill-meta-val");
+      v.textContent = String(value || "");
+      row.appendChild(k);
+      row.appendChild(v);
+      meta.appendChild(row);
+    });
+    const md = el("div", "skill-body md");
+    md.innerHTML = renderMarkdown(skill.content || "");
+    linkifyTargets(md);
+    item.appendChild(head);
+    if (rows.length) item.appendChild(meta);
+    item.appendChild(md);
+    return item;
   }
 
   function openTasksModal() {

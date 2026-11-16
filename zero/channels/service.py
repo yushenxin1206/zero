@@ -316,14 +316,16 @@ class ChannelService:
     # ------------------------------------------------------------------
 
     def skills(self) -> list[dict[str, Any]]:
-        """Package skills with metadata and rendered skill.md body for viewing."""
+        """内置与用户技能（含来源与覆盖标记），供 Web 技能页展示。"""
         return [{
             "name": skill.name,
             "description": skill.description,
+            "source": skill.source,
+            "overrides": skill.overrides,
             "location": str(skill.location),
             "meta": parse_skill_meta(skill.location),
             "content": read_skill_body(skill.location),
-        } for skill in list_skills()]
+        } for skill in list_skills(self.data_paths.skills)]
 
     # ------------------------------------------------------------------
     # Config

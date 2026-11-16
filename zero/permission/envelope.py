@@ -61,6 +61,19 @@ def _real(path) -> Path:
     return Path(os.path.realpath(os.path.expanduser(str(path))))
 
 
+# 启动器只在打包运行时设置：值是 Zero.app 的根目录。用它把整个应用包
+# 标为不可写，避免运行期改到签名内的资源（包内技能保持只读）。
+APP_BUNDLE_ENV = "ZERO_APP_BUNDLE"
+
+
+def _app_bundle() -> Path | None:
+    raw = os.environ.get(APP_BUNDLE_ENV, "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    return _real(path) if path.is_absolute() else None
+
+
 def validate_workspace(raw, data_paths: DataPaths, *,
                        label: str = "工作目录") -> Path:
     """校验用户选择的可写目录，返回 realpath。
@@ -143,6 +156,8 @@ class Envelope:
     deny_read: tuple[Path, ...] = ()        # 读禁止项（已 realpath）
     extra_roots: tuple[Path, ...] = ()      # profile.json 的长期扩权根（用户资产）
     session_roots: tuple[Path, ...] = ()    # 审批"本会话"后的临时写根
+    # 用户技能根默认可写：agent 新增/修改技能不必逐文件审批；包内技能仍只读
+    skills_root: Path | None = None
     network: bool = True
 
     def write_roots(self) -> list[Path]:
@@ -154,10 +169,17 @@ class Envelope:
         candidates.extend(_tmp_dirs())
         candidates.extend(self.extra_roots)
         candidates.extend(self.session_roots)
+        if self.skills_root is not None:
+            candidates.append(self.skills_root)
         roots: list[Path] = []
         seen: set[Path] = set()
+        bundle = _app_bundle()
         for c in candidates:
             r = _real(c)
+            # 打包运行时应用包恒不可写：即使有人把它设成工作目录或扩权根，
+            # 也不进入沙箱写集合
+            if bundle is not None and (r == bundle or r.is_relative_to(bundle)):
+                continue
             if r not in seen:
                 seen.add(r)
                 roots.append(r)
@@ -213,9 +235,13 @@ class PermissionState:
         )
 
     def ungrantable_write(self) -> tuple[Path, ...]:
-        """不可授予：系统路径与策略文件。写方向是加法，用于挡住审批扩权到系统区。"""
+        """不可授予：系统路径、策略文件与打包后的应用包。
+
+        写方向是加法，用于挡住审批扩权到系统区。打包运行时整个 Zero.app
+        都在不可写集合里，包内技能因此保持只读；用户技能写到数据根。
+        """
         p = self.data_paths
-        return (
+        items = (
             Path("/etc"),
             Path("/System"),
             Path("/usr"),
@@ -227,6 +253,8 @@ class PermissionState:
             p.config,
             p.scheduler,
         )
+        bundle = _app_bundle()
+        return items + ((bundle,) if bundle is not None else ())
 
     # ------------------------------------------------------------------
     # 能力探测（fail-closed 闸门）—— 向 seatbelt 后端确认「内核强制真的在跑」
@@ -512,6 +540,7 @@ class PermissionState:
             deny_read=tuple(_real(p) for p in self.ungrantable_read()),
             extra_roots=tuple(self.extra_roots()),
             session_roots=self.session_roots(ctx),
+            skills_root=_real(self.data_paths.skills),
             network=attended(ctx),
         )
 

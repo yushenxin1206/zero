@@ -364,6 +364,9 @@ def main():
     # 组合根：唯一的路径配置点 + 唯一一次配置读取。之后所有组件接收
     # 显式 Config / DataPaths / Store，不再访问模块级单例。
     data_paths = DataPaths.default()
+    # 用户技能根预先建好：包内技能只读，agent 新增技能应落到这里；
+    # 目录存在后 shell 的 mkdir 才只需要技能根自身可写。
+    data_paths.skills.mkdir(parents=True, exist_ok=True)
     # ConfigManager 负责状态判定与后续 Web 端读写：缺配置/坏配置都不抛，
     # 由 Web 引导页接管；CLI 没有引导页，稍后给出可操作的提示。
     manager = ConfigManager(data_paths.config)

@@ -16,7 +16,7 @@ from zero.models import (
     CHANNEL_CLI, CHANNEL_FEISHU, CHANNEL_WEB,
     Message, MessageBody, CompactRecord, ToolContext)
 from zero.session.store import SessionStore, apply_compact
-from zero.skill_catalog import SKILLS_ROOT, parse_skill_meta
+from zero.skill_catalog import list_skills, skill_dirs
 from zero.tools.registry import ToolRegistry
 from zero.config import TOOL_RESULT_MAX_CHARS, project_memory_path
 from zero.data_paths import DataPaths
@@ -72,7 +72,7 @@ You are Zero, a professional and efficient assistant. Help users accomplish thei
 
 ## Permissions
 - Reads are open except credential and policy locations (e.g. `~/.ssh`, `~/.aws`, `~/.gnupg`, keychains, Zero's own config/profile) — those are hard-denied with no approval path. Do not retry them or try another tool to reach the same file.
-- Writes are limited to the session's working directory (when one is selected), the session dir and TMPDIR. Writing elsewhere raises an approval prompt. If approved, the tool result may include a `permission` field describing what the user granted; treat it as a normal success and continue.
+- Writes are limited to the session's working directory (when one is selected), the session dir, the user skills directory (`~/.zero/skills` by default) and TMPDIR. Writing elsewhere raises an approval prompt. If approved, the tool result may include a `permission` field describing what the user granted; treat it as a normal success and continue.
 - File tools take absolute paths only. If no working directory is selected and file work is needed, ask the user to choose one (Web: the folder control in the composer; CLI: `/cwd`) instead of guessing a project directory.
 - If a result says the operation was denied or the session is unattended, do not retry the same call and do not bypass it with another tool or a rephrased command. Use an allowed path, or give the user the exact remedy named in the error; the remedy is channel-specific (Web: the 权限 settings panel; CLI: the zero-permission command).\
 """
@@ -99,8 +99,9 @@ CHANNEL_UNKNOWN_HINT = (
 
 class Context:
 
-    # skills 清单的进程级缓存：(skills 目录 mtime, 最新 skill 文件 mtime) -> 渲染结果
-    _skills_cache: tuple[tuple[float, float], str] | None = None
+    # skills 清单的进程级缓存：各技能根（路径 + mtime）与最新 skill 文件 mtime
+    _skills_cache: tuple[
+        tuple[tuple[tuple[str, float], ...], float], str] | None = None
 
     # 会话级能力标记：SubAgentContext 等纯内存上下文覆写为 False，
     # runner 据此跳过上下文压缩（Compactor 直接读写 SessionStore）
@@ -310,43 +311,49 @@ Durable facts, conventions and decisions about the current project (working dire
 
     @property
     def _skills(self) -> str:
-        skills_path = SKILLS_ROOT
-        skill_files = sorted(skills_path.glob("*/skill.md")) if skills_path.is_dir() else []
-        if not skill_files:
-            return ""
-
-        # 进程级缓存：安装/卸载/编辑 skill 会改变目录或文件 mtime，缓存随之失效
+        roots = skill_dirs(self.data_paths.skills)
+        skill_files: list[Path] = []
+        root_stamps: list[tuple[str, float]] = []
+        for _source, root in roots:
+            try:
+                root_stamps.append((str(root), root.stat().st_mtime))
+            except OSError:
+                root_stamps.append((str(root), 0.0))
+            if root.is_dir():
+                skill_files.extend(sorted(root.glob("*/skill.md")))
         try:
-            cache_key = (skills_path.stat().st_mtime,
-                         max(f.stat().st_mtime for f in skill_files))
-        except OSError:
-            cache_key = None
+            file_stamp = max(f.stat().st_mtime for f in skill_files)
+        except (OSError, ValueError):
+            file_stamp = 0.0
+        cache_key = (tuple(root_stamps), file_stamp)
         if cache_key is not None and Context._skills_cache is not None \
                 and Context._skills_cache[0] == cache_key:
             return Context._skills_cache[1]
 
+        # 有效清单：同名时用户目录覆盖包内，避免提示词里出现两份
         entries: list[str] = []
-        for skill_file in skill_files:
-            meta = parse_skill_meta(skill_file)
+        for skill in list_skills(self.data_paths.skills):
             entries.append(
                 f"  <skill>\n"
-                f"    <name>{escape(meta.get('name', ''))}</name>\n"
-                f"    <description>{escape(meta.get('description', ''))}</description>\n"
-                f"    <location>{skill_file}</location>\n"
+                f"    <name>{escape(skill.name)}</name>\n"
+                f"    <description>{escape(skill.description)}</description>\n"
+                f"    <location>{escape(str(skill.location))}</location>\n"
                 f"  </skill>"
             )
         available_skills = "\n".join(entries)
 
+        user_root = self.data_paths.skills
         rendered = f"""\
 ## Skills
 The following skills provide specialized instructions for specific tasks. When a task matches a skill's description, load that skill's file with the read tool and follow it; do not load skills you don't need. Resolve relative paths in a skill file against the skill's own directory.
+
+User skills live in {user_root}. You may add or update skills there without per-file approval: create {user_root}/<name>/skill.md with YAML frontmatter (`name`, `description`), and put support files under {user_root}/<name>/. Packaged skills are read-only — never write into the application bundle.
 
 <available_skills>
 {available_skills}
 </available_skills>\
 """
-        if cache_key is not None:
-            Context._skills_cache = (cache_key, rendered)
+        Context._skills_cache = (cache_key, rendered)
         return rendered
 
     @property
