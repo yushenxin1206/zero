@@ -154,7 +154,7 @@ class TurnChanges:
                         "capped": bool(state.get("capped")),
                         "blocked": True,
                     }
-                    # 单文件目录不包装成“批量 1”，带上文件路径供压缩时展开
+                    # 单文件目录不包装成“1 个文件”的分组，带上文件路径供压缩时展开
                     if state.get("file"):
                         entry["file"] = state["file"]
                     groups.append(entry)
@@ -289,7 +289,7 @@ def _skip_summary(path: Path) -> dict[str, Any]:
         "code": "IGNORED", "exists": True, "count": count,
         "mtime": newest, "capped": False,
     }
-    # 只有一个文件时记住路径，前端直接展示文件本身而不是“批量 1”
+    # 只有一个文件时记住路径，前端直接展示文件本身而不是“1 个文件”的分组
     if count == 1:
         summary["file"] = only
     return summary
@@ -492,7 +492,7 @@ def _compact(changes: dict[str, str],
         for group in sorted(folded, key=lambda item: item["_score"]))
     result.extend(_overflow_rows(overflow))
     for root, items in sorted(deps.items()):
-        # 单个文件不包装成“批量 1”，直接给文件路径
+        # 单个文件不包装成“1 个文件”的分组，直接给文件路径
         if len(items) == 1:
             path, change = items[0]
             result.append({"path": path, "change": change})

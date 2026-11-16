@@ -844,7 +844,7 @@
     font-size: 11.5px;
     word-break: break-all;
   }
-  /* 按目录折叠的批量改动 */
+  /* 按目录折叠的文件改动 */
   .change-group-head {
     display: flex;
     align-items: baseline;
@@ -3659,7 +3659,7 @@
     added: "新增", modified: "修改", deleted: "删除",
   };
   const CHANGE_GROUP_THRESHOLD = 10;
-  // 锁文件是有意义的单点变化，即使落在批量目录里也单独列出
+  // 锁文件是有意义的单点变化，即使落在折叠目录里也单独列出
   const LOCKFILES = new Set([
     "uv.lock", "poetry.lock", "Pipfile.lock", "package-lock.json",
     "yarn.lock", "pnpm-lock.yaml", "Cargo.lock", "go.sum",
@@ -3736,7 +3736,7 @@
       const isBlocked = !!item.blocked;
       const headRow = el("div", "change-group-head");
       const badge = el("span", "change-badge bulk");
-      badge.textContent = "批量 " + count + (item.capped ? "+" : "");
+      badge.textContent = count + (item.capped ? "+" : "") + " 个文件";
       // 折叠目录本身也是绝对路径：复用路径链接的打开通道，点击定位到目录
       const pathLabel = targetAnchor(String(item.path || ""), "path");
       pathLabel.classList.add("turn-change-dir");
@@ -4439,7 +4439,7 @@
     ["配置", [
       {
         icon: "sliders",
-        title: "完整配置",
+        title: "配置文件",
         desc: "模型、供应商、运行时、渠道与维护任务的全部选项",
         open: () => openConfigModal(),
       },
@@ -4974,7 +4974,7 @@
     return doc;
   }
 
-  /* ---------- schema 驱动的完整配置表单（设置页“常用”） ---------- */
+  /* ---------- schema 驱动的配置文件表单（设置页“常用”） ---------- */
 
   const RUNTIME_TASKS = [
     { key: "default", label: "default（主对话，必填）", required: true },
@@ -5638,7 +5638,7 @@
     state.configFocus = focus || "";
     state.configBaseline = "";
     state.configConfirmBack = false;
-    openModal("配置", "", `<button id="modal-close">关闭</button>`);
+    openModal("配置文件", "", `<button id="modal-close">关闭</button>`);
     $("#modal-close").onclick = closeModal;
     $("#modal-body").innerHTML = '<div class="modal-note">读取配置…</div>';
     if (!send({ type: "config" })) {
