@@ -35,7 +35,7 @@ def test_user_skills_merge_and_override(tmp_path):
 def test_missing_user_root_falls_back_to_builtin(tmp_path):
     skills = list_skills(tmp_path / "missing")
     names = {item.name for item in skills}
-    assert {"plan", "session-history", "web-search"} <= names
+    assert {"plan", "session-history", "web-search", "skill-authoring"} <= names
 
 
 def test_user_skills_root_is_writable_without_approval(tmp_path):
